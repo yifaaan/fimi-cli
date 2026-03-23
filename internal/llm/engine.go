@@ -34,13 +34,10 @@ func NewEngine(client Client) Engine {
 func (e Engine) Reply(input runtime.Input) (string, error) {
 	fallbackPrompt := strings.TrimSpace(input.Prompt)
 	request := Request{
-		Prompt:       fallbackPrompt,
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,
 		Messages:     buildMessages(input.SystemPrompt, fallbackPrompt),
 	}
-	// 兼容字段 Prompt 从主协议 Messages 派生，避免两套主输入分叉。
-	request.Prompt = request.PrimaryUserPrompt()
 
 	response, err := e.client.Reply(request)
 	if err != nil {

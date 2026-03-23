@@ -26,15 +26,35 @@ func TestRequestLastUserMessage(t *testing.T) {
 	}
 }
 
-func TestRequestPrimaryUserPromptFallsBackToPrompt(t *testing.T) {
+func TestRequestPrimaryUserPrompt(t *testing.T) {
 	request := Request{
-		Prompt: "hello",
+		Messages: []Message{
+			{Role: RoleSystem, Content: "You are fimi, a coding agent."},
+			{Role: RoleUser, Content: "hello"},
+		},
+	}
+
+	got, ok := request.PrimaryUserPrompt()
+	if !ok {
+		t.Fatalf("PrimaryUserPrompt() ok = false, want true")
+	}
+	if got != "hello" {
+		t.Fatalf("PrimaryUserPrompt() = %q, want %q", got, "hello")
+	}
+}
+
+func TestRequestPrimaryUserPromptWithoutUserMessage(t *testing.T) {
+	request := Request{
 		Messages: []Message{
 			{Role: RoleSystem, Content: "You are fimi, a coding agent."},
 		},
 	}
 
-	if got := request.PrimaryUserPrompt(); got != "hello" {
-		t.Fatalf("PrimaryUserPrompt() = %q, want %q", got, "hello")
+	got, ok := request.PrimaryUserPrompt()
+	if ok {
+		t.Fatalf("PrimaryUserPrompt() ok = true, want false")
+	}
+	if got != "" {
+		t.Fatalf("PrimaryUserPrompt() = %q, want empty string", got)
 	}
 }

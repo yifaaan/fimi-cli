@@ -27,9 +27,6 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	if reply != "assistant placeholder reply: hello" {
 		t.Fatalf("Reply() = %q, want %q", reply, "assistant placeholder reply: hello")
 	}
-	if client.gotRequest.Prompt != "hello" {
-		t.Fatalf("got Request.Prompt = %q, want %q", client.gotRequest.Prompt, "hello")
-	}
 	if client.gotRequest.Model != "kimi-k2-turbo-preview" {
 		t.Fatalf("got Request.Model = %q, want %q", client.gotRequest.Model, "kimi-k2-turbo-preview")
 	}
@@ -56,6 +53,13 @@ func TestEngineReplyUsesClient(t *testing.T) {
 			Role:    RoleUser,
 			Content: "hello",
 		})
+	}
+	prompt, ok := client.gotRequest.PrimaryUserPrompt()
+	if !ok {
+		t.Fatalf("PrimaryUserPrompt() ok = false, want true")
+	}
+	if prompt != "hello" {
+		t.Fatalf("PrimaryUserPrompt() = %q, want %q", prompt, "hello")
 	}
 }
 
@@ -111,8 +115,12 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 			Content: "hello",
 		})
 	}
-	if client.gotRequest.Prompt != "hello" {
-		t.Fatalf("got Request.Prompt = %q, want %q", client.gotRequest.Prompt, "hello")
+	prompt, ok := client.gotRequest.PrimaryUserPrompt()
+	if !ok {
+		t.Fatalf("PrimaryUserPrompt() ok = false, want true")
+	}
+	if prompt != "hello" {
+		t.Fatalf("PrimaryUserPrompt() = %q, want %q", prompt, "hello")
 	}
 }
 

@@ -12,9 +12,8 @@ type Message struct {
 }
 
 // Request 表示一次最小 LLM 调用请求。
-// Messages 是主协议；Prompt 只保留为兼容字段。
+// Messages 是主协议。
 type Request struct {
-	Prompt       string
 	Model        string
 	SystemPrompt string
 	Messages     []Message
@@ -38,11 +37,10 @@ func (r Request) LastUserMessage() (Message, bool) {
 }
 
 // PrimaryUserPrompt 返回当前请求的主 user prompt。
-// 优先从主协议 Messages 派生；没有 user message 时回退到兼容字段 Prompt。
-func (r Request) PrimaryUserPrompt() string {
+func (r Request) PrimaryUserPrompt() (string, bool) {
 	if message, ok := r.LastUserMessage(); ok {
-		return message.Content
+		return message.Content, true
 	}
 
-	return r.Prompt
+	return "", false
 }

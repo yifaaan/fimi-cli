@@ -10,7 +10,7 @@ type PlaceholderClient struct{}
 
 // Reply 根据请求返回占位 assistant 回复。
 func (PlaceholderClient) Reply(request Request) (Response, error) {
-	prompt := request.PrimaryUserPrompt()
+	prompt, _ := request.PrimaryUserPrompt()
 
 	return Response{
 		Text: fmt.Sprintf("%s %s", assistantPlaceholderPrefix, prompt),

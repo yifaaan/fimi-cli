@@ -9,7 +9,11 @@ import (
 func TestPlaceholderClientReplyText(t *testing.T) {
 	client := PlaceholderClient{}
 
-	response, err := client.Reply(Request{Prompt: "hello"})
+	response, err := client.Reply(Request{
+		Messages: []Message{
+			{Role: RoleUser, Content: "hello"},
+		},
+	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}
@@ -23,7 +27,6 @@ func TestPlaceholderClientReplyUsesLastUserMessage(t *testing.T) {
 	client := PlaceholderClient{}
 
 	response, err := client.Reply(Request{
-		Prompt: "ignored fallback",
 		Messages: []Message{
 			{Role: RoleSystem, Content: "You are fimi, a coding agent."},
 			{Role: RoleUser, Content: "first"},
@@ -39,11 +42,10 @@ func TestPlaceholderClientReplyUsesLastUserMessage(t *testing.T) {
 	}
 }
 
-func TestPlaceholderClientReplyFallsBackToPromptWithoutUserMessage(t *testing.T) {
+func TestPlaceholderClientReplyUsesEmptyPromptWithoutUserMessage(t *testing.T) {
 	client := PlaceholderClient{}
 
 	response, err := client.Reply(Request{
-		Prompt: "hello",
 		Messages: []Message{
 			{Role: RoleSystem, Content: "You are fimi, a coding agent."},
 		},
@@ -52,8 +54,8 @@ func TestPlaceholderClientReplyFallsBackToPromptWithoutUserMessage(t *testing.T)
 		t.Fatalf("Reply() error = %v", err)
 	}
 
-	if response.Text != "assistant placeholder reply: hello" {
-		t.Fatalf("Reply().Text = %q, want %q", response.Text, "assistant placeholder reply: hello")
+	if response.Text != "assistant placeholder reply: " {
+		t.Fatalf("Reply().Text = %q, want %q", response.Text, "assistant placeholder reply: ")
 	}
 }
 
