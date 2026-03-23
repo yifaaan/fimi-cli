@@ -117,3 +117,61 @@ func TestContextReadRecentReturnsEmptyWhenLimitNonPositive(t *testing.T) {
 		t.Fatalf("len(ReadRecent()) = %d, want 0", len(got))
 	}
 }
+
+func TestContextReadRecentTurnsStartsAtUserBoundary(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	records := []TextRecord{
+		NewSystemTextRecord("boot"),
+		NewUserTextRecord("u1"),
+		NewAssistantTextRecord("a1"),
+		NewUserTextRecord("u2"),
+		NewAssistantTextRecord("a2"),
+		NewUserTextRecord("u3"),
+		NewAssistantTextRecord("a3"),
+		NewUserTextRecord("u4"),
+		NewAssistantTextRecord("a4"),
+		NewUserTextRecord("u5"),
+	}
+	for _, record := range records {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+
+	got, err := ctx.ReadRecentTurns(4)
+	if err != nil {
+		t.Fatalf("ReadRecentTurns() error = %v", err)
+	}
+
+	want := []TextRecord{
+		NewUserTextRecord("u2"),
+		NewAssistantTextRecord("a2"),
+		NewUserTextRecord("u3"),
+		NewAssistantTextRecord("a3"),
+		NewUserTextRecord("u4"),
+		NewAssistantTextRecord("a4"),
+		NewUserTextRecord("u5"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReadRecentTurns() = %#v, want %#v", got, want)
+	}
+}
+
+func TestContextReadRecentTurnsReturnsEmptyWhenLimitNonPositive(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	if err := ctx.Append(NewUserTextRecord("hello")); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	got, err := ctx.ReadRecentTurns(0)
+	if err != nil {
+		t.Fatalf("ReadRecentTurns() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("len(ReadRecentTurns()) = %d, want 0", len(got))
+	}
+}

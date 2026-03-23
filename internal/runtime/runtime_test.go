@@ -132,7 +132,7 @@ func TestRunnerRunReturnsMissingEngineError(t *testing.T) {
 	}
 }
 
-func TestRunnerRunReadsRecentHistoryWindow(t *testing.T) {
+func TestRunnerRunReadsRecentTurnWindow(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	records := []contextstore.TextRecord{
 		contextstore.NewSystemTextRecord("boot"),
@@ -167,7 +167,6 @@ func TestRunnerRunReadsRecentHistoryWindow(t *testing.T) {
 	}
 
 	want := []contextstore.TextRecord{
-		contextstore.NewAssistantTextRecord("a1"),
 		contextstore.NewUserTextRecord("u2"),
 		contextstore.NewAssistantTextRecord("a2"),
 		contextstore.NewUserTextRecord("u3"),

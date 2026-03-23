@@ -8,7 +8,7 @@ import (
 	"fimi-cli/internal/contextstore"
 )
 
-const replyHistoryReadLimit = 8
+const replyHistoryTurnLimit = 4
 
 // Input 表示单次 runtime 执行的最小输入。
 type Input struct {
@@ -62,7 +62,7 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 		return Result{}, nil
 	}
 
-	history, err := ctx.ReadRecent(replyHistoryReadLimit)
+	history, err := ctx.ReadRecentTurns(replyHistoryTurnLimit)
 	if err != nil {
 		return Result{}, fmt.Errorf("read runtime history: %w", err)
 	}

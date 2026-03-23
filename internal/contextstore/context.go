@@ -138,6 +138,59 @@ func (c Context) ReadRecent(limit int) ([]TextRecord, error) {
 	return c.readRecords(limit)
 }
 
+// ReadRecentTurns 按 user 轮次读取最近若干段对话历史。
+// 返回结果会从最近窗口里的第一条 user 记录开始，避免以孤立 assistant 开头。
+func (c Context) ReadRecentTurns(limit int) ([]TextRecord, error) {
+	if limit <= 0 {
+		return []TextRecord{}, nil
+	}
+
+	f, err := os.Open(c.historyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return []TextRecord{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open history file %q: %w", c.historyFile, err)
+	}
+	defer f.Close()
+
+	records := make([]TextRecord, 0, limit*2)
+	userCount := 0
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var record TextRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			return nil, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
+		}
+
+		records = append(records, record)
+		if record.Role == RoleUser {
+			userCount++
+		}
+
+		records = dropLeadingNonUserRecords(records)
+		for userCount > limit && len(records) > 0 {
+			if records[0].Role == RoleUser {
+				userCount--
+			}
+			records = records[1:]
+			records = dropLeadingNonUserRecords(records)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan history file %q: %w", c.historyFile, err)
+	}
+
+	return records, nil
+}
+
 func (c Context) readRecords(limit int) ([]TextRecord, error) {
 	f, err := os.Open(c.historyFile)
 	if errors.Is(err, os.ErrNotExist) {
@@ -183,6 +236,14 @@ func (c Context) readRecords(limit int) ([]TextRecord, error) {
 	}
 
 	return records, nil
+}
+
+func dropLeadingNonUserRecords(records []TextRecord) []TextRecord {
+	for len(records) > 0 && records[0].Role != RoleUser {
+		records = records[1:]
+	}
+
+	return records
 }
 
 // Last 返回最后一条文本记录。
