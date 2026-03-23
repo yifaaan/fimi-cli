@@ -49,10 +49,18 @@ func Run(args []string) error {
 		return fmt.Errorf("count history records: %w", err)
 	}
 
+	lastRecord, ok, err := ctx.Last()
+	if err != nil {
+		return fmt.Errorf("read last history record: %w", err)
+	}
+
 	fmt.Printf("session: %s\n", sess.ID)
 	fmt.Printf("history: %s\n", ctx.Path())
 	fmt.Printf("history exists: %t\n", historyExists)
 	fmt.Printf("history records: %d\n", historyCount)
+	if ok {
+		fmt.Printf("last history role: %s\n", lastRecord.Role)
+	}
 
 	_ = cfg
 
