@@ -32,7 +32,7 @@ func Run(args []string) error {
 	}
 
 	ctx := contextstore.New(sess.HistoryFile)
-	historyExists, err := ctx.Exists()
+	historyExists, err := sess.HistoryExists()
 	if err != nil {
 		return fmt.Errorf("check history file existence: %w", err)
 	}
