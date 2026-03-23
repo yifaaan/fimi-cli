@@ -16,6 +16,14 @@ const (
 	initialRecordContent = "session initialized"
 )
 
+type llmClientBuilder func(mode string) (llm.Client, error)
+
+// dependencies 表示 app 装配层当前持有的可替换依赖。
+// 这里先只暴露 LLM client builder，后面接真实 provider 时不用改 runtime。
+type dependencies struct {
+	buildLLMClient llmClientBuilder
+}
+
 // startupState 聚合启动阶段需要展示的状态信息。
 type startupState struct {
 	historyExists bool
@@ -32,6 +40,7 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	deps := defaultDependencies()
 
 	input := parseRunInput(args)
 
@@ -51,7 +60,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	runner, err := buildRunner(cfg)
+	runner, err := deps.buildRunner(cfg)
 	if err != nil {
 		return err
 	}
@@ -80,6 +89,12 @@ func parseRunInput(args []string) runInput {
 	}
 }
 
+func defaultDependencies() dependencies {
+	return dependencies{
+		buildLLMClient: llm.BuildClient,
+	}
+}
+
 // buildLLMConfig 把全局配置映射为 llm 模块自己的最小配置。
 func buildLLMConfig(cfg config.Config) llm.Config {
 	return llm.Config{
@@ -104,8 +119,13 @@ func buildRuntimeInput(cfg config.Config, input runInput) runtime.Input {
 }
 
 // buildEngine 负责装配当前默认的 llm engine。
-func buildEngine(cfg config.Config) (llm.Engine, error) {
-	client, err := llm.BuildClient(cfg.EngineMode)
+func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
+	buildClient := d.buildLLMClient
+	if buildClient == nil {
+		buildClient = llm.BuildClient
+	}
+
+	client, err := buildClient(cfg.EngineMode)
 	if err != nil {
 		return llm.Engine{}, fmt.Errorf("build llm client: %w", err)
 	}
@@ -114,13 +134,21 @@ func buildEngine(cfg config.Config) (llm.Engine, error) {
 }
 
 // buildRunner 负责装配一次 runtime 执行所需的核心依赖。
-func buildRunner(cfg config.Config) (runtime.Runner, error) {
-	engine, err := buildEngine(cfg)
+func (d dependencies) buildRunner(cfg config.Config) (runtime.Runner, error) {
+	engine, err := d.buildEngine(cfg)
 	if err != nil {
 		return runtime.Runner{}, err
 	}
 
 	return runtime.New(engine, buildRuntimeConfig(cfg)), nil
+}
+
+func buildEngine(cfg config.Config) (llm.Engine, error) {
+	return defaultDependencies().buildEngine(cfg)
+}
+
+func buildRunner(cfg config.Config) (runtime.Runner, error) {
+	return defaultDependencies().buildRunner(cfg)
 }
 
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
