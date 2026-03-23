@@ -10,11 +10,16 @@ import (
 
 func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	runner := New(staticEngine{
+	engine := &spyEngine{
 		reply: "assistant placeholder reply: hello",
-	})
+	}
+	runner := New(engine)
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(ctx, Input{
+		Prompt:       " hello ",
+		Model:        "kimi-k2-turbo-preview",
+		SystemPrompt: "You are fimi, a coding agent.",
+	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -39,6 +44,15 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	wantAssistant := contextstore.NewAssistantTextRecord("assistant placeholder reply: hello")
 	if records[1] != wantAssistant {
 		t.Fatalf("records[1] = %#v, want %#v", records[1], wantAssistant)
+	}
+	if engine.gotInput.Prompt != "hello" {
+		t.Fatalf("engine got Prompt = %q, want %q", engine.gotInput.Prompt, "hello")
+	}
+	if engine.gotInput.Model != "kimi-k2-turbo-preview" {
+		t.Fatalf("engine got Model = %q, want %q", engine.gotInput.Model, "kimi-k2-turbo-preview")
+	}
+	if engine.gotInput.SystemPrompt != "You are fimi, a coding agent." {
+		t.Fatalf("engine got SystemPrompt = %q, want %q", engine.gotInput.SystemPrompt, "You are fimi, a coding agent.")
 	}
 }
 
@@ -111,4 +125,15 @@ type trackingEngine struct {
 func (e *trackingEngine) Reply(input Input) (string, error) {
 	e.called = true
 	return "unused", nil
+}
+
+type spyEngine struct {
+	gotInput Input
+	reply    string
+	err      error
+}
+
+func (e *spyEngine) Reply(input Input) (string, error) {
+	e.gotInput = input
+	return e.reply, e.err
 }

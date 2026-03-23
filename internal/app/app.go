@@ -14,6 +14,7 @@ import (
 
 const (
 	initialRecordContent = "session initialized"
+	defaultSystemPrompt  = "You are fimi, a coding agent."
 )
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -54,8 +55,9 @@ func Run(args []string) error {
 	runner := runtime.New(llm.NewPlaceholderEngine())
 
 	runResult, err := runner.Run(ctx, runtime.Input{
-		Prompt: input.prompt,
-		Model:  cfg.DefaultModel,
+		Prompt:       input.prompt,
+		Model:        cfg.DefaultModel,
+		SystemPrompt: defaultSystemPrompt,
 	})
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)

@@ -10,8 +10,9 @@ import (
 
 // Input 表示单次 runtime 执行的最小输入。
 type Input struct {
-	Prompt string
-	Model  string
+	Prompt       string
+	Model        string
+	SystemPrompt string
 }
 
 // Result 表示单次 runtime 追加到 history 的记录。
@@ -51,8 +52,9 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	}
 
 	assistantReply, err := r.engine.Reply(Input{
-		Prompt: prompt,
-		Model:  input.Model,
+		Prompt:       prompt,
+		Model:        input.Model,
+		SystemPrompt: input.SystemPrompt,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("build assistant reply: %w", err)

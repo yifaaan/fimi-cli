@@ -33,8 +33,9 @@ func NewEngine(client Client) Engine {
 // Reply 调用底层 llm client，为 runtime 生成 assistant 文本。
 func (e Engine) Reply(input runtime.Input) (string, error) {
 	request := Request{
-		Prompt: strings.TrimSpace(input.Prompt),
-		Model:  input.Model,
+		Prompt:       strings.TrimSpace(input.Prompt),
+		Model:        input.Model,
+		SystemPrompt: input.SystemPrompt,
 	}
 
 	response, err := e.client.Reply(request)

@@ -16,8 +16,9 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	engine := NewEngine(client)
 
 	reply, err := engine.Reply(runtime.Input{
-		Prompt: " hello ",
-		Model:  "kimi-k2-turbo-preview",
+		Prompt:       " hello ",
+		Model:        "kimi-k2-turbo-preview",
+		SystemPrompt: "You are fimi, a coding agent.",
 	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
@@ -31,6 +32,9 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	}
 	if client.gotRequest.Model != "kimi-k2-turbo-preview" {
 		t.Fatalf("got Request.Model = %q, want %q", client.gotRequest.Model, "kimi-k2-turbo-preview")
+	}
+	if client.gotRequest.SystemPrompt != "You are fimi, a coding agent." {
+		t.Fatalf("got Request.SystemPrompt = %q, want %q", client.gotRequest.SystemPrompt, "You are fimi, a coding agent.")
 	}
 }
 
