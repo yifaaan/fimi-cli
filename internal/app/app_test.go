@@ -97,8 +97,8 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 				HistoryFile: historyFile,
 			}, true, nil
 		},
-		buildLLMClient: func(mode string) (llm.Client, error) {
-			gotMode = mode
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			gotMode = cfg.EngineMode
 			return llm.NewPlaceholderClient(), nil
 		},
 		printStartupState: func(
@@ -395,8 +395,8 @@ func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
 func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
 	var gotMode string
 	deps := dependencies{
-		buildLLMClient: func(mode string) (llm.Client, error) {
-			gotMode = mode
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			gotMode = cfg.EngineMode
 			return llm.NewPlaceholderClient(), nil
 		},
 	}
@@ -428,8 +428,8 @@ func TestBuildEngineReturnsErrorForUnsupportedMode(t *testing.T) {
 	_, err := buildEngine(config.Config{
 		EngineMode: "unsupported",
 	})
-	if !errors.Is(err, llm.ErrUnsupportedClientMode) {
-		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, llm.ErrUnsupportedClientMode)
+	if !errors.Is(err, ErrUnsupportedClientMode) {
+		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, ErrUnsupportedClientMode)
 	}
 }
 
@@ -477,8 +477,8 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 	var gotMode string
 	deps := dependencies{
-		buildLLMClient: func(mode string) (llm.Client, error) {
-			gotMode = mode
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			gotMode = cfg.EngineMode
 			return llm.NewPlaceholderClient(), nil
 		},
 	}
@@ -512,8 +512,8 @@ func TestBuildRunnerReturnsErrorForUnsupportedMode(t *testing.T) {
 	_, err := buildRunner(config.Config{
 		EngineMode: "unsupported",
 	})
-	if !errors.Is(err, llm.ErrUnsupportedClientMode) {
-		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, llm.ErrUnsupportedClientMode)
+	if !errors.Is(err, ErrUnsupportedClientMode) {
+		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, ErrUnsupportedClientMode)
 	}
 }
 

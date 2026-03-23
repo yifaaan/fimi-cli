@@ -19,7 +19,7 @@ const (
 type configLoader func() (config.Config, error)
 type workDirResolver func() (string, error)
 type sessionOpener func(workDir string) (session.Session, bool, error)
-type llmClientBuilder func(mode string) (llm.Client, error)
+type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
 type startupStatePrinter func(
 	sess session.Session,
@@ -138,7 +138,7 @@ func defaultDependencies() dependencies {
 		loadConfig:        config.Load,
 		resolveWorkDir:    os.Getwd,
 		openSession:       session.OpenLatestOrCreate,
-		buildLLMClient:    llm.BuildClient,
+		buildLLMClient:    buildLLMClientFromConfig,
 		printStartupState: printStartupState,
 	}
 }
@@ -170,10 +170,10 @@ func buildRuntimeInput(cfg config.Config, input runInput) runtime.Input {
 func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
 	buildClient := d.buildLLMClient
 	if buildClient == nil {
-		buildClient = llm.BuildClient
+		buildClient = buildLLMClientFromConfig
 	}
 
-	client, err := buildClient(cfg.EngineMode)
+	client, err := buildClient(cfg)
 	if err != nil {
 		return llm.Engine{}, fmt.Errorf("build llm client: %w", err)
 	}

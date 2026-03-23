@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"errors"
 	"testing"
 
 	"fimi-cli/internal/runtime"
@@ -86,31 +85,5 @@ func TestNewPlaceholderClient(t *testing.T) {
 	}
 	if response.Text != "assistant placeholder reply: hello" {
 		t.Fatalf("Reply().Text = %q, want %q", response.Text, "assistant placeholder reply: hello")
-	}
-}
-
-func TestBuildClientUsesPlaceholderByDefault(t *testing.T) {
-	client, err := BuildClient("")
-	if err != nil {
-		t.Fatalf("BuildClient() error = %v", err)
-	}
-
-	response, err := client.Reply(Request{
-		Messages: []Message{
-			{Role: RoleUser, Content: "hello"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Reply() error = %v", err)
-	}
-	if response.Text != "assistant placeholder reply: hello" {
-		t.Fatalf("Reply().Text = %q, want %q", response.Text, "assistant placeholder reply: hello")
-	}
-}
-
-func TestBuildClientReturnsErrorForUnsupportedMode(t *testing.T) {
-	_, err := BuildClient("unsupported")
-	if !errors.Is(err, ErrUnsupportedClientMode) {
-		t.Fatalf("BuildClient() error = %v, want wrapped %v", err, ErrUnsupportedClientMode)
 	}
 }
