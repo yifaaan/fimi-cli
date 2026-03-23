@@ -9,7 +9,9 @@ import (
 
 func TestEngineReplyUsesClient(t *testing.T) {
 	engine := NewEngine(staticClient{
-		reply: "assistant placeholder reply: hello",
+		response: Response{
+			Text: "assistant placeholder reply: hello",
+		},
 	})
 
 	reply, err := engine.Reply(runtime.Input{Prompt: " hello "})
@@ -47,10 +49,10 @@ func TestNewEngineWithoutClientFails(t *testing.T) {
 }
 
 type staticClient struct {
-	reply string
-	err   error
+	response Response
+	err      error
 }
 
-func (c staticClient) ReplyText(prompt string) (string, error) {
-	return c.reply, c.err
+func (c staticClient) Reply(request Request) (Response, error) {
+	return c.response, c.err
 }

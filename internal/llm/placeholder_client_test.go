@@ -9,13 +9,13 @@ import (
 func TestPlaceholderClientReplyText(t *testing.T) {
 	client := PlaceholderClient{}
 
-	reply, err := client.ReplyText("hello")
+	response, err := client.Reply(Request{Prompt: "hello"})
 	if err != nil {
-		t.Fatalf("ReplyText() error = %v", err)
+		t.Fatalf("Reply() error = %v", err)
 	}
 
-	if reply != "assistant placeholder reply: hello" {
-		t.Fatalf("ReplyText() = %q, want %q", reply, "assistant placeholder reply: hello")
+	if response.Text != "assistant placeholder reply: hello" {
+		t.Fatalf("Reply().Text = %q, want %q", response.Text, "assistant placeholder reply: hello")
 	}
 }
 
