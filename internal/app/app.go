@@ -49,7 +49,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	state, err = applyRunInput(ctx, state, input)
+	state, err = appendUserPrompt(ctx, state, input)
 	if err != nil {
 		return err
 	}
@@ -73,8 +73,8 @@ func parseRunInput(args []string) runInput {
 	}
 }
 
-// applyRunInput 把解析后的 CLI 输入写入当前 session history。
-func applyRunInput(
+// appendUserPrompt 把用户 prompt 追加到当前 session history。
+func appendUserPrompt(
 	ctx contextstore.Context,
 	state startupState,
 	input runInput,
