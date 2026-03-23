@@ -84,11 +84,7 @@ func appendUserPrompt(
 	}
 
 	record := buildPromptRecord(input.prompt)
-	if err := ctx.Append(record); err != nil {
-		return startupState{}, fmt.Errorf("append prompt record: %w", err)
-	}
-
-	return advanceStartupState(state, record), nil
+	return appendRecord(ctx, state, record)
 }
 
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
@@ -102,6 +98,19 @@ func advanceStartupState(
 	state.hasLastRecord = true
 
 	return state
+}
+
+// appendRecord 负责把记录写入 history，并同步推进启动阶段内存状态。
+func appendRecord(
+	ctx contextstore.Context,
+	state startupState,
+	record contextstore.TextRecord,
+) (startupState, error) {
+	if err := ctx.Append(record); err != nil {
+		return startupState{}, fmt.Errorf("append history record: %w", err)
+	}
+
+	return advanceStartupState(state, record), nil
 }
 
 // buildInitialRecord 构造启动时写入 history 的第一条记录。
