@@ -44,9 +44,15 @@ func Run(args []string) error {
 		return fmt.Errorf("append initial history record: %w", err)
 	}
 
+	historyCount, err := ctx.Count()
+	if err != nil {
+		return fmt.Errorf("count history records: %w", err)
+	}
+
 	fmt.Printf("session: %s\n", sess.ID)
 	fmt.Printf("history: %s\n", ctx.Path())
 	fmt.Printf("history exists: %t\n", historyExists)
+	fmt.Printf("history records: %d\n", historyCount)
 
 	_ = cfg
 
