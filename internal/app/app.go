@@ -32,6 +32,11 @@ func Run(args []string) error {
 	}
 
 	ctx := contextstore.New(sess.HistoryFile)
+	historyExists, err := ctx.Exists()
+	if err != nil {
+		return fmt.Errorf("check history file existence: %w", err)
+	}
+
 	if err := ctx.Append(contextstore.TextRecord{
 		Role:    "system",
 		Content: "session initialized",
@@ -41,6 +46,7 @@ func Run(args []string) error {
 
 	fmt.Printf("session: %s\n", sess.ID)
 	fmt.Printf("history: %s\n", ctx.Path())
+	fmt.Printf("history exists: %t\n", historyExists)
 
 	_ = cfg
 
