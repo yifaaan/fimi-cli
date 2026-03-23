@@ -31,6 +31,19 @@ func (c Context) Path() string {
 	return c.historyFile
 }
 
+// Exists 返回当前上下文绑定的 history file 是否存在。
+func (c Context) Exists() (bool, error) {
+	_, err := os.Stat(c.historyFile)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("stat history file %q: %w", c.historyFile, err)
+}
+
 // Append 以 JSONL 形式向 history file 追加一条记录。
 func (c Context) Append(record TextRecord) error {
 	line, err := json.Marshal(record)
