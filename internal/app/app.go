@@ -51,12 +51,8 @@ func Run(args []string) error {
 		return err
 	}
 
-	engine := llm.NewPlaceholderEngine(llm.Config{
-		HistoryTurnLimit: cfg.HistoryWindow.LLMTurns,
-	})
-	runner := runtime.New(engine, runtime.Config{
-		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
-	})
+	engine := llm.NewPlaceholderEngine(buildLLMConfig(cfg))
+	runner := runtime.New(engine, buildRuntimeConfig(cfg))
 
 	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt:       input.prompt,
@@ -83,6 +79,20 @@ type runInput struct {
 func parseRunInput(args []string) runInput {
 	return runInput{
 		prompt: strings.TrimSpace(strings.Join(args, " ")),
+	}
+}
+
+// buildLLMConfig 把全局配置映射为 llm 模块自己的最小配置。
+func buildLLMConfig(cfg config.Config) llm.Config {
+	return llm.Config{
+		HistoryTurnLimit: cfg.HistoryWindow.LLMTurns,
+	}
+}
+
+// buildRuntimeConfig 把全局配置映射为 runtime 模块自己的最小配置。
+func buildRuntimeConfig(cfg config.Config) runtime.Config {
+	return runtime.Config{
+		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
 	}
 }
 
