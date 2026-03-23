@@ -36,6 +36,27 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	if client.gotRequest.SystemPrompt != "You are fimi, a coding agent." {
 		t.Fatalf("got Request.SystemPrompt = %q, want %q", client.gotRequest.SystemPrompt, "You are fimi, a coding agent.")
 	}
+	if len(client.gotRequest.Messages) != 2 {
+		t.Fatalf("len(Request.Messages) = %d, want 2", len(client.gotRequest.Messages))
+	}
+	if client.gotRequest.Messages[0] != (Message{
+		Role:    RoleSystem,
+		Content: "You are fimi, a coding agent.",
+	}) {
+		t.Fatalf("Request.Messages[0] = %#v, want %#v", client.gotRequest.Messages[0], Message{
+			Role:    RoleSystem,
+			Content: "You are fimi, a coding agent.",
+		})
+	}
+	if client.gotRequest.Messages[1] != (Message{
+		Role:    RoleUser,
+		Content: "hello",
+	}) {
+		t.Fatalf("Request.Messages[1] = %#v, want %#v", client.gotRequest.Messages[1], Message{
+			Role:    RoleUser,
+			Content: "hello",
+		})
+	}
 }
 
 func TestEngineReplyWrapsClientError(t *testing.T) {
@@ -59,6 +80,36 @@ func TestNewEngineWithoutClientFails(t *testing.T) {
 	}
 	if err.Error() != "llm client reply: llm client is required" {
 		t.Fatalf("Reply() error = %q, want %q", err.Error(), "llm client reply: llm client is required")
+	}
+}
+
+func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
+	client := &spyClient{
+		response: Response{
+			Text: "assistant placeholder reply: hello",
+		},
+	}
+	engine := NewEngine(client)
+
+	_, err := engine.Reply(runtime.Input{
+		Prompt: " hello ",
+		Model:  "kimi-k2-turbo-preview",
+	})
+	if err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+
+	if len(client.gotRequest.Messages) != 1 {
+		t.Fatalf("len(Request.Messages) = %d, want 1", len(client.gotRequest.Messages))
+	}
+	if client.gotRequest.Messages[0] != (Message{
+		Role:    RoleUser,
+		Content: "hello",
+	}) {
+		t.Fatalf("Request.Messages[0] = %#v, want %#v", client.gotRequest.Messages[0], Message{
+			Role:    RoleUser,
+			Content: "hello",
+		})
 	}
 }
 

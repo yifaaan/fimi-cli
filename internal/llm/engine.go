@@ -32,10 +32,12 @@ func NewEngine(client Client) Engine {
 
 // Reply 调用底层 llm client，为 runtime 生成 assistant 文本。
 func (e Engine) Reply(input runtime.Input) (string, error) {
+	prompt := strings.TrimSpace(input.Prompt)
 	request := Request{
-		Prompt:       strings.TrimSpace(input.Prompt),
+		Prompt:       prompt,
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,
+		Messages:     buildMessages(input.SystemPrompt, prompt),
 	}
 
 	response, err := e.client.Reply(request)
@@ -44,6 +46,23 @@ func (e Engine) Reply(input runtime.Input) (string, error) {
 	}
 
 	return response.Text, nil
+}
+
+func buildMessages(systemPrompt, prompt string) []Message {
+	messages := make([]Message, 0, 2)
+	if systemPrompt != "" {
+		messages = append(messages, Message{
+			Role:    RoleSystem,
+			Content: systemPrompt,
+		})
+	}
+
+	messages = append(messages, Message{
+		Role:    RoleUser,
+		Content: prompt,
+	})
+
+	return messages
 }
 
 type missingClient struct{}
