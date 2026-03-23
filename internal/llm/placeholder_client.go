@@ -23,11 +23,8 @@ func NewPlaceholderEngine() Engine {
 }
 
 func resolvePrompt(request Request) string {
-	for i := len(request.Messages) - 1; i >= 0; i-- {
-		message := request.Messages[i]
-		if message.Role == RoleUser {
-			return message.Content
-		}
+	if prompt, ok := lastUserMessage(request.Messages); ok {
+		return prompt
 	}
 
 	return request.Prompt

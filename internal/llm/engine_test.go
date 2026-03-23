@@ -111,6 +111,9 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 			Content: "hello",
 		})
 	}
+	if client.gotRequest.Prompt != "hello" {
+		t.Fatalf("got Request.Prompt = %q, want %q", client.gotRequest.Prompt, "hello")
+	}
 }
 
 type staticClient struct {

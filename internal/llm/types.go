@@ -12,7 +12,7 @@ type Message struct {
 }
 
 // Request 表示一次最小 LLM 调用请求。
-// 现在同时保留 prompt 和 messages，便于逐步过渡到聊天式请求协议。
+// Messages 是主协议；Prompt 只保留为兼容字段。
 type Request struct {
 	Prompt       string
 	Model        string
@@ -23,4 +23,15 @@ type Request struct {
 // Response 表示一次最小 LLM 调用响应。
 type Response struct {
 	Text string
+}
+
+func lastUserMessage(messages []Message) (string, bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if message.Role == RoleUser {
+			return message.Content, true
+		}
+	}
+
+	return "", false
 }
