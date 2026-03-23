@@ -13,6 +13,7 @@ import (
 const (
 	initialRecordRole    = "system"
 	initialRecordContent = "session initialized"
+	userPromptRole       = "user"
 )
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -51,6 +52,12 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	state, err = applyRunInput(ctx, state, input)
+	if err != nil {
+		return err
+	}
+
 	state.prompt = input.prompt
 	state.hasPrompt = input.hasPrompt
 
@@ -80,11 +87,42 @@ func parseRunInput(args []string) runInput {
 	}
 }
 
+// applyRunInput 把解析后的 CLI 输入写入当前 session history。
+func applyRunInput(
+	ctx contextstore.Context,
+	state startupState,
+	input runInput,
+) (startupState, error) {
+	if !input.hasPrompt {
+		return state, nil
+	}
+
+	record := buildPromptRecord(input.prompt)
+	if err := ctx.Append(record); err != nil {
+		return startupState{}, fmt.Errorf("append prompt record: %w", err)
+	}
+
+	state.historyExists = true
+	state.historyCount++
+	state.lastRecord = record
+	state.hasLastRecord = true
+
+	return state, nil
+}
+
 // buildInitialRecord 构造启动时写入 history 的第一条记录。
 func buildInitialRecord() contextstore.TextRecord {
 	return contextstore.TextRecord{
 		Role:    initialRecordRole,
 		Content: initialRecordContent,
+	}
+}
+
+// buildPromptRecord 构造用户输入对应的最小 history 记录。
+func buildPromptRecord(prompt string) contextstore.TextRecord {
+	return contextstore.TextRecord{
+		Role:    userPromptRole,
+		Content: prompt,
 	}
 }
 
