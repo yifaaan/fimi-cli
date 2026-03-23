@@ -105,18 +105,12 @@ func applyRunInput(
 
 // buildInitialRecord 构造启动时写入 history 的第一条记录。
 func buildInitialRecord() contextstore.TextRecord {
-	return contextstore.TextRecord{
-		Role:    contextstore.RoleSystem,
-		Content: initialRecordContent,
-	}
+	return contextstore.NewSystemTextRecord(initialRecordContent)
 }
 
 // buildPromptRecord 构造用户输入对应的最小 history 记录。
 func buildPromptRecord(prompt string) contextstore.TextRecord {
-	return contextstore.TextRecord{
-		Role:    contextstore.RoleUser,
-		Content: prompt,
-	}
+	return contextstore.NewUserTextRecord(prompt)
 }
 
 // bootstrapStartupState 统一完成启动期的 history 初始化与状态收集。

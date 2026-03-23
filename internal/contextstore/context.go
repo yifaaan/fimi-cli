@@ -38,6 +38,22 @@ func New(historyFile string) Context {
 	return Context{historyFile: historyFile}
 }
 
+// NewSystemTextRecord 为系统消息创建最小文本记录。
+func NewSystemTextRecord(content string) TextRecord {
+	return TextRecord{
+		Role:    RoleSystem,
+		Content: content,
+	}
+}
+
+// NewUserTextRecord 为用户消息创建最小文本记录。
+func NewUserTextRecord(content string) TextRecord {
+	return TextRecord{
+		Role:    RoleUser,
+		Content: content,
+	}
+}
+
 // Path 返回当前上下文绑定的 history file 路径。
 func (c Context) Path() string {
 	return c.historyFile
