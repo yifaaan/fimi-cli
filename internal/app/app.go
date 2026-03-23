@@ -14,7 +14,6 @@ import (
 
 const (
 	initialRecordContent = "session initialized"
-	defaultSystemPrompt  = "You are fimi, a coding agent."
 )
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -62,7 +61,7 @@ func Run(args []string) error {
 	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt:       input.prompt,
 		Model:        cfg.DefaultModel,
-		SystemPrompt: defaultSystemPrompt,
+		SystemPrompt: cfg.SystemPrompt,
 	})
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)
