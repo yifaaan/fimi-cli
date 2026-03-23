@@ -36,20 +36,36 @@ func Dir() (string, error) {
 	return filepath.Join(homeDir, ".local", "state", AppStateDirName), nil
 }
 
-// New 为工作目录创建一个新的 session。
-func New(workDir string) (Session, error) {
+// DirForWorkDir 返回某个工作目录对应的 sessions 子目录。
+// 同时返回归一化后的绝对工作目录，避免调用方重复解析。
+func DirForWorkDir(workDir string) (string, string, error) {
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
-		return Session{}, fmt.Errorf("resolve work dir %q: %w", workDir, err)
+		return "", "", fmt.Errorf("resolve work dir %q: %w", workDir, err)
 	}
 
 	sessionRoot, err := Dir()
 	if err != nil {
-		return Session{}, err
+		return "", "", err
 	}
 
 	workDirHash := md5.Sum([]byte(absWorkDir))
-	workDirSessionsDir := filepath.Join(sessionRoot, SessionsDirName, hex.EncodeToString(workDirHash[:]))
+	workDirSessionsDir := filepath.Join(
+		sessionRoot,
+		SessionsDirName,
+		hex.EncodeToString(workDirHash[:]),
+	)
+
+	return absWorkDir, workDirSessionsDir, nil
+}
+
+// New 为工作目录创建一个新的 session。
+func New(workDir string) (Session, error) {
+	absWorkDir, workDirSessionsDir, err := DirForWorkDir(workDir)
+	if err != nil {
+		return Session{}, err
+	}
+
 	if err := os.MkdirAll(workDirSessionsDir, 0o755); err != nil {
 		return Session{}, fmt.Errorf("create sessions dir %q: %w", workDirSessionsDir, err)
 	}
