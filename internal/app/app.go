@@ -7,12 +7,12 @@ import (
 
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
+	"fimi-cli/internal/runtime"
 	"fimi-cli/internal/session"
 )
 
 const (
-	initialRecordContent       = "session initialized"
-	assistantPlaceholderPrefix = "assistant placeholder reply:"
+	initialRecordContent = "session initialized"
 )
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -50,15 +50,14 @@ func Run(args []string) error {
 		return err
 	}
 
-	state, err = appendUserPrompt(ctx, state, input)
+	runResult, err := runtime.Run(ctx, runtime.Input{
+		Prompt: input.prompt,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("run runtime: %w", err)
 	}
 
-	state, err = appendAssistantPlaceholder(ctx, state, input)
-	if err != nil {
-		return err
-	}
+	state = applyRuntimeResult(state, runResult)
 
 	printStartupState(sess, ctx, state, sessionReused)
 
@@ -79,35 +78,6 @@ func parseRunInput(args []string) runInput {
 	}
 }
 
-// appendUserPrompt 把用户 prompt 追加到当前 session history。
-func appendUserPrompt(
-	ctx contextstore.Context,
-	state startupState,
-	input runInput,
-) (startupState, error) {
-	if input.prompt == "" {
-		return state, nil
-	}
-
-	record := buildPromptRecord(input.prompt)
-	return appendRecord(ctx, state, record)
-}
-
-// appendAssistantPlaceholder 在用户 prompt 后追加一条最小 assistant 占位记录。
-func appendAssistantPlaceholder(
-	ctx contextstore.Context,
-	state startupState,
-	input runInput,
-) (startupState, error) {
-	if input.prompt == "" {
-		return state, nil
-	}
-
-	reply := buildAssistantPlaceholderReply(input)
-	record := buildAssistantPlaceholderRecord(reply)
-	return appendRecord(ctx, state, record)
-}
-
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
 func advanceStartupState(
 	state startupState,
@@ -121,37 +91,18 @@ func advanceStartupState(
 	return state
 }
 
-// appendRecord 负责把记录写入 history，并同步推进启动阶段内存状态。
-func appendRecord(
-	ctx contextstore.Context,
-	state startupState,
-	record contextstore.TextRecord,
-) (startupState, error) {
-	if err := ctx.Append(record); err != nil {
-		return startupState{}, fmt.Errorf("append history record: %w", err)
-	}
-
-	return advanceStartupState(state, record), nil
-}
-
 // buildInitialRecord 构造启动时写入 history 的第一条记录。
 func buildInitialRecord() contextstore.TextRecord {
 	return contextstore.NewSystemTextRecord(initialRecordContent)
 }
 
-// buildPromptRecord 构造用户输入对应的最小 history 记录。
-func buildPromptRecord(prompt string) contextstore.TextRecord {
-	return contextstore.NewUserTextRecord(prompt)
-}
+// applyRuntimeResult 把 runtime 的输出折叠回当前启动阶段状态。
+func applyRuntimeResult(state startupState, result runtime.Result) startupState {
+	for _, record := range result.AppendedRecords {
+		state = advanceStartupState(state, record)
+	}
 
-// buildAssistantPlaceholderReply 生成最小 assistant 占位回复文本。
-func buildAssistantPlaceholderReply(input runInput) string {
-	return fmt.Sprintf("%s %s", assistantPlaceholderPrefix, input.prompt)
-}
-
-// buildAssistantPlaceholderRecord 构造最小 assistant 占位回复记录。
-func buildAssistantPlaceholderRecord(reply string) contextstore.TextRecord {
-	return contextstore.NewAssistantTextRecord(reply)
+	return state
 }
 
 // bootstrapStartupState 统一完成启动期的 history 初始化与状态收集。
