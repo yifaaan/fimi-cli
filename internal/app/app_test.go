@@ -1,10 +1,12 @@
 package app
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"fimi-cli/internal/config"
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 )
 
@@ -51,5 +53,43 @@ func TestBuildRuntimeInput(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildRuntimeInput() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "custom-model",
+		SystemPrompt: "You are the configured agent.",
+		HistoryWindow: config.HistoryWindow{
+			RuntimeTurns: 2,
+			LLMTurns:     1,
+		},
+	}
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := buildRunner(cfg)
+
+	result, err := runner.Run(ctx, runtime.Input{
+		Prompt:       "hello",
+		Model:        cfg.DefaultModel,
+		SystemPrompt: cfg.SystemPrompt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	wantResult := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("hello"),
+		contextstore.NewAssistantTextRecord("assistant placeholder reply: hello"),
+	}
+	if !reflect.DeepEqual(result.AppendedRecords, wantResult) {
+		t.Fatalf("Run().AppendedRecords = %#v, want %#v", result.AppendedRecords, wantResult)
+	}
+
+	records, err := ctx.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !reflect.DeepEqual(records, wantResult) {
+		t.Fatalf("history records = %#v, want %#v", records, wantResult)
 	}
 }

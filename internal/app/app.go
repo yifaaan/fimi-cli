@@ -51,8 +51,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	engine := llm.NewPlaceholderEngine(buildLLMConfig(cfg))
-	runner := runtime.New(engine, buildRuntimeConfig(cfg))
+	runner := buildRunner(cfg)
 
 	runResult, err := runner.Run(ctx, buildRuntimeInput(cfg, input))
 	if err != nil {
@@ -99,6 +98,16 @@ func buildRuntimeInput(cfg config.Config, input runInput) runtime.Input {
 		Model:        cfg.DefaultModel,
 		SystemPrompt: cfg.SystemPrompt,
 	}
+}
+
+// buildEngine 负责装配当前默认的 llm engine。
+func buildEngine(cfg config.Config) llm.Engine {
+	return llm.NewPlaceholderEngine(buildLLMConfig(cfg))
+}
+
+// buildRunner 负责装配一次 runtime 执行所需的核心依赖。
+func buildRunner(cfg config.Config) runtime.Runner {
+	return runtime.New(buildEngine(cfg), buildRuntimeConfig(cfg))
 }
 
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
