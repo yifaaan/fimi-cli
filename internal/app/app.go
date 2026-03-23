@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	initialRecordContent      = "session initialized"
-	assistantPlaceholderReply = "assistant placeholder reply"
+	initialRecordContent       = "session initialized"
+	assistantPlaceholderPrefix = "assistant placeholder reply:"
 )
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -146,9 +146,7 @@ func buildPromptRecord(prompt string) contextstore.TextRecord {
 
 // buildAssistantPlaceholderReply 生成最小 assistant 占位回复文本。
 func buildAssistantPlaceholderReply(input runInput) string {
-	_ = input
-
-	return assistantPlaceholderReply
+	return fmt.Sprintf("%s %s", assistantPlaceholderPrefix, input.prompt)
 }
 
 // buildAssistantPlaceholderRecord 构造最小 assistant 占位回复记录。
