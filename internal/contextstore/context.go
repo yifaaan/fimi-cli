@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	RoleSystem = "system"
-	RoleUser   = "user"
+	RoleSystem    = "system"
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
 )
 
 // TextRecord 是当前最小可持久化的历史记录模型。
@@ -50,6 +51,14 @@ func NewSystemTextRecord(content string) TextRecord {
 func NewUserTextRecord(content string) TextRecord {
 	return TextRecord{
 		Role:    RoleUser,
+		Content: content,
+	}
+}
+
+// NewAssistantTextRecord 为 assistant 消息创建最小文本记录。
+func NewAssistantTextRecord(content string) TextRecord {
+	return TextRecord{
+		Role:    RoleAssistant,
 		Content: content,
 	}
 }
