@@ -48,12 +48,17 @@ const (
 	AppConfigDirName      = "fimi"
 	DefaultConfigFileName = "config.json"
 	DefaultModelName      = "kimi-k2-turbo-preview"
-	DefaultProviderName   = "placeholder"
 	DefaultSystemPrompt   = "You are fimi, a coding agent."
 	DefaultMaxStepsPerRun = 100
 	DefaultMaxRetries     = 3
 	DefaultRuntimeTurns   = 4
 	DefaultLLMTurns       = 2
+)
+
+const (
+	ProviderTypePlaceholder = "placeholder"
+	ProviderTypeQWEN        = "qwen"
+	DefaultProviderName     = ProviderTypePlaceholder
 )
 
 // Default 返回内建默认配置。
@@ -78,7 +83,7 @@ func Default() Config {
 		// 提供示例 provider 配置结构，方便用户参考
 		Providers: map[string]ProviderConfig{
 			"qwen": {
-				Type: "qwen",
+				Type: ProviderTypeQWEN,
 				// APIKey 留空，用户需要自己填写
 				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 			},

@@ -35,8 +35,8 @@ func TestDefaultIncludesHistoryWindow(t *testing.T) {
 	if !ok {
 		t.Fatalf("Default().Providers[\"qwen\"] not found")
 	}
-	if qwenProvider.Type != "qwen" {
-		t.Fatalf("Default().Providers[\"qwen\"].Type = %q, want %q", qwenProvider.Type, "qwen")
+	if qwenProvider.Type != ProviderTypeQWEN {
+		t.Fatalf("Default().Providers[\"qwen\"].Type = %q, want %q", qwenProvider.Type, ProviderTypeQWEN)
 	}
 }
 
@@ -139,8 +139,8 @@ func TestLoadFileParsesProviders(t *testing.T) {
 	if !ok {
 		t.Fatalf("LoadFile().Models[\"qwen-plus\"] not found")
 	}
-	if modelCfg.Provider != "qwen" {
-		t.Fatalf("LoadFile().Models[\"qwen-plus\"].Provider = %q, want %q", modelCfg.Provider, "qwen")
+	if modelCfg.Provider != ProviderTypeQWEN {
+		t.Fatalf("LoadFile().Models[\"qwen-plus\"].Provider = %q, want %q", modelCfg.Provider, ProviderTypeQWEN)
 	}
 	if modelCfg.Model != "qwen-plus" {
 		t.Fatalf("LoadFile().Models[\"qwen-plus\"].Model = %q, want %q", modelCfg.Model, "qwen-plus")
@@ -155,8 +155,8 @@ func TestLoadFileParsesProviders(t *testing.T) {
 	if qwenCfg.APIKey != "sk-test-key" {
 		t.Fatalf("LoadFile().Providers[\"qwen\"].APIKey = %q, want %q", qwenCfg.APIKey, "sk-test-key")
 	}
-	if qwenCfg.Type != "qwen" {
-		t.Fatalf("LoadFile().Providers[\"qwen\"].Type = %q, want %q", qwenCfg.Type, "qwen")
+	if qwenCfg.Type != ProviderTypeQWEN {
+		t.Fatalf("LoadFile().Providers[\"qwen\"].Type = %q, want %q", qwenCfg.Type, ProviderTypeQWEN)
 	}
 	if qwenCfg.BaseURL != "https://dashscope.aliyuncs.com/compatible-mode/v1" {
 		t.Fatalf("LoadFile().Providers[\"qwen\"].BaseURL = %q, want %q", qwenCfg.BaseURL, "https://dashscope.aliyuncs.com/compatible-mode/v1")

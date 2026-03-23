@@ -65,7 +65,7 @@ func TestBuildRuntimeInputUsesConfiguredModelName(t *testing.T) {
 		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"primary": {
-				Provider: "qwen",
+				Provider: config.ProviderTypeQWEN,
 				Model:    "qwen-plus",
 			},
 		},
@@ -91,7 +91,7 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"primary": {
-				Provider: "qwen",
+				Provider: config.ProviderTypeQWEN,
 			},
 		},
 	}
@@ -132,7 +132,7 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 				SystemPrompt: "You are the configured agent.",
 				Models: map[string]config.ModelConfig{
 					"custom-model": {
-						Provider: "placeholder",
+						Provider: config.ProviderTypePlaceholder,
 						Model:    "custom-model",
 					},
 				},
@@ -432,7 +432,7 @@ func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
 		DefaultModel: config.DefaultModelName,
 		Models: map[string]config.ModelConfig{
 			config.DefaultModelName: {
-				Provider: "placeholder",
+				Provider: config.ProviderTypePlaceholder,
 				Model:    config.DefaultModelName,
 			},
 		},
@@ -468,7 +468,7 @@ func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
 		DefaultModel: "custom-model",
 		Models: map[string]config.ModelConfig{
 			"custom-model": {
-				Provider: "placeholder",
+				Provider: config.ProviderTypePlaceholder,
 				Model:    "custom-model",
 			},
 		},
@@ -483,8 +483,8 @@ func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
 	if gotCfg.DefaultModel != "custom-model" {
 		t.Fatalf("builder got DefaultModel = %q, want %q", gotCfg.DefaultModel, "custom-model")
 	}
-	if gotCfg.Models["custom-model"].Provider != "placeholder" {
-		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, "placeholder")
+	if gotCfg.Models["custom-model"].Provider != config.ProviderTypePlaceholder {
+		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, config.ProviderTypePlaceholder)
 	}
 
 	reply, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
@@ -511,8 +511,39 @@ func TestBuildEngineReturnsErrorForUnsupportedMode(t *testing.T) {
 			},
 		},
 	})
-	if !errors.Is(err, ErrUnsupportedClientMode) {
-		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, ErrUnsupportedClientMode)
+	if !errors.Is(err, ErrUnsupportedProviderType) {
+		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, ErrUnsupportedProviderType)
+	}
+}
+
+func TestBuildLLMClientForProviderReturnsErrorForUnsupportedType(t *testing.T) {
+	_, err := buildLLMClientForProvider(
+		"custom-provider",
+		config.ProviderConfig{Type: "unsupported"},
+		config.ModelConfig{Model: "broken-model"},
+	)
+	if !errors.Is(err, ErrUnsupportedProviderType) {
+		t.Fatalf("buildLLMClientForProvider() error = %v, want wrapped %v", err, ErrUnsupportedProviderType)
+	}
+}
+
+func TestBuildLLMClientForProviderUsesQWENBuilder(t *testing.T) {
+	_, err := buildLLMClientForProvider(
+		"aliyun-prod",
+		config.ProviderConfig{
+			Type:    config.ProviderTypeQWEN,
+			BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		},
+		config.ModelConfig{
+			Model: "qwen-plus",
+		},
+	)
+	if err == nil {
+		t.Fatalf("buildLLMClientForProvider() error = nil, want non-nil")
+	}
+	want := "qwen api_key is required; set providers.aliyun-prod.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)"
+	if err.Error() != want {
+		t.Fatalf("buildLLMClientForProvider() error = %q, want %q", err.Error(), want)
 	}
 }
 
@@ -527,7 +558,7 @@ func TestBuildEngineResolvesProviderByTypeNotProviderName(t *testing.T) {
 		},
 		Providers: map[string]config.ProviderConfig{
 			"aliyun-prod": {
-				Type:    "qwen",
+				Type:    config.ProviderTypeQWEN,
 				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 			},
 		},
@@ -547,7 +578,7 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"custom-model": {
-				Provider: "placeholder",
+				Provider: config.ProviderTypePlaceholder,
 				Model:    "custom-model",
 			},
 		},
@@ -601,7 +632,7 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"custom-model": {
-				Provider: "placeholder",
+				Provider: config.ProviderTypePlaceholder,
 				Model:    "custom-model",
 			},
 		},
@@ -625,8 +656,8 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 	if gotCfg.DefaultModel != "custom-model" {
 		t.Fatalf("builder got DefaultModel = %q, want %q", gotCfg.DefaultModel, "custom-model")
 	}
-	if gotCfg.Models["custom-model"].Provider != "placeholder" {
-		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, "placeholder")
+	if gotCfg.Models["custom-model"].Provider != config.ProviderTypePlaceholder {
+		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, config.ProviderTypePlaceholder)
 	}
 }
 
@@ -645,8 +676,8 @@ func TestBuildRunnerReturnsErrorForUnsupportedMode(t *testing.T) {
 			},
 		},
 	})
-	if !errors.Is(err, ErrUnsupportedClientMode) {
-		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, ErrUnsupportedClientMode)
+	if !errors.Is(err, ErrUnsupportedProviderType) {
+		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, ErrUnsupportedProviderType)
 	}
 }
 

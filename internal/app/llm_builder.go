@@ -9,8 +9,8 @@ import (
 	"fimi-cli/internal/llm/qwen"
 )
 
-// ErrUnsupportedClientMode 表示当前 llm client 构造器不支持给定 provider 类型。
-var ErrUnsupportedClientMode = errors.New("unsupported llm client mode")
+// ErrUnsupportedProviderType 表示当前 llm client 构造器不支持给定 provider 类型。
+var ErrUnsupportedProviderType = errors.New("unsupported provider type")
 
 // buildLLMClientFromConfig 根据 config 构造具体 llm client。
 // 这是 app 层的构建逻辑，避免 llm 包反向依赖 config 和具体 provider。
@@ -28,11 +28,20 @@ func buildLLMClientFromConfig(cfg config.Config) (llm.Client, error) {
 		return nil, err
 	}
 
+	return buildLLMClientForProvider(providerName, providerCfg, modelCfg)
+}
+
+// buildLLMClientForProvider 根据 provider 类型分发到具体适配器构造器。
+func buildLLMClientForProvider(
+	providerName string,
+	providerCfg config.ProviderConfig,
+	modelCfg config.ModelConfig,
+) (llm.Client, error) {
 	switch providerCfg.Type {
-	case "qwen":
+	case config.ProviderTypeQWEN:
 		return buildQwenClient(providerName, providerCfg, modelCfg)
 	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientMode, providerCfg.Type)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProviderType, providerCfg.Type)
 	}
 }
 
