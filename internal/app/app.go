@@ -51,7 +51,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	state, err := loadStartupState(sess, ctx)
+	state, err := loadStartupState(ctx)
 	if err != nil {
 		return err
 	}
@@ -91,8 +91,8 @@ func ensureInitialRecord(ctx contextstore.Context) (bool, error) {
 }
 
 // loadStartupState 收集启动阶段需要展示的状态信息。
-func loadStartupState(sess session.Session, ctx contextstore.Context) (startupState, error) {
-	historyExists, err := sess.HistoryExists()
+func loadStartupState(ctx contextstore.Context) (startupState, error) {
+	historyExists, err := ctx.Exists()
 	if err != nil {
 		return startupState{}, fmt.Errorf("check history file existence: %w", err)
 	}
