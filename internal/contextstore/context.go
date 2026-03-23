@@ -26,6 +26,11 @@ func New(historyFile string) Context {
 	return Context{historyFile: historyFile}
 }
 
+// Path 返回当前上下文绑定的 history file 路径。
+func (c Context) Path() string {
+	return c.historyFile
+}
+
 // Append 以 JSONL 形式向 history file 追加一条记录。
 func (c Context) Append(record TextRecord) error {
 	line, err := json.Marshal(record)
