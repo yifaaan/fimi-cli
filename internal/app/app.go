@@ -16,12 +16,26 @@ const (
 	initialRecordContent = "session initialized"
 )
 
+type configLoader func() (config.Config, error)
+type workDirResolver func() (string, error)
+type sessionOpener func(workDir string) (session.Session, bool, error)
 type llmClientBuilder func(mode string) (llm.Client, error)
+type startupStatePrinter func(
+	sess session.Session,
+	ctx contextstore.Context,
+	state startupState,
+	sessionReused bool,
+	model string,
+)
 
 // dependencies 表示 app 装配层当前持有的可替换依赖。
-// 这里先只暴露 LLM client builder，后面接真实 provider 时不用改 runtime。
+// 这些依赖都属于进程边界或适配器装配，收进来之后 Run 才容易测试。
 type dependencies struct {
-	buildLLMClient llmClientBuilder
+	loadConfig        configLoader
+	resolveWorkDir    workDirResolver
+	openSession       sessionOpener
+	buildLLMClient    llmClientBuilder
+	printStartupState startupStatePrinter
 }
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -36,20 +50,38 @@ type startupState struct {
 // Run 是当前应用装配层的最小入口。
 // 现在它还不执行 agent，只负责把 CLI 入口稳定下来。
 func Run(args []string) error {
-	cfg, err := config.Load()
+	return defaultDependencies().run(args)
+}
+
+func (d dependencies) run(args []string) error {
+	loadConfig := d.loadConfig
+	if loadConfig == nil {
+		loadConfig = config.Load
+	}
+
+	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	deps := defaultDependencies()
 
 	input := parseRunInput(args)
 
-	workDir, err := os.Getwd()
+	resolveWorkDir := d.resolveWorkDir
+	if resolveWorkDir == nil {
+		resolveWorkDir = os.Getwd
+	}
+
+	workDir, err := resolveWorkDir()
 	if err != nil {
 		return fmt.Errorf("get current work dir: %w", err)
 	}
 
-	sess, sessionReused, err := session.OpenLatestOrCreate(workDir)
+	openSession := d.openSession
+	if openSession == nil {
+		openSession = session.OpenLatestOrCreate
+	}
+
+	sess, sessionReused, err := openSession(workDir)
 	if err != nil {
 		return fmt.Errorf("open session: %w", err)
 	}
@@ -60,7 +92,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	runner, err := deps.buildRunner(cfg)
+	runner, err := d.buildRunner(cfg)
 	if err != nil {
 		return err
 	}
@@ -72,7 +104,11 @@ func Run(args []string) error {
 
 	state = applyRuntimeResult(state, runResult)
 
-	printStartupState(sess, ctx, state, sessionReused, cfg.DefaultModel)
+	printState := d.printStartupState
+	if printState == nil {
+		printState = printStartupState
+	}
+	printState(sess, ctx, state, sessionReused, cfg.DefaultModel)
 
 	return nil
 }
@@ -91,7 +127,11 @@ func parseRunInput(args []string) runInput {
 
 func defaultDependencies() dependencies {
 	return dependencies{
-		buildLLMClient: llm.BuildClient,
+		loadConfig:        config.Load,
+		resolveWorkDir:    os.Getwd,
+		openSession:       session.OpenLatestOrCreate,
+		buildLLMClient:    llm.BuildClient,
+		printStartupState: printStartupState,
 	}
 }
 
