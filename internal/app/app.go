@@ -39,8 +39,10 @@ func Run(args []string) error {
 		return fmt.Errorf("append initial history record: %w", err)
 	}
 
+	fmt.Printf("session: %s\n", sess.ID)
+	fmt.Printf("history: %s\n", ctx.Path())
+
 	_ = cfg
-	_ = sess
 
 	return nil
 }
