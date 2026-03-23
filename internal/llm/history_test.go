@@ -37,14 +37,46 @@ func TestBuildHistoryMessagesKeepsRecentConversation(t *testing.T) {
 		contextstore.NewAssistantTextRecord("first reply"),
 		contextstore.NewUserTextRecord("second"),
 		contextstore.NewAssistantTextRecord("second reply"),
+		contextstore.NewUserTextRecord("third"),
+		contextstore.NewAssistantTextRecord("third reply"),
 	}
 
 	got := buildHistoryMessages(records, 2)
 	want := []Message{
 		{Role: RoleUser, Content: "second"},
 		{Role: RoleAssistant, Content: "second reply"},
+		{Role: RoleUser, Content: "third"},
+		{Role: RoleAssistant, Content: "third reply"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildHistoryMessages() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildHistoryMessagesDropsLeadingAssistantAtWindowBoundary(t *testing.T) {
+	records := []contextstore.TextRecord{
+		contextstore.NewSystemTextRecord("boot"),
+		contextstore.NewUserTextRecord("first"),
+		contextstore.NewAssistantTextRecord("first reply"),
+		contextstore.NewUserTextRecord("second"),
+		contextstore.NewAssistantTextRecord("second reply"),
+	}
+
+	got := buildHistoryMessages(records, 1)
+	want := []Message{
+		{Role: RoleUser, Content: "second"},
+		{Role: RoleAssistant, Content: "second reply"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildHistoryMessages() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildHistoryMessagesReturnsEmptyWhenLimitNonPositive(t *testing.T) {
+	got := buildHistoryMessages([]contextstore.TextRecord{
+		contextstore.NewUserTextRecord("hello"),
+	}, 0)
+	if len(got) != 0 {
+		t.Fatalf("len(buildHistoryMessages()) = %d, want 0", len(got))
 	}
 }

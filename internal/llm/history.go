@@ -2,24 +2,45 @@ package llm
 
 import "fimi-cli/internal/contextstore"
 
-const historyMessageLimit = 2
+const historyTurnLimit = 2
 
 func buildHistoryMessages(records []contextstore.TextRecord, limit int) []Message {
+	if limit <= 0 {
+		return []Message{}
+	}
+
 	messages := make([]Message, 0, len(records))
+	turnCount := 0
 	for _, record := range records {
 		message, ok := textRecordToMessage(record)
 		if !ok {
 			continue
 		}
+
 		messages = append(messages, message)
+		if message.Role == RoleUser {
+			turnCount++
+		}
+
+		messages = dropLeadingNonUserMessages(messages)
+		for turnCount > limit && len(messages) > 0 {
+			if messages[0].Role == RoleUser {
+				turnCount--
+			}
+			messages = messages[1:]
+			messages = dropLeadingNonUserMessages(messages)
+		}
 	}
 
-	if len(messages) <= limit {
-		return messages
+	return messages
+}
+
+func dropLeadingNonUserMessages(messages []Message) []Message {
+	for len(messages) > 0 && messages[0].Role != RoleUser {
+		messages = messages[1:]
 	}
 
-	// 先只截取最近几条对话历史，避免过早引入完整窗口裁剪策略。
-	return messages[len(messages)-limit:]
+	return messages
 }
 
 func textRecordToMessage(record contextstore.TextRecord) (Message, bool) {

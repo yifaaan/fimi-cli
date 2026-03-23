@@ -53,7 +53,7 @@ func buildMessages(
 	history []contextstore.TextRecord,
 	prompt string,
 ) []Message {
-	messages := make([]Message, 0, 1+historyMessageLimit+1)
+	messages := make([]Message, 0, 1+historyTurnLimit*2+1)
 	if systemPrompt != "" {
 		messages = append(messages, Message{
 			Role:    RoleSystem,
@@ -61,7 +61,7 @@ func buildMessages(
 		})
 	}
 
-	messages = append(messages, buildHistoryMessages(history, historyMessageLimit)...)
+	messages = append(messages, buildHistoryMessages(history, historyTurnLimit)...)
 	messages = append(messages, Message{
 		Role:    RoleUser,
 		Content: prompt,
