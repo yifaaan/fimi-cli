@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	initialRecordContent = "session initialized"
+	initialRecordContent      = "session initialized"
+	assistantPlaceholderReply = "assistant placeholder reply"
 )
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -54,6 +55,11 @@ func Run(args []string) error {
 		return err
 	}
 
+	state, err = appendAssistantPlaceholder(ctx, state, input)
+	if err != nil {
+		return err
+	}
+
 	printStartupState(sess, ctx, state)
 
 	_ = cfg
@@ -84,6 +90,20 @@ func appendUserPrompt(
 	}
 
 	record := buildPromptRecord(input.prompt)
+	return appendRecord(ctx, state, record)
+}
+
+// appendAssistantPlaceholder 在用户 prompt 后追加一条最小 assistant 占位记录。
+func appendAssistantPlaceholder(
+	ctx contextstore.Context,
+	state startupState,
+	input runInput,
+) (startupState, error) {
+	if input.prompt == "" {
+		return state, nil
+	}
+
+	record := buildAssistantPlaceholderRecord()
 	return appendRecord(ctx, state, record)
 }
 
@@ -121,6 +141,11 @@ func buildInitialRecord() contextstore.TextRecord {
 // buildPromptRecord 构造用户输入对应的最小 history 记录。
 func buildPromptRecord(prompt string) contextstore.TextRecord {
 	return contextstore.NewUserTextRecord(prompt)
+}
+
+// buildAssistantPlaceholderRecord 构造最小 assistant 占位回复记录。
+func buildAssistantPlaceholderRecord() contextstore.TextRecord {
+	return contextstore.NewAssistantTextRecord(assistantPlaceholderReply)
 }
 
 // bootstrapStartupState 统一完成启动期的 history 初始化与状态收集。
