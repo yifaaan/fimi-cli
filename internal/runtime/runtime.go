@@ -52,6 +52,7 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 
 	assistantReply, err := r.engine.Reply(Input{
 		Prompt: prompt,
+		Model:  input.Model,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("build assistant reply: %w", err)
