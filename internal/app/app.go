@@ -20,6 +20,7 @@ type configLoader func() (config.Config, error)
 type workDirResolver func() (string, error)
 type sessionOpener func(workDir string) (session.Session, bool, error)
 type llmClientBuilder func(mode string) (llm.Client, error)
+type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
 type startupStatePrinter func(
 	sess session.Session,
 	ctx contextstore.Context,
@@ -28,14 +29,21 @@ type startupStatePrinter func(
 	model string,
 )
 
+// runtimeRunner 是 app 对 runtime 的最小消费边界。
+// 在消费方定义接口，避免 app 依赖 runtime 的具体装配细节。
+type runtimeRunner interface {
+	Run(ctx contextstore.Context, input runtime.Input) (runtime.Result, error)
+}
+
 // dependencies 表示 app 装配层当前持有的可替换依赖。
 // 这些依赖都属于进程边界或适配器装配，收进来之后 Run 才容易测试。
 type dependencies struct {
-	loadConfig        configLoader
-	resolveWorkDir    workDirResolver
-	openSession       sessionOpener
-	buildLLMClient    llmClientBuilder
-	printStartupState startupStatePrinter
+	loadConfig         configLoader
+	resolveWorkDir     workDirResolver
+	openSession        sessionOpener
+	buildLLMClient     llmClientBuilder
+	buildRuntimeRunner runtimeRunnerBuilder
+	printStartupState  startupStatePrinter
 }
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -174,10 +182,14 @@ func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
 }
 
 // buildRunner 负责装配一次 runtime 执行所需的核心依赖。
-func (d dependencies) buildRunner(cfg config.Config) (runtime.Runner, error) {
+func (d dependencies) buildRunner(cfg config.Config) (runtimeRunner, error) {
+	if d.buildRuntimeRunner != nil {
+		return d.buildRuntimeRunner(cfg)
+	}
+
 	engine, err := d.buildEngine(cfg)
 	if err != nil {
-		return runtime.Runner{}, err
+		return nil, err
 	}
 
 	return runtime.New(engine, buildRuntimeConfig(cfg)), nil
@@ -187,7 +199,7 @@ func buildEngine(cfg config.Config) (llm.Engine, error) {
 	return defaultDependencies().buildEngine(cfg)
 }
 
-func buildRunner(cfg config.Config) (runtime.Runner, error) {
+func buildRunner(cfg config.Config) (runtimeRunner, error) {
 	return defaultDependencies().buildRunner(cfg)
 }
 

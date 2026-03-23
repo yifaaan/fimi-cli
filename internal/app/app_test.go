@@ -176,17 +176,198 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	}
 }
 
-func TestDependenciesRunWrapsConfigError(t *testing.T) {
-	wantErr := errors.New("config failed")
+func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	runner := &stubRunner{
+		result: runtime.Result{
+			AppendedRecords: []contextstore.TextRecord{
+				contextstore.NewUserTextRecord("fix tests"),
+				contextstore.NewAssistantTextRecord("runner reply"),
+			},
+		},
+		appendToContext: true,
+	}
+	var gotCfg config.Config
+	var printed startupState
+
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
-			return config.Config{}, wantErr
+			return config.Config{
+				DefaultModel: "custom-model",
+				SystemPrompt: "You are the configured agent.",
+				HistoryWindow: config.HistoryWindow{
+					RuntimeTurns: 4,
+				},
+			}, nil
+		},
+		resolveWorkDir: func() (string, error) {
+			return "/tmp/fimi-project", nil
+		},
+		openSession: func(workDir string) (session.Session, bool, error) {
+			return session.Session{
+				ID:          "session-456",
+				WorkDir:     workDir,
+				HistoryFile: historyFile,
+			}, false, nil
+		},
+		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+			gotCfg = cfg
+			return runner, nil
+		},
+		printStartupState: func(
+			sess session.Session,
+			ctx contextstore.Context,
+			state startupState,
+			sessionReused bool,
+			model string,
+		) {
+			printed = state
 		},
 	}
 
-	err := deps.run(nil)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("run() error = %v, want wrapped %v", err, wantErr)
+	err := deps.run([]string{"fix", "tests"})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if gotCfg.DefaultModel != "custom-model" {
+		t.Fatalf("runner builder got DefaultModel = %q, want %q", gotCfg.DefaultModel, "custom-model")
+	}
+	if !reflect.DeepEqual(runner.gotInput, runtime.Input{
+		Prompt:       "fix tests",
+		Model:        "custom-model",
+		SystemPrompt: "You are the configured agent.",
+	}) {
+		t.Fatalf("runner got Input = %#v, want %#v", runner.gotInput, runtime.Input{
+			Prompt:       "fix tests",
+			Model:        "custom-model",
+			SystemPrompt: "You are the configured agent.",
+		})
+	}
+	if runner.gotCtx.Path() != historyFile {
+		t.Fatalf("runner got history path = %q, want %q", runner.gotCtx.Path(), historyFile)
+	}
+	if printed.historyCount != 3 {
+		t.Fatalf("printed historyCount = %d, want %d", printed.historyCount, 3)
+	}
+	if printed.lastRecord != contextstore.NewAssistantTextRecord("runner reply") {
+		t.Fatalf("printed lastRecord = %#v, want %#v", printed.lastRecord, contextstore.NewAssistantTextRecord("runner reply"))
+	}
+}
+
+func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
+	errConfigFailed := errors.New("config failed")
+	errGetWDFailed := errors.New("getwd failed")
+	errOpenSessionFailed := errors.New("open session failed")
+	errBuildRunnerFailed := errors.New("build runner failed")
+	errRunnerFailed := errors.New("runner failed")
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) dependencies
+		wantErr error
+	}{
+		{
+			name: "load config",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Config{}, errConfigFailed
+					},
+				}
+			},
+			wantErr: errConfigFailed,
+		},
+		{
+			name: "resolve work dir",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Default(), nil
+					},
+					resolveWorkDir: func() (string, error) {
+						return "", errGetWDFailed
+					},
+				}
+			},
+			wantErr: errGetWDFailed,
+		},
+		{
+			name: "open session",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Default(), nil
+					},
+					resolveWorkDir: func() (string, error) {
+						return "/tmp/fimi-project", nil
+					},
+					openSession: func(workDir string) (session.Session, bool, error) {
+						return session.Session{}, false, errOpenSessionFailed
+					},
+				}
+			},
+			wantErr: errOpenSessionFailed,
+		},
+		{
+			name: "build runner",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Default(), nil
+					},
+					resolveWorkDir: func() (string, error) {
+						return "/tmp/fimi-project", nil
+					},
+					openSession: func(workDir string) (session.Session, bool, error) {
+						return session.Session{
+							ID:          "session-123",
+							WorkDir:     workDir,
+							HistoryFile: filepath.Join(t.TempDir(), "history.jsonl"),
+						}, true, nil
+					},
+					buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+						return nil, errBuildRunnerFailed
+					},
+				}
+			},
+			wantErr: errBuildRunnerFailed,
+		},
+		{
+			name: "run runtime",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Default(), nil
+					},
+					resolveWorkDir: func() (string, error) {
+						return "/tmp/fimi-project", nil
+					},
+					openSession: func(workDir string) (session.Session, bool, error) {
+						return session.Session{
+							ID:          "session-123",
+							WorkDir:     workDir,
+							HistoryFile: filepath.Join(t.TempDir(), "history.jsonl"),
+						}, true, nil
+					},
+					buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+						return &stubRunner{err: errRunnerFailed}, nil
+					},
+				}
+			},
+			wantErr: errRunnerFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := tt.setup(t)
+
+			err := deps.run([]string{"fix", "tests"})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("run() error = %v, want wrapped %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -334,4 +515,30 @@ func TestBuildRunnerReturnsErrorForUnsupportedMode(t *testing.T) {
 	if !errors.Is(err, llm.ErrUnsupportedClientMode) {
 		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, llm.ErrUnsupportedClientMode)
 	}
+}
+
+type stubRunner struct {
+	gotCtx          contextstore.Context
+	gotInput        runtime.Input
+	result          runtime.Result
+	err             error
+	appendToContext bool
+}
+
+func (r *stubRunner) Run(ctx contextstore.Context, input runtime.Input) (runtime.Result, error) {
+	r.gotCtx = ctx
+	r.gotInput = input
+	if r.err != nil {
+		return runtime.Result{}, r.err
+	}
+
+	if r.appendToContext {
+		for _, record := range r.result.AppendedRecords {
+			if err := ctx.Append(record); err != nil {
+				return runtime.Result{}, err
+			}
+		}
+	}
+
+	return r.result, nil
 }
