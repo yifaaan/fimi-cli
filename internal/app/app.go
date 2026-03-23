@@ -74,12 +74,12 @@ func buildInitialRecord() contextstore.TextRecord {
 
 // ensureInitialRecord 只在 history 为空时写入启动种子记录。
 func ensureInitialRecord(ctx contextstore.Context) (bool, error) {
-	historyCount, err := ctx.Count()
+	snapshot, err := ctx.Snapshot()
 	if err != nil {
-		return false, fmt.Errorf("count history records before bootstrap: %w", err)
+		return false, fmt.Errorf("read history snapshot before bootstrap: %w", err)
 	}
 
-	if historyCount > 0 {
+	if snapshot.Count > 0 {
 		return false, nil
 	}
 
@@ -97,21 +97,16 @@ func loadStartupState(sess session.Session, ctx contextstore.Context) (startupSt
 		return startupState{}, fmt.Errorf("check history file existence: %w", err)
 	}
 
-	historyCount, err := ctx.Count()
+	snapshot, err := ctx.Snapshot()
 	if err != nil {
-		return startupState{}, fmt.Errorf("count history records: %w", err)
-	}
-
-	lastRecord, ok, err := ctx.Last()
-	if err != nil {
-		return startupState{}, fmt.Errorf("read last history record: %w", err)
+		return startupState{}, fmt.Errorf("read history snapshot: %w", err)
 	}
 
 	return startupState{
 		historyExists: historyExists,
-		historyCount:  historyCount,
-		lastRecord:    lastRecord,
-		hasLastRecord: ok,
+		historyCount:  snapshot.Count,
+		lastRecord:    snapshot.LastRecord,
+		hasLastRecord: snapshot.HasLastRecord,
 	}, nil
 }
 
