@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -51,7 +52,10 @@ func Run(args []string) error {
 		return err
 	}
 
-	runner := buildRunner(cfg)
+	runner, err := buildRunner(cfg)
+	if err != nil {
+		return err
+	}
 
 	runResult, err := runner.Run(ctx, buildRuntimeInput(cfg, input))
 	if err != nil {
@@ -101,14 +105,26 @@ func buildRuntimeInput(cfg config.Config, input runInput) runtime.Input {
 }
 
 // buildEngine 负责装配当前默认的 llm engine。
-func buildEngine(cfg config.Config) llm.Engine {
-	return llm.NewPlaceholderEngine(buildLLMConfig(cfg))
+func buildEngine(cfg config.Config) (llm.Engine, error) {
+	switch cfg.EngineMode {
+	case "", config.DefaultEngineMode:
+		return llm.NewPlaceholderEngine(buildLLMConfig(cfg)), nil
+	default:
+		return llm.Engine{}, fmt.Errorf("%w: %s", errUnsupportedEngineMode, cfg.EngineMode)
+	}
 }
 
 // buildRunner 负责装配一次 runtime 执行所需的核心依赖。
-func buildRunner(cfg config.Config) runtime.Runner {
-	return runtime.New(buildEngine(cfg), buildRuntimeConfig(cfg))
+func buildRunner(cfg config.Config) (runtime.Runner, error) {
+	engine, err := buildEngine(cfg)
+	if err != nil {
+		return runtime.Runner{}, err
+	}
+
+	return runtime.New(engine, buildRuntimeConfig(cfg)), nil
 }
+
+var errUnsupportedEngineMode = errors.New("unsupported engine mode")
 
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
 func advanceStartupState(

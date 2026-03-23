@@ -9,6 +9,9 @@ import (
 func TestDefaultIncludesHistoryWindow(t *testing.T) {
 	cfg := Default()
 
+	if cfg.EngineMode != DefaultEngineMode {
+		t.Fatalf("Default().EngineMode = %q, want %q", cfg.EngineMode, DefaultEngineMode)
+	}
 	if cfg.SystemPrompt != DefaultSystemPrompt {
 		t.Fatalf("Default().SystemPrompt = %q, want %q", cfg.SystemPrompt, DefaultSystemPrompt)
 	}
@@ -52,6 +55,9 @@ func TestLoadFileMergesHistoryWindowWithDefaults(t *testing.T) {
 
 	if cfg.DefaultModel != "custom-model" {
 		t.Fatalf("LoadFile().DefaultModel = %q, want %q", cfg.DefaultModel, "custom-model")
+	}
+	if cfg.EngineMode != DefaultEngineMode {
+		t.Fatalf("LoadFile().EngineMode = %q, want %q", cfg.EngineMode, DefaultEngineMode)
 	}
 	if cfg.SystemPrompt != "You are the configured agent." {
 		t.Fatalf("LoadFile().SystemPrompt = %q, want %q", cfg.SystemPrompt, "You are the configured agent.")

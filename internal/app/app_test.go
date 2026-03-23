@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -56,6 +57,36 @@ func TestBuildRuntimeInput(t *testing.T) {
 	}
 }
 
+func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
+	cfg := config.Config{
+		HistoryWindow: config.HistoryWindow{
+			LLMTurns: 3,
+		},
+	}
+
+	engine, err := buildEngine(cfg)
+	if err != nil {
+		t.Fatalf("buildEngine() error = %v", err)
+	}
+
+	reply, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+	if reply != "assistant placeholder reply: hello" {
+		t.Fatalf("Reply() = %q, want %q", reply, "assistant placeholder reply: hello")
+	}
+}
+
+func TestBuildEngineReturnsErrorForUnsupportedMode(t *testing.T) {
+	_, err := buildEngine(config.Config{
+		EngineMode: "unsupported",
+	})
+	if !errors.Is(err, errUnsupportedEngineMode) {
+		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, errUnsupportedEngineMode)
+	}
+}
+
 func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "custom-model",
@@ -66,7 +97,10 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 		},
 	}
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	runner := buildRunner(cfg)
+	runner, err := buildRunner(cfg)
+	if err != nil {
+		t.Fatalf("buildRunner() error = %v", err)
+	}
 
 	result, err := runner.Run(ctx, runtime.Input{
 		Prompt:       "hello",
@@ -91,5 +125,14 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 	}
 	if !reflect.DeepEqual(records, wantResult) {
 		t.Fatalf("history records = %#v, want %#v", records, wantResult)
+	}
+}
+
+func TestBuildRunnerReturnsErrorForUnsupportedMode(t *testing.T) {
+	_, err := buildRunner(config.Config{
+		EngineMode: "unsupported",
+	})
+	if !errors.Is(err, errUnsupportedEngineMode) {
+		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, errUnsupportedEngineMode)
 	}
 }
