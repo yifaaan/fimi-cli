@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,19 @@ type Session struct {
 	ID          string
 	WorkDir     string
 	HistoryFile string
+}
+
+// HistoryExists 返回当前 session 的 history file 是否存在。
+func (s Session) HistoryExists() (bool, error) {
+	_, err := os.Stat(s.HistoryFile)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("stat history file %q: %w", s.HistoryFile, err)
 }
 
 // Dir 返回会话状态根目录。
