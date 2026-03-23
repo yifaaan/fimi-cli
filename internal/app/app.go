@@ -156,38 +156,17 @@ func buildAssistantPlaceholderRecord(reply string) contextstore.TextRecord {
 
 // bootstrapStartupState 统一完成启动期的 history 初始化与状态收集。
 func bootstrapStartupState(ctx contextstore.Context) (startupState, error) {
-	historyExists, err := ctx.Exists()
+	result, err := ctx.Bootstrap(buildInitialRecord())
 	if err != nil {
-		return startupState{}, fmt.Errorf("check history file existence: %w", err)
-	}
-
-	snapshot, err := ctx.Snapshot()
-	if err != nil {
-		return startupState{}, fmt.Errorf("read history snapshot before bootstrap: %w", err)
-	}
-
-	historySeeded := false
-	if snapshot.Count == 0 {
-		initialRecord := buildInitialRecord()
-		if err := ctx.Append(initialRecord); err != nil {
-			return startupState{}, fmt.Errorf("append initial history record: %w", err)
-		}
-
-		historyExists = true
-		historySeeded = true
-		snapshot = contextstore.Snapshot{
-			Count:         1,
-			LastRecord:    initialRecord,
-			HasLastRecord: true,
-		}
+		return startupState{}, fmt.Errorf("bootstrap history: %w", err)
 	}
 
 	return startupState{
-		historyExists: historyExists,
-		historySeeded: historySeeded,
-		historyCount:  snapshot.Count,
-		lastRecord:    snapshot.LastRecord,
-		hasLastRecord: snapshot.HasLastRecord,
+		historyExists: result.HistoryExists,
+		historySeeded: result.HistorySeeded,
+		historyCount:  result.Snapshot.Count,
+		lastRecord:    result.Snapshot.LastRecord,
+		hasLastRecord: result.Snapshot.HasLastRecord,
 	}, nil
 }
 

@@ -29,6 +29,13 @@ type Snapshot struct {
 	HasLastRecord bool
 }
 
+// BootstrapResult 表示初始化 history 后的结果。
+type BootstrapResult struct {
+	HistoryExists bool
+	HistorySeeded bool
+	Snapshot      Snapshot
+}
+
 // Context 管理某个 history file 的追加写入。
 type Context struct {
 	historyFile string
@@ -170,6 +177,43 @@ func (c Context) Count() (int, error) {
 	}
 
 	return len(records), nil
+}
+
+// Bootstrap 确保 history 至少包含一条初始记录。
+// 如果 history 为空，就写入 initialRecord，并返回初始化后的摘要。
+func (c Context) Bootstrap(initialRecord TextRecord) (BootstrapResult, error) {
+	historyExists, err := c.Exists()
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("check history file existence: %w", err)
+	}
+
+	snapshot, err := c.Snapshot()
+	if err != nil {
+		return BootstrapResult{}, fmt.Errorf("read history snapshot before bootstrap: %w", err)
+	}
+
+	result := BootstrapResult{
+		HistoryExists: historyExists,
+		HistorySeeded: false,
+		Snapshot:      snapshot,
+	}
+	if snapshot.Count != 0 {
+		return result, nil
+	}
+
+	if err := c.Append(initialRecord); err != nil {
+		return BootstrapResult{}, fmt.Errorf("append initial history record: %w", err)
+	}
+
+	return BootstrapResult{
+		HistoryExists: true,
+		HistorySeeded: true,
+		Snapshot: Snapshot{
+			Count:         1,
+			LastRecord:    initialRecord,
+			HasLastRecord: true,
+		},
+	}, nil
 }
 
 // Snapshot 返回 history 的数量和最后一条记录。
