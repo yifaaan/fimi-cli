@@ -51,7 +51,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	runner := runtime.New(llm.PlaceholderEngine{})
+	runner := runtime.New(llm.NewPlaceholderEngine())
 
 	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt: input.prompt,
