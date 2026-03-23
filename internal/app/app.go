@@ -23,8 +23,6 @@ type startupState struct {
 	historyCount  int
 	lastRecord    contextstore.TextRecord
 	hasLastRecord bool
-	prompt        string
-	hasPrompt     bool
 }
 
 // Run 是当前应用装配层的最小入口。
@@ -57,9 +55,6 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	state.prompt = input.prompt
-	state.hasPrompt = input.hasPrompt
 
 	printStartupState(sess, ctx, state)
 
@@ -177,8 +172,5 @@ func printStartupState(
 	if state.hasLastRecord {
 		fmt.Printf("last history role: %s\n", state.lastRecord.Role)
 		fmt.Printf("last history content: %s\n", state.lastRecord.Content)
-	}
-	if state.hasPrompt {
-		fmt.Printf("prompt: %s\n", state.prompt)
 	}
 }
