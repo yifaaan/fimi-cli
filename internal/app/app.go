@@ -55,6 +55,7 @@ func Run(args []string) error {
 
 	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt: input.prompt,
+		Model:  cfg.DefaultModel,
 	})
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)
@@ -62,9 +63,7 @@ func Run(args []string) error {
 
 	state = applyRuntimeResult(state, runResult)
 
-	printStartupState(sess, ctx, state, sessionReused)
-
-	_ = cfg
+	printStartupState(sess, ctx, state, sessionReused, cfg.DefaultModel)
 
 	return nil
 }
@@ -130,9 +129,11 @@ func printStartupState(
 	ctx contextstore.Context,
 	state startupState,
 	sessionReused bool,
+	model string,
 ) {
 	fmt.Printf("session: %s\n", sess.ID)
 	fmt.Printf("session reused: %t\n", sessionReused)
+	fmt.Printf("model: %s\n", model)
 	fmt.Printf("history: %s\n", ctx.Path())
 	fmt.Printf("history exists: %t\n", state.historyExists)
 	fmt.Printf("history seeded: %t\n", state.historySeeded)

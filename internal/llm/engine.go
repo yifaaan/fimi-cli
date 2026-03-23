@@ -34,6 +34,7 @@ func NewEngine(client Client) Engine {
 func (e Engine) Reply(input runtime.Input) (string, error) {
 	request := Request{
 		Prompt: strings.TrimSpace(input.Prompt),
+		Model:  input.Model,
 	}
 
 	response, err := e.client.Reply(request)

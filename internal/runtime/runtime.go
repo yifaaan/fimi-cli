@@ -11,6 +11,7 @@ import (
 // Input 表示单次 runtime 执行的最小输入。
 type Input struct {
 	Prompt string
+	Model  string
 }
 
 // Result 表示单次 runtime 追加到 history 的记录。
