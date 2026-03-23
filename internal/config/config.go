@@ -8,14 +8,21 @@ import (
 	"path/filepath"
 )
 
+// ProviderConfig 存储单个 LLM provider 的配置。
+type ProviderConfig struct {
+	APIKey  string `json:"api_key"`
+	BaseURL string `json:"base_url"`
+}
+
 // Config 表示应用当前最小可用的配置集合。
 // 现在只保留后续 runtime 一定会依赖的基础字段。
 type Config struct {
-	DefaultModel  string        `json:"default_model"`
-	EngineMode    string        `json:"engine_mode"`
-	SystemPrompt  string        `json:"system_prompt"`
-	LoopControl   LoopControl   `json:"loop_control"`
-	HistoryWindow HistoryWindow `json:"history_window"`
+	DefaultModel  string                    `json:"default_model"`
+	EngineMode    string                    `json:"engine_mode"`
+	SystemPrompt  string                    `json:"system_prompt"`
+	LoopControl   LoopControl               `json:"loop_control"`
+	HistoryWindow HistoryWindow             `json:"history_window"`
+	Providers     map[string]ProviderConfig `json:"providers"`
 }
 
 // LoopControl 对应 Python 版本里的 agent loop 控制参数。

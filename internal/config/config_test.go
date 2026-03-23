@@ -31,8 +31,15 @@ func TestLoadFileReturnsDefaultWhenMissing(t *testing.T) {
 		t.Fatalf("LoadFile() error = %v", err)
 	}
 
-	if cfg != Default() {
-		t.Fatalf("LoadFile() = %#v, want %#v", cfg, Default())
+	// 因为包含 map，不能直接比较整个结构体，检查关键字段
+	if cfg.DefaultModel != DefaultModelName {
+		t.Fatalf("LoadFile().DefaultModel = %q, want %q", cfg.DefaultModel, DefaultModelName)
+	}
+	if cfg.EngineMode != DefaultEngineMode {
+		t.Fatalf("LoadFile().EngineMode = %q, want %q", cfg.EngineMode, DefaultEngineMode)
+	}
+	if cfg.SystemPrompt != DefaultSystemPrompt {
+		t.Fatalf("LoadFile().SystemPrompt = %q, want %q", cfg.SystemPrompt, DefaultSystemPrompt)
 	}
 }
 
@@ -67,5 +74,42 @@ func TestLoadFileMergesHistoryWindowWithDefaults(t *testing.T) {
 	}
 	if cfg.HistoryWindow.LLMTurns != 5 {
 		t.Fatalf("LoadFile().HistoryWindow.LLMTurns = %d, want %d", cfg.HistoryWindow.LLMTurns, 5)
+	}
+}
+
+func TestLoadFileParsesProviders(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configFile, []byte(`{
+		"engine_mode": "qwen",
+		"providers": {
+			"qwen": {
+				"api_key": "sk-test-key",
+				"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", configFile, err)
+	}
+
+	cfg, err := LoadFile(configFile)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+
+	if cfg.EngineMode != "qwen" {
+		t.Fatalf("LoadFile().EngineMode = %q, want %q", cfg.EngineMode, "qwen")
+	}
+	if cfg.Providers == nil {
+		t.Fatalf("LoadFile().Providers = nil, want non-nil")
+	}
+	qwenCfg, ok := cfg.Providers["qwen"]
+	if !ok {
+		t.Fatalf("LoadFile().Providers[\"qwen\"] not found")
+	}
+	if qwenCfg.APIKey != "sk-test-key" {
+		t.Fatalf("LoadFile().Providers[\"qwen\"].APIKey = %q, want %q", qwenCfg.APIKey, "sk-test-key")
+	}
+	if qwenCfg.BaseURL != "https://dashscope.aliyuncs.com/compatible-mode/v1" {
+		t.Fatalf("LoadFile().Providers[\"qwen\"].BaseURL = %q, want %q", qwenCfg.BaseURL, "https://dashscope.aliyuncs.com/compatible-mode/v1")
 	}
 }
