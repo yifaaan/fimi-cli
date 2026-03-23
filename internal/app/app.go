@@ -88,12 +88,20 @@ func appendUserPrompt(
 		return startupState{}, fmt.Errorf("append prompt record: %w", err)
 	}
 
+	return advanceStartupState(state, record), nil
+}
+
+// advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
+func advanceStartupState(
+	state startupState,
+	record contextstore.TextRecord,
+) startupState {
 	state.historyExists = true
 	state.historyCount++
 	state.lastRecord = record
 	state.hasLastRecord = true
 
-	return state, nil
+	return state
 }
 
 // buildInitialRecord 构造启动时写入 history 的第一条记录。
