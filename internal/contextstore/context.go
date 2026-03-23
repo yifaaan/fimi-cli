@@ -9,6 +9,11 @@ import (
 	"path/filepath"
 )
 
+const (
+	RoleSystem = "system"
+	RoleUser   = "user"
+)
+
 // TextRecord 是当前最小可持久化的历史记录模型。
 // 先只支持纯文本内容，后面再扩展多种消息 part。
 type TextRecord struct {

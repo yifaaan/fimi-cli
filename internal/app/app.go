@@ -11,9 +11,7 @@ import (
 )
 
 const (
-	initialRecordRole    = "system"
 	initialRecordContent = "session initialized"
-	userPromptRole       = "user"
 )
 
 // startupState 聚合启动阶段需要展示的状态信息。
@@ -108,7 +106,7 @@ func applyRunInput(
 // buildInitialRecord 构造启动时写入 history 的第一条记录。
 func buildInitialRecord() contextstore.TextRecord {
 	return contextstore.TextRecord{
-		Role:    initialRecordRole,
+		Role:    contextstore.RoleSystem,
 		Content: initialRecordContent,
 	}
 }
@@ -116,7 +114,7 @@ func buildInitialRecord() contextstore.TextRecord {
 // buildPromptRecord 构造用户输入对应的最小 history 记录。
 func buildPromptRecord(prompt string) contextstore.TextRecord {
 	return contextstore.TextRecord{
-		Role:    userPromptRole,
+		Role:    contextstore.RoleUser,
 		Content: prompt,
 	}
 }
