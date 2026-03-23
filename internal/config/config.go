@@ -63,6 +63,13 @@ func Default() Config {
 			RuntimeTurns: DefaultRuntimeTurns,
 			LLMTurns:     DefaultLLMTurns,
 		},
+		// 提供示例 provider 配置结构，方便用户参考
+		Providers: map[string]ProviderConfig{
+			"qwen": {
+				// APIKey 留空，用户需要自己填写
+				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+			},
+		},
 	}
 }
 

@@ -41,6 +41,12 @@ func TestLoadFileReturnsDefaultWhenMissing(t *testing.T) {
 	if cfg.SystemPrompt != DefaultSystemPrompt {
 		t.Fatalf("LoadFile().SystemPrompt = %q, want %q", cfg.SystemPrompt, DefaultSystemPrompt)
 	}
+	if cfg.Providers == nil {
+		t.Fatalf("LoadFile().Providers = nil, want non-nil")
+	}
+	if _, ok := cfg.Providers["qwen"]; !ok {
+		t.Fatalf("LoadFile().Providers[\"qwen\"] not found")
+	}
 }
 
 func TestLoadFileMergesHistoryWindowWithDefaults(t *testing.T) {

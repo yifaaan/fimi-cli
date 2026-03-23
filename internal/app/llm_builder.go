@@ -29,10 +29,10 @@ func buildLLMClientFromConfig(cfg config.Config) (llm.Client, error) {
 func buildQwenClient(cfg config.Config) (llm.Client, error) {
 	providerCfg, ok := cfg.Providers["qwen"]
 	if !ok {
-		return nil, fmt.Errorf("qwen provider config not found")
+		return nil, fmt.Errorf("qwen provider config not found in config file; add a \"providers.qwen\" section to your ~/.config/fimi/config.json")
 	}
 	if providerCfg.APIKey == "" {
-		return nil, fmt.Errorf("qwen api_key is required")
+		return nil, fmt.Errorf("qwen api_key is required; set providers.qwen.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)")
 	}
 
 	return qwen.NewClient(qwen.Config{
