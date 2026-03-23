@@ -59,6 +59,11 @@ func DirForWorkDir(workDir string) (string, string, error) {
 	return absWorkDir, workDirSessionsDir, nil
 }
 
+// HistoryFileForSession 返回某个 session 对应的 history file 路径。
+func HistoryFileForSession(sessionsDir, sessionID string) string {
+	return filepath.Join(sessionsDir, sessionID+HistoryFileExtName)
+}
+
 // New 为工作目录创建一个新的 session。
 func New(workDir string) (Session, error) {
 	absWorkDir, workDirSessionsDir, err := DirForWorkDir(workDir)
@@ -75,7 +80,7 @@ func New(workDir string) (Session, error) {
 		return Session{}, err
 	}
 
-	historyFile := filepath.Join(workDirSessionsDir, sessionID+HistoryFileExtName)
+	historyFile := HistoryFileForSession(workDirSessionsDir, sessionID)
 
 	return Session{
 		ID:          sessionID,
