@@ -54,11 +54,7 @@ func Run(args []string) error {
 	engine := llm.NewPlaceholderEngine(buildLLMConfig(cfg))
 	runner := runtime.New(engine, buildRuntimeConfig(cfg))
 
-	runResult, err := runner.Run(ctx, runtime.Input{
-		Prompt:       input.prompt,
-		Model:        cfg.DefaultModel,
-		SystemPrompt: cfg.SystemPrompt,
-	})
+	runResult, err := runner.Run(ctx, buildRuntimeInput(cfg, input))
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)
 	}
@@ -93,6 +89,15 @@ func buildLLMConfig(cfg config.Config) llm.Config {
 func buildRuntimeConfig(cfg config.Config) runtime.Config {
 	return runtime.Config{
 		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
+	}
+}
+
+// buildRuntimeInput 把应用输入和全局配置映射为单次 runtime 调用输入。
+func buildRuntimeInput(cfg config.Config, input runInput) runtime.Input {
+	return runtime.Input{
+		Prompt:       input.prompt,
+		Model:        cfg.DefaultModel,
+		SystemPrompt: cfg.SystemPrompt,
 	}
 }
 
