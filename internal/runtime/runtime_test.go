@@ -11,6 +11,13 @@ import (
 
 func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	if err := ctx.Append(contextstore.NewUserTextRecord("previous")); err != nil {
+		t.Fatalf("Append(previous user) error = %v", err)
+	}
+	if err := ctx.Append(contextstore.NewAssistantTextRecord("previous reply")); err != nil {
+		t.Fatalf("Append(previous assistant) error = %v", err)
+	}
+
 	engine := &spyEngine{
 		reply: "assistant placeholder reply: hello",
 	}
@@ -20,10 +27,6 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 		Prompt:       " hello ",
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
-		History: []contextstore.TextRecord{
-			contextstore.NewUserTextRecord("previous"),
-			contextstore.NewAssistantTextRecord("previous reply"),
-		},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -38,17 +41,23 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
 
-	if len(records) != 2 {
-		t.Fatalf("len(history records) = %d, want 2", len(records))
+	if len(records) != 4 {
+		t.Fatalf("len(history records) = %d, want 4", len(records))
 	}
 
-	if records[0] != contextstore.NewUserTextRecord("hello") {
-		t.Fatalf("records[0] = %#v, want %#v", records[0], contextstore.NewUserTextRecord("hello"))
+	if records[0] != contextstore.NewUserTextRecord("previous") {
+		t.Fatalf("records[0] = %#v, want %#v", records[0], contextstore.NewUserTextRecord("previous"))
+	}
+	if records[1] != contextstore.NewAssistantTextRecord("previous reply") {
+		t.Fatalf("records[1] = %#v, want %#v", records[1], contextstore.NewAssistantTextRecord("previous reply"))
+	}
+	if records[2] != contextstore.NewUserTextRecord("hello") {
+		t.Fatalf("records[2] = %#v, want %#v", records[2], contextstore.NewUserTextRecord("hello"))
 	}
 
 	wantAssistant := contextstore.NewAssistantTextRecord("assistant placeholder reply: hello")
-	if records[1] != wantAssistant {
-		t.Fatalf("records[1] = %#v, want %#v", records[1], wantAssistant)
+	if records[3] != wantAssistant {
+		t.Fatalf("records[3] = %#v, want %#v", records[3], wantAssistant)
 	}
 	if engine.gotInput.Prompt != "hello" {
 		t.Fatalf("engine got Prompt = %q, want %q", engine.gotInput.Prompt, "hello")
@@ -128,7 +137,7 @@ type staticEngine struct {
 	err   error
 }
 
-func (e staticEngine) Reply(input Input) (string, error) {
+func (e staticEngine) Reply(input ReplyInput) (string, error) {
 	return e.reply, e.err
 }
 
@@ -136,18 +145,18 @@ type trackingEngine struct {
 	called bool
 }
 
-func (e *trackingEngine) Reply(input Input) (string, error) {
+func (e *trackingEngine) Reply(input ReplyInput) (string, error) {
 	e.called = true
 	return "unused", nil
 }
 
 type spyEngine struct {
-	gotInput Input
+	gotInput ReplyInput
 	reply    string
 	err      error
 }
 
-func (e *spyEngine) Reply(input Input) (string, error) {
+func (e *spyEngine) Reply(input ReplyInput) (string, error) {
 	e.gotInput = input
 	return e.reply, e.err
 }

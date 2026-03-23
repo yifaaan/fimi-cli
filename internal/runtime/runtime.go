@@ -13,6 +13,14 @@ type Input struct {
 	Prompt       string
 	Model        string
 	SystemPrompt string
+}
+
+// ReplyInput 表示 runtime 传给 engine 的富化输入。
+// 这里把 history 放在内部边界上，避免调用方自己拼装上下文。
+type ReplyInput struct {
+	Prompt       string
+	Model        string
+	SystemPrompt string
 	History      []contextstore.TextRecord
 }
 
@@ -24,7 +32,7 @@ type Result struct {
 // Engine 负责为 runtime 生成 assistant 回复文本。
 // 这里先保持最小接口，后面再扩展为真正的模型调用边界。
 type Engine interface {
-	Reply(input Input) (string, error)
+	Reply(input ReplyInput) (string, error)
 }
 
 // Runner 持有一次 runtime 执行所需的核心依赖。
@@ -52,11 +60,16 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 		return Result{}, nil
 	}
 
-	assistantReply, err := r.engine.Reply(Input{
+	history, err := ctx.ReadAll()
+	if err != nil {
+		return Result{}, fmt.Errorf("read runtime history: %w", err)
+	}
+
+	assistantReply, err := r.engine.Reply(ReplyInput{
 		Prompt:       prompt,
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,
-		History:      input.History,
+		History:      history,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("build assistant reply: %w", err)
@@ -80,6 +93,6 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 
 type missingEngine struct{}
 
-func (missingEngine) Reply(input Input) (string, error) {
+func (missingEngine) Reply(input ReplyInput) (string, error) {
 	return "", errors.New("runtime engine is required")
 }

@@ -62,7 +62,7 @@ func TestPlaceholderClientReplyUsesEmptyPromptWithoutUserMessage(t *testing.T) {
 func TestNewPlaceholderEngine(t *testing.T) {
 	engine := NewPlaceholderEngine()
 
-	reply, err := engine.Reply(runtime.Input{Prompt: "hello"})
+	reply, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}

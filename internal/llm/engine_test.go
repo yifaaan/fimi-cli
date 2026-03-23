@@ -16,7 +16,7 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	}
 	engine := NewEngine(client)
 
-	reply, err := engine.Reply(runtime.Input{
+	reply, err := engine.Reply(runtime.ReplyInput{
 		Prompt:       " hello ",
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
@@ -93,7 +93,7 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 		err: wantErr,
 	})
 
-	_, err := engine.Reply(runtime.Input{Prompt: "hello"})
+	_, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Reply() error = %v, want wrapped %v", err, wantErr)
 	}
@@ -102,7 +102,7 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 func TestNewEngineWithoutClientFails(t *testing.T) {
 	engine := NewEngine(nil)
 
-	_, err := engine.Reply(runtime.Input{Prompt: "hello"})
+	_, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
 	if err == nil {
 		t.Fatalf("Reply() error = nil, want non-nil")
 	}
@@ -119,9 +119,9 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 	}
 	engine := NewEngine(client)
 
-	_, err := engine.Reply(runtime.Input{
-		Prompt: " hello ",
-		Model:  "kimi-k2-turbo-preview",
+	_, err := engine.Reply(runtime.ReplyInput{
+		Prompt:       " hello ",
+		Model:        "kimi-k2-turbo-preview",
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("previous"),
 			contextstore.NewAssistantTextRecord("previous reply"),

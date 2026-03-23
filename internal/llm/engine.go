@@ -32,7 +32,7 @@ func NewEngine(client Client) Engine {
 }
 
 // Reply 调用底层 llm client，为 runtime 生成 assistant 文本。
-func (e Engine) Reply(input runtime.Input) (string, error) {
+func (e Engine) Reply(input runtime.ReplyInput) (string, error) {
 	fallbackPrompt := strings.TrimSpace(input.Prompt)
 	request := Request{
 		Model:        input.Model,
