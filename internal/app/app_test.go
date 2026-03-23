@@ -8,6 +8,7 @@ import (
 
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
+	"fimi-cli/internal/llm"
 	"fimi-cli/internal/runtime"
 )
 
@@ -82,8 +83,8 @@ func TestBuildEngineReturnsErrorForUnsupportedMode(t *testing.T) {
 	_, err := buildEngine(config.Config{
 		EngineMode: "unsupported",
 	})
-	if !errors.Is(err, errUnsupportedEngineMode) {
-		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, errUnsupportedEngineMode)
+	if !errors.Is(err, llm.ErrUnsupportedClientMode) {
+		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, llm.ErrUnsupportedClientMode)
 	}
 }
 
@@ -132,7 +133,7 @@ func TestBuildRunnerReturnsErrorForUnsupportedMode(t *testing.T) {
 	_, err := buildRunner(config.Config{
 		EngineMode: "unsupported",
 	})
-	if !errors.Is(err, errUnsupportedEngineMode) {
-		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, errUnsupportedEngineMode)
+	if !errors.Is(err, llm.ErrUnsupportedClientMode) {
+		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, llm.ErrUnsupportedClientMode)
 	}
 }
