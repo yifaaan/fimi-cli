@@ -111,3 +111,13 @@ func (c Context) Last() (TextRecord, bool, error) {
 
 	return records[len(records)-1], true, nil
 }
+
+// Count 返回当前 history 中的记录总数。
+func (c Context) Count() (int, error) {
+	records, err := c.ReadAll()
+	if err != nil {
+		return 0, err
+	}
+
+	return len(records), nil
+}
