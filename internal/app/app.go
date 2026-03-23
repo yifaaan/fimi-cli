@@ -50,7 +50,9 @@ func Run(args []string) error {
 		return err
 	}
 
-	runResult, err := runtime.Run(ctx, runtime.Input{
+	runner := runtime.New(runtime.PlaceholderEngine{})
+
+	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt: input.prompt,
 	})
 	if err != nil {

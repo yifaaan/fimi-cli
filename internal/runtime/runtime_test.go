@@ -1,16 +1,20 @@
 package runtime
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"fimi-cli/internal/contextstore"
 )
 
-func TestRunAppendsPromptAndPlaceholder(t *testing.T) {
+func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{
+		reply: "assistant placeholder reply: hello",
+	})
 
-	result, err := Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -38,16 +42,22 @@ func TestRunAppendsPromptAndPlaceholder(t *testing.T) {
 	}
 }
 
-func TestRunSkipsEmptyPrompt(t *testing.T) {
+func TestRunnerRunSkipsEmptyPrompt(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	engine := &trackingEngine{}
+	runner := New(engine)
 
-	result, err := Run(ctx, Input{Prompt: "   "})
+	result, err := runner.Run(ctx, Input{Prompt: "   "})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
 	if len(result.AppendedRecords) != 0 {
 		t.Fatalf("len(AppendedRecords) = %d, want 0", len(result.AppendedRecords))
+	}
+
+	if engine.called {
+		t.Fatalf("engine called = true, want false")
 	}
 
 	count, err := ctx.Count()
@@ -57,4 +67,50 @@ func TestRunSkipsEmptyPrompt(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("Count() = %d, want 0", count)
 	}
+}
+
+func TestRunnerRunReturnsEngineError(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	wantErr := errors.New("engine failed")
+	runner := New(staticEngine{
+		err: wantErr,
+	})
+
+	_, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+}
+
+func TestNewUsesPlaceholderEngineByDefault(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(nil)
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	wantAssistant := contextstore.NewAssistantTextRecord("assistant placeholder reply: hello")
+	if result.AppendedRecords[1] != wantAssistant {
+		t.Fatalf("result.AppendedRecords[1] = %#v, want %#v", result.AppendedRecords[1], wantAssistant)
+	}
+}
+
+type staticEngine struct {
+	reply string
+	err   error
+}
+
+func (e staticEngine) Reply(input Input) (string, error) {
+	return e.reply, e.err
+}
+
+type trackingEngine struct {
+	called bool
+}
+
+func (e *trackingEngine) Reply(input Input) (string, error) {
+	e.called = true
+	return "unused", nil
 }
