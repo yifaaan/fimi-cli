@@ -18,6 +18,6 @@ func (PlaceholderClient) Reply(request Request) (Response, error) {
 }
 
 // NewPlaceholderEngine 返回默认的占位 LLM engine。
-func NewPlaceholderEngine() Engine {
-	return NewEngine(PlaceholderClient{})
+func NewPlaceholderEngine(cfg Config) Engine {
+	return NewEngine(PlaceholderClient{}, cfg)
 }

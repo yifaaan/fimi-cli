@@ -2,8 +2,6 @@ package llm
 
 import "fimi-cli/internal/contextstore"
 
-const historyTurnLimit = 2
-
 func buildHistoryMessages(records []contextstore.TextRecord, limit int) []Message {
 	if limit <= 0 {
 		return []Message{}

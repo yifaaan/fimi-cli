@@ -14,7 +14,7 @@ func TestEngineReplyUsesClient(t *testing.T) {
 			Text: "assistant placeholder reply: hello",
 		},
 	}
-	engine := NewEngine(client)
+	engine := NewEngine(client, Config{})
 
 	reply, err := engine.Reply(runtime.ReplyInput{
 		Prompt:       " hello ",
@@ -91,7 +91,7 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 	wantErr := errors.New("client failed")
 	engine := NewEngine(staticClient{
 		err: wantErr,
-	})
+	}, Config{})
 
 	_, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
@@ -100,7 +100,7 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 }
 
 func TestNewEngineWithoutClientFails(t *testing.T) {
-	engine := NewEngine(nil)
+	engine := NewEngine(nil, Config{})
 
 	_, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
 	if err == nil {
@@ -117,11 +117,11 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 			Text: "assistant placeholder reply: hello",
 		},
 	}
-	engine := NewEngine(client)
+	engine := NewEngine(client, Config{})
 
 	_, err := engine.Reply(runtime.ReplyInput{
-		Prompt:       " hello ",
-		Model:        "kimi-k2-turbo-preview",
+		Prompt: " hello ",
+		Model:  "kimi-k2-turbo-preview",
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("previous"),
 			contextstore.NewAssistantTextRecord("previous reply"),
@@ -167,6 +167,44 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 	}
 	if prompt != "hello" {
 		t.Fatalf("PrimaryUserPrompt() = %q, want %q", prompt, "hello")
+	}
+}
+
+func TestEngineReplyUsesConfiguredTurnLimit(t *testing.T) {
+	client := &spyClient{
+		response: Response{
+			Text: "assistant placeholder reply: hello",
+		},
+	}
+	engine := NewEngine(client, Config{
+		HistoryTurnLimit: 1,
+	})
+
+	_, err := engine.Reply(runtime.ReplyInput{
+		Prompt: "hello",
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("first"),
+			contextstore.NewAssistantTextRecord("first reply"),
+			contextstore.NewUserTextRecord("second"),
+			contextstore.NewAssistantTextRecord("second reply"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+
+	want := []Message{
+		{Role: RoleUser, Content: "second"},
+		{Role: RoleAssistant, Content: "second reply"},
+		{Role: RoleUser, Content: "hello"},
+	}
+	if len(client.gotRequest.Messages) != len(want) {
+		t.Fatalf("len(Request.Messages) = %d, want %d", len(client.gotRequest.Messages), len(want))
+	}
+	for i, message := range want {
+		if client.gotRequest.Messages[i] != message {
+			t.Fatalf("Request.Messages[%d] = %#v, want %#v", i, client.gotRequest.Messages[i], message)
+		}
 	}
 }
 

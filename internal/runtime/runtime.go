@@ -8,7 +8,19 @@ import (
 	"fimi-cli/internal/contextstore"
 )
 
-const replyHistoryTurnLimit = 4
+const DefaultReplyHistoryTurnLimit = 4
+
+// Config 定义 runtime 自己关心的最小运行参数。
+type Config struct {
+	ReplyHistoryTurnLimit int
+}
+
+// DefaultConfig 返回 runtime 的默认参数。
+func DefaultConfig() Config {
+	return Config{
+		ReplyHistoryTurnLimit: DefaultReplyHistoryTurnLimit,
+	}
+}
 
 // Input 表示单次 runtime 执行的最小输入。
 type Input struct {
@@ -40,17 +52,22 @@ type Engine interface {
 // Runner 持有一次 runtime 执行所需的核心依赖。
 type Runner struct {
 	engine Engine
+	config Config
 }
 
 // New 创建最小 runtime runner。
 // 调用方必须显式注入 engine，避免 core runtime 反向依赖具体适配器。
-func New(engine Engine) Runner {
+func New(engine Engine, cfg Config) Runner {
 	if engine == nil {
 		engine = missingEngine{}
+	}
+	if cfg.ReplyHistoryTurnLimit <= 0 {
+		cfg = DefaultConfig()
 	}
 
 	return Runner{
 		engine: engine,
+		config: cfg,
 	}
 }
 
@@ -62,7 +79,7 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 		return Result{}, nil
 	}
 
-	history, err := ctx.ReadRecentTurns(replyHistoryTurnLimit)
+	history, err := ctx.ReadRecentTurns(r.config.ReplyHistoryTurnLimit)
 	if err != nil {
 		return Result{}, fmt.Errorf("read runtime history: %w", err)
 	}

@@ -11,8 +11,9 @@ import (
 // Config 表示应用当前最小可用的配置集合。
 // 现在只保留后续 runtime 一定会依赖的基础字段。
 type Config struct {
-	DefaultModel string      `json:"default_model"`
-	LoopControl  LoopControl `json:"loop_control"`
+	DefaultModel  string        `json:"default_model"`
+	LoopControl   LoopControl   `json:"loop_control"`
+	HistoryWindow HistoryWindow `json:"history_window"`
 }
 
 // LoopControl 对应 Python 版本里的 agent loop 控制参数。
@@ -21,12 +22,20 @@ type LoopControl struct {
 	MaxRetriesPerStep int `json:"max_retries_per_step"`
 }
 
+// HistoryWindow 定义 runtime 和 llm 使用的历史窗口策略。
+type HistoryWindow struct {
+	RuntimeTurns int `json:"runtime_turns"`
+	LLMTurns     int `json:"llm_turns"`
+}
+
 const (
 	AppConfigDirName      = "fimi"
 	DefaultConfigFileName = "config.json"
 	DefaultModelName      = "kimi-k2-turbo-preview"
 	DefaultMaxStepsPerRun = 100
 	DefaultMaxRetries     = 3
+	DefaultRuntimeTurns   = 4
+	DefaultLLMTurns       = 2
 )
 
 // Default 返回内建默认配置。
@@ -36,6 +45,10 @@ func Default() Config {
 		LoopControl: LoopControl{
 			MaxStepsPerRun:    DefaultMaxStepsPerRun,
 			MaxRetriesPerStep: DefaultMaxRetries,
+		},
+		HistoryWindow: HistoryWindow{
+			RuntimeTurns: DefaultRuntimeTurns,
+			LLMTurns:     DefaultLLMTurns,
 		},
 	}
 }

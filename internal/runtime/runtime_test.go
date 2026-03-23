@@ -21,7 +21,7 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	engine := &spyEngine{
 		reply: "assistant placeholder reply: hello",
 	}
-	runner := New(engine)
+	runner := New(engine, Config{})
 
 	result, err := runner.Run(ctx, Input{
 		Prompt:       " hello ",
@@ -82,7 +82,7 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 func TestRunnerRunSkipsEmptyPrompt(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	engine := &trackingEngine{}
-	runner := New(engine)
+	runner := New(engine, Config{})
 
 	result, err := runner.Run(ctx, Input{Prompt: "   "})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestRunnerRunReturnsEngineError(t *testing.T) {
 	wantErr := errors.New("engine failed")
 	runner := New(staticEngine{
 		err: wantErr,
-	})
+	}, Config{})
 
 	_, err := runner.Run(ctx, Input{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
@@ -121,7 +121,7 @@ func TestRunnerRunReturnsEngineError(t *testing.T) {
 
 func TestRunnerRunReturnsMissingEngineError(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	runner := New(nil)
+	runner := New(nil, Config{})
 
 	_, err := runner.Run(ctx, Input{Prompt: "hello"})
 	if err == nil {
@@ -155,7 +155,7 @@ func TestRunnerRunReadsRecentTurnWindow(t *testing.T) {
 	engine := &spyEngine{
 		reply: "assistant placeholder reply: hello",
 	}
-	runner := New(engine)
+	runner := New(engine, Config{})
 
 	_, err := runner.Run(ctx, Input{
 		Prompt:       "hello",
@@ -174,6 +174,41 @@ func TestRunnerRunReadsRecentTurnWindow(t *testing.T) {
 		contextstore.NewUserTextRecord("u4"),
 		contextstore.NewAssistantTextRecord("a4"),
 		contextstore.NewUserTextRecord("u5"),
+	}
+	if !reflect.DeepEqual(engine.gotInput.History, want) {
+		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, want)
+	}
+}
+
+func TestRunnerRunUsesConfiguredTurnLimit(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	records := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("u1"),
+		contextstore.NewAssistantTextRecord("a1"),
+		contextstore.NewUserTextRecord("u2"),
+		contextstore.NewAssistantTextRecord("a2"),
+	}
+	for _, record := range records {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+
+	engine := &spyEngine{
+		reply: "assistant placeholder reply: hello",
+	}
+	runner := New(engine, Config{
+		ReplyHistoryTurnLimit: 1,
+	})
+
+	_, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	want := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("u2"),
+		contextstore.NewAssistantTextRecord("a2"),
 	}
 	if !reflect.DeepEqual(engine.gotInput.History, want) {
 		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, want)

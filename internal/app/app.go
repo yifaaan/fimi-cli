@@ -52,7 +52,12 @@ func Run(args []string) error {
 		return err
 	}
 
-	runner := runtime.New(llm.NewPlaceholderEngine())
+	engine := llm.NewPlaceholderEngine(llm.Config{
+		HistoryTurnLimit: cfg.HistoryWindow.LLMTurns,
+	})
+	runner := runtime.New(engine, runtime.Config{
+		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
+	})
 
 	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt:       input.prompt,
