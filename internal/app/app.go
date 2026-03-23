@@ -63,20 +63,13 @@ func Run(args []string) error {
 
 // runInput 表示当前 CLI 入口解析出的最小输入结果。
 type runInput struct {
-	prompt    string
-	hasPrompt bool
+	prompt string
 }
 
 // parseRunInput 把 CLI 参数折叠成一段原始 prompt 文本。
 func parseRunInput(args []string) runInput {
-	prompt := strings.TrimSpace(strings.Join(args, " "))
-	if prompt == "" {
-		return runInput{}
-	}
-
 	return runInput{
-		prompt:    prompt,
-		hasPrompt: true,
+		prompt: strings.TrimSpace(strings.Join(args, " ")),
 	}
 }
 
@@ -86,7 +79,7 @@ func applyRunInput(
 	state startupState,
 	input runInput,
 ) (startupState, error) {
-	if !input.hasPrompt {
+	if input.prompt == "" {
 		return state, nil
 	}
 
