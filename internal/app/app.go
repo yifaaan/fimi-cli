@@ -103,7 +103,8 @@ func appendAssistantPlaceholder(
 		return state, nil
 	}
 
-	record := buildAssistantPlaceholderRecord()
+	reply := buildAssistantPlaceholderReply(input)
+	record := buildAssistantPlaceholderRecord(reply)
 	return appendRecord(ctx, state, record)
 }
 
@@ -143,9 +144,16 @@ func buildPromptRecord(prompt string) contextstore.TextRecord {
 	return contextstore.NewUserTextRecord(prompt)
 }
 
+// buildAssistantPlaceholderReply 生成最小 assistant 占位回复文本。
+func buildAssistantPlaceholderReply(input runInput) string {
+	_ = input
+
+	return assistantPlaceholderReply
+}
+
 // buildAssistantPlaceholderRecord 构造最小 assistant 占位回复记录。
-func buildAssistantPlaceholderRecord() contextstore.TextRecord {
-	return contextstore.NewAssistantTextRecord(assistantPlaceholderReply)
+func buildAssistantPlaceholderRecord(reply string) contextstore.TextRecord {
+	return contextstore.NewAssistantTextRecord(reply)
 }
 
 // bootstrapStartupState 统一完成启动期的 history 初始化与状态收集。
