@@ -41,6 +41,8 @@ type Context struct {
 	historyFile string
 }
 
+const readAllRecords = -1
+
 // New 为给定 history file 创建一个最小上下文存储。
 func New(historyFile string) Context {
 	return Context{historyFile: historyFile}
@@ -123,6 +125,20 @@ func (c Context) AppendText(role, content string) error {
 // ReadAll 读取 history file 中的全部文本记录。
 // 如果文件还不存在，返回空结果而不是报错。
 func (c Context) ReadAll() ([]TextRecord, error) {
+	return c.readRecords(readAllRecords)
+}
+
+// ReadRecent 读取最近若干条文本记录。
+// 这里仍然顺序扫描整个 JSONL 文件，但把内存占用限制在 limit 内。
+func (c Context) ReadRecent(limit int) ([]TextRecord, error) {
+	if limit <= 0 {
+		return []TextRecord{}, nil
+	}
+
+	return c.readRecords(limit)
+}
+
+func (c Context) readRecords(limit int) ([]TextRecord, error) {
 	f, err := os.Open(c.historyFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return []TextRecord{}, nil
@@ -133,6 +149,10 @@ func (c Context) ReadAll() ([]TextRecord, error) {
 	defer f.Close()
 
 	records := make([]TextRecord, 0)
+	if limit > 0 {
+		records = make([]TextRecord, 0, limit)
+	}
+
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -144,7 +164,18 @@ func (c Context) ReadAll() ([]TextRecord, error) {
 		if err := json.Unmarshal(line, &record); err != nil {
 			return nil, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
 		}
-		records = append(records, record)
+		if limit == readAllRecords {
+			records = append(records, record)
+			continue
+		}
+
+		// 只保留尾部窗口，避免随着 history 增长而无限累积内存。
+		if len(records) < limit {
+			records = append(records, record)
+			continue
+		}
+
+		records = append(records[1:], record)
 	}
 
 	if err := scanner.Err(); err != nil {

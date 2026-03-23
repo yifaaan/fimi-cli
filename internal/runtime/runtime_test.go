@@ -132,6 +132,55 @@ func TestRunnerRunReturnsMissingEngineError(t *testing.T) {
 	}
 }
 
+func TestRunnerRunReadsRecentHistoryWindow(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	records := []contextstore.TextRecord{
+		contextstore.NewSystemTextRecord("boot"),
+		contextstore.NewUserTextRecord("u1"),
+		contextstore.NewAssistantTextRecord("a1"),
+		contextstore.NewUserTextRecord("u2"),
+		contextstore.NewAssistantTextRecord("a2"),
+		contextstore.NewUserTextRecord("u3"),
+		contextstore.NewAssistantTextRecord("a3"),
+		contextstore.NewUserTextRecord("u4"),
+		contextstore.NewAssistantTextRecord("a4"),
+		contextstore.NewUserTextRecord("u5"),
+	}
+	for _, record := range records {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+
+	engine := &spyEngine{
+		reply: "assistant placeholder reply: hello",
+	}
+	runner := New(engine)
+
+	_, err := runner.Run(ctx, Input{
+		Prompt:       "hello",
+		Model:        "kimi-k2-turbo-preview",
+		SystemPrompt: "You are fimi, a coding agent.",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	want := []contextstore.TextRecord{
+		contextstore.NewAssistantTextRecord("a1"),
+		contextstore.NewUserTextRecord("u2"),
+		contextstore.NewAssistantTextRecord("a2"),
+		contextstore.NewUserTextRecord("u3"),
+		contextstore.NewAssistantTextRecord("a3"),
+		contextstore.NewUserTextRecord("u4"),
+		contextstore.NewAssistantTextRecord("a4"),
+		contextstore.NewUserTextRecord("u5"),
+	}
+	if !reflect.DeepEqual(engine.gotInput.History, want) {
+		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, want)
+	}
+}
+
 type staticEngine struct {
 	reply string
 	err   error
