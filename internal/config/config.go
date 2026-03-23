@@ -81,6 +81,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	return LoadFile(configFile)
+}
+
+// LoadFile 从指定文件路径读取配置。
+// 如果文件不存在，就回退到默认配置。
+func LoadFile(configFile string) (Config, error) {
 	data, err := os.ReadFile(configFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return Default(), nil
