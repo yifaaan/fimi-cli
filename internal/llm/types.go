@@ -25,13 +25,24 @@ type Response struct {
 	Text string
 }
 
-func lastUserMessage(messages []Message) (string, bool) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
+// LastUserMessage 返回请求里最后一条 user message。
+func (r Request) LastUserMessage() (Message, bool) {
+	for i := len(r.Messages) - 1; i >= 0; i-- {
+		message := r.Messages[i]
 		if message.Role == RoleUser {
-			return message.Content, true
+			return message, true
 		}
 	}
 
-	return "", false
+	return Message{}, false
+}
+
+// PrimaryUserPrompt 返回当前请求的主 user prompt。
+// 优先从主协议 Messages 派生；没有 user message 时回退到兼容字段 Prompt。
+func (r Request) PrimaryUserPrompt() string {
+	if message, ok := r.LastUserMessage(); ok {
+		return message.Content
+	}
+
+	return r.Prompt
 }

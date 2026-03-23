@@ -33,20 +33,14 @@ func NewEngine(client Client) Engine {
 // Reply 调用底层 llm client，为 runtime 生成 assistant 文本。
 func (e Engine) Reply(input runtime.Input) (string, error) {
 	fallbackPrompt := strings.TrimSpace(input.Prompt)
-	messages := buildMessages(input.SystemPrompt, fallbackPrompt)
-
-	prompt := fallbackPrompt
-	if userPrompt, ok := lastUserMessage(messages); ok {
-		// 兼容字段 Prompt 从主协议 Messages 派生，避免两套主输入分叉。
-		prompt = userPrompt
-	}
-
 	request := Request{
-		Prompt:       prompt,
+		Prompt:       fallbackPrompt,
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,
-		Messages:     messages,
+		Messages:     buildMessages(input.SystemPrompt, fallbackPrompt),
 	}
+	// 兼容字段 Prompt 从主协议 Messages 派生，避免两套主输入分叉。
+	request.Prompt = request.PrimaryUserPrompt()
 
 	response, err := e.client.Reply(request)
 	if err != nil {

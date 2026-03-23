@@ -10,7 +10,7 @@ type PlaceholderClient struct{}
 
 // Reply 根据请求返回占位 assistant 回复。
 func (PlaceholderClient) Reply(request Request) (Response, error) {
-	prompt := resolvePrompt(request)
+	prompt := request.PrimaryUserPrompt()
 
 	return Response{
 		Text: fmt.Sprintf("%s %s", assistantPlaceholderPrefix, prompt),
@@ -20,12 +20,4 @@ func (PlaceholderClient) Reply(request Request) (Response, error) {
 // NewPlaceholderEngine 返回默认的占位 LLM engine。
 func NewPlaceholderEngine() Engine {
 	return NewEngine(PlaceholderClient{})
-}
-
-func resolvePrompt(request Request) string {
-	if prompt, ok := lastUserMessage(request.Messages); ok {
-		return prompt
-	}
-
-	return request.Prompt
 }
