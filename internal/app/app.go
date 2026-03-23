@@ -46,16 +46,10 @@ func Run(args []string) error {
 	}
 
 	ctx := contextstore.New(sess.HistoryFile)
-	historySeeded, err := ensureInitialRecord(ctx)
+	state, err := bootstrapStartupState(ctx)
 	if err != nil {
 		return err
 	}
-
-	state, err := loadStartupState(ctx)
-	if err != nil {
-		return err
-	}
-	state.historySeeded = historySeeded
 
 	printStartupState(sess, ctx, state)
 
@@ -72,26 +66,8 @@ func buildInitialRecord() contextstore.TextRecord {
 	}
 }
 
-// ensureInitialRecord 只在 history 为空时写入启动种子记录。
-func ensureInitialRecord(ctx contextstore.Context) (bool, error) {
-	snapshot, err := ctx.Snapshot()
-	if err != nil {
-		return false, fmt.Errorf("read history snapshot before bootstrap: %w", err)
-	}
-
-	if snapshot.Count > 0 {
-		return false, nil
-	}
-
-	if err := ctx.Append(buildInitialRecord()); err != nil {
-		return false, fmt.Errorf("append initial history record: %w", err)
-	}
-
-	return true, nil
-}
-
-// loadStartupState 收集启动阶段需要展示的状态信息。
-func loadStartupState(ctx contextstore.Context) (startupState, error) {
+// bootstrapStartupState 统一完成启动期的 history 初始化与状态收集。
+func bootstrapStartupState(ctx contextstore.Context) (startupState, error) {
 	historyExists, err := ctx.Exists()
 	if err != nil {
 		return startupState{}, fmt.Errorf("check history file existence: %w", err)
@@ -99,11 +75,28 @@ func loadStartupState(ctx contextstore.Context) (startupState, error) {
 
 	snapshot, err := ctx.Snapshot()
 	if err != nil {
-		return startupState{}, fmt.Errorf("read history snapshot: %w", err)
+		return startupState{}, fmt.Errorf("read history snapshot before bootstrap: %w", err)
+	}
+
+	historySeeded := false
+	if snapshot.Count == 0 {
+		initialRecord := buildInitialRecord()
+		if err := ctx.Append(initialRecord); err != nil {
+			return startupState{}, fmt.Errorf("append initial history record: %w", err)
+		}
+
+		historyExists = true
+		historySeeded = true
+		snapshot = contextstore.Snapshot{
+			Count:         1,
+			LastRecord:    initialRecord,
+			HasLastRecord: true,
+		}
 	}
 
 	return startupState{
 		historyExists: historyExists,
+		historySeeded: historySeeded,
 		historyCount:  snapshot.Count,
 		lastRecord:    snapshot.LastRecord,
 		hasLastRecord: snapshot.HasLastRecord,
