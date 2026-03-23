@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
@@ -21,6 +22,8 @@ type startupState struct {
 	historyCount  int
 	lastRecord    contextstore.TextRecord
 	hasLastRecord bool
+	prompt        string
+	hasPrompt     bool
 }
 
 // Run 是当前应用装配层的最小入口。
@@ -31,9 +34,7 @@ func Run(args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	if len(args) > 0 {
-		return fmt.Errorf("arguments are not supported yet: %v", args)
-	}
+	input := parseRunInput(args)
 
 	workDir, err := os.Getwd()
 	if err != nil {
@@ -50,12 +51,33 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	state.prompt = input.prompt
+	state.hasPrompt = input.hasPrompt
 
 	printStartupState(sess, ctx, state)
 
 	_ = cfg
 
 	return nil
+}
+
+// runInput 表示当前 CLI 入口解析出的最小输入结果。
+type runInput struct {
+	prompt    string
+	hasPrompt bool
+}
+
+// parseRunInput 把 CLI 参数折叠成一段原始 prompt 文本。
+func parseRunInput(args []string) runInput {
+	prompt := strings.TrimSpace(strings.Join(args, " "))
+	if prompt == "" {
+		return runInput{}
+	}
+
+	return runInput{
+		prompt:    prompt,
+		hasPrompt: true,
+	}
 }
 
 // buildInitialRecord 构造启动时写入 history 的第一条记录。
@@ -117,5 +139,8 @@ func printStartupState(
 	if state.hasLastRecord {
 		fmt.Printf("last history role: %s\n", state.lastRecord.Role)
 		fmt.Printf("last history content: %s\n", state.lastRecord.Content)
+	}
+	if state.hasPrompt {
+		fmt.Printf("prompt: %s\n", state.prompt)
 	}
 }
