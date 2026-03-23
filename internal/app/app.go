@@ -39,9 +39,9 @@ func Run(args []string) error {
 		return fmt.Errorf("get current work dir: %w", err)
 	}
 
-	sess, err := session.New(workDir)
+	sess, sessionReused, err := session.OpenLatestOrCreate(workDir)
 	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+		return fmt.Errorf("open session: %w", err)
 	}
 
 	ctx := contextstore.New(sess.HistoryFile)
@@ -60,7 +60,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	printStartupState(sess, ctx, state)
+	printStartupState(sess, ctx, state, sessionReused)
 
 	_ = cfg
 
@@ -196,8 +196,10 @@ func printStartupState(
 	sess session.Session,
 	ctx contextstore.Context,
 	state startupState,
+	sessionReused bool,
 ) {
 	fmt.Printf("session: %s\n", sess.ID)
+	fmt.Printf("session reused: %t\n", sessionReused)
 	fmt.Printf("history: %s\n", ctx.Path())
 	fmt.Printf("history exists: %t\n", state.historyExists)
 	fmt.Printf("history seeded: %t\n", state.historySeeded)

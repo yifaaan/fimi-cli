@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 const (
@@ -64,6 +66,40 @@ func HistoryFileForSession(sessionsDir, sessionID string) string {
 	return filepath.Join(sessionsDir, sessionID+HistoryFileExtName)
 }
 
+// OpenLatestOrCreate 复用当前工作目录最近一次活跃的 session。
+// 如果还没有任何 history file，就创建一个新的 session。
+func OpenLatestOrCreate(workDir string) (Session, bool, error) {
+	absWorkDir, workDirSessionsDir, err := DirForWorkDir(workDir)
+	if err != nil {
+		return Session{}, false, err
+	}
+
+	if err := os.MkdirAll(workDirSessionsDir, 0o755); err != nil {
+		return Session{}, false, fmt.Errorf("create sessions dir %q: %w", workDirSessionsDir, err)
+	}
+
+	historyFile, found, err := latestHistoryFile(workDirSessionsDir)
+	if err != nil {
+		return Session{}, false, err
+	}
+	if found {
+		sessionID := strings.TrimSuffix(filepath.Base(historyFile), HistoryFileExtName)
+
+		return Session{
+			ID:          sessionID,
+			WorkDir:     absWorkDir,
+			HistoryFile: historyFile,
+		}, true, nil
+	}
+
+	sess, err := newSession(absWorkDir, workDirSessionsDir)
+	if err != nil {
+		return Session{}, false, err
+	}
+
+	return sess, false, nil
+}
+
 // New 为工作目录创建一个新的 session。
 func New(workDir string) (Session, error) {
 	absWorkDir, workDirSessionsDir, err := DirForWorkDir(workDir)
@@ -71,6 +107,10 @@ func New(workDir string) (Session, error) {
 		return Session{}, err
 	}
 
+	return newSession(absWorkDir, workDirSessionsDir)
+}
+
+func newSession(absWorkDir, workDirSessionsDir string) (Session, error) {
 	if err := os.MkdirAll(workDirSessionsDir, 0o755); err != nil {
 		return Session{}, fmt.Errorf("create sessions dir %q: %w", workDirSessionsDir, err)
 	}
@@ -87,6 +127,39 @@ func New(workDir string) (Session, error) {
 		WorkDir:     absWorkDir,
 		HistoryFile: historyFile,
 	}, nil
+}
+
+func latestHistoryFile(sessionsDir string) (string, bool, error) {
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return "", false, fmt.Errorf("read sessions dir %q: %w", sessionsDir, err)
+	}
+
+	var (
+		latestPath    string
+		latestModTime time.Time
+		found         bool
+	)
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), HistoryFileExtName) {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return "", false, fmt.Errorf("stat session history %q: %w", entry.Name(), err)
+		}
+
+		// 用 history 文件的修改时间近似表示“最近活跃的 session”。
+		if !found || info.ModTime().After(latestModTime) {
+			latestPath = filepath.Join(sessionsDir, entry.Name())
+			latestModTime = info.ModTime()
+			found = true
+		}
+	}
+
+	return latestPath, found, nil
 }
 
 func newID() (string, error) {
