@@ -10,18 +10,25 @@ import (
 
 // ProviderConfig 存储单个 LLM provider 的配置。
 type ProviderConfig struct {
+	Type    string `json:"type"`
 	APIKey  string `json:"api_key"`
 	BaseURL string `json:"base_url"`
+}
+
+// ModelConfig 描述一个逻辑模型名如何映射到 provider 和真实模型名。
+type ModelConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // Config 表示应用当前最小可用的配置集合。
 // 现在只保留后续 runtime 一定会依赖的基础字段。
 type Config struct {
 	DefaultModel  string                    `json:"default_model"`
-	EngineMode    string                    `json:"engine_mode"`
 	SystemPrompt  string                    `json:"system_prompt"`
 	LoopControl   LoopControl               `json:"loop_control"`
 	HistoryWindow HistoryWindow             `json:"history_window"`
+	Models        map[string]ModelConfig    `json:"models"`
 	Providers     map[string]ProviderConfig `json:"providers"`
 }
 
@@ -41,7 +48,7 @@ const (
 	AppConfigDirName      = "fimi"
 	DefaultConfigFileName = "config.json"
 	DefaultModelName      = "kimi-k2-turbo-preview"
-	DefaultEngineMode     = "placeholder"
+	DefaultProviderName   = "placeholder"
 	DefaultSystemPrompt   = "You are fimi, a coding agent."
 	DefaultMaxStepsPerRun = 100
 	DefaultMaxRetries     = 3
@@ -53,7 +60,6 @@ const (
 func Default() Config {
 	return Config{
 		DefaultModel: DefaultModelName,
-		EngineMode:   DefaultEngineMode,
 		SystemPrompt: DefaultSystemPrompt,
 		LoopControl: LoopControl{
 			MaxStepsPerRun:    DefaultMaxStepsPerRun,
@@ -63,9 +69,16 @@ func Default() Config {
 			RuntimeTurns: DefaultRuntimeTurns,
 			LLMTurns:     DefaultLLMTurns,
 		},
+		Models: map[string]ModelConfig{
+			DefaultModelName: {
+				Provider: DefaultProviderName,
+				Model:    DefaultModelName,
+			},
+		},
 		// 提供示例 provider 配置结构，方便用户参考
 		Providers: map[string]ProviderConfig{
 			"qwen": {
+				Type: "qwen",
 				// APIKey 留空，用户需要自己填写
 				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 			},
@@ -119,6 +132,51 @@ func LoadFile(configFile string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config file %q: %w", configFile, err)
 	}
+	if err := validate(cfg); err != nil {
+		return Config{}, fmt.Errorf("validate config file %q: %w", configFile, err)
+	}
 
 	return cfg, nil
+}
+
+func validate(cfg Config) error {
+	if cfg.DefaultModel == "" {
+		return errors.New("default_model is required")
+	}
+
+	if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
+		return fmt.Errorf("default_model %q not found in models", cfg.DefaultModel)
+	}
+
+	for modelAlias, modelCfg := range cfg.Models {
+		if err := validateModelConfig(modelAlias, modelCfg, cfg.Providers); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateModelConfig(
+	modelAlias string,
+	modelCfg ModelConfig,
+	providers map[string]ProviderConfig,
+) error {
+	if modelCfg.Provider == "" {
+		return fmt.Errorf("models.%s.provider is required", modelAlias)
+	}
+	if modelCfg.Provider == DefaultProviderName {
+		// placeholder 是内建 provider，不要求 users 在 providers 里重复声明。
+		return nil
+	}
+	providerCfg, ok := providers[modelCfg.Provider]
+	if !ok {
+		return fmt.Errorf("models.%s.provider %q not found in providers", modelAlias, modelCfg.Provider)
+	}
+	if providerCfg.Type == "" {
+		return fmt.Errorf("providers.%s.type is required", modelCfg.Provider)
+	}
+
+	// model 允许留空；消费方会把 alias 当作真实模型名兜底。
+	return nil
 }

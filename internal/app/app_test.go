@@ -59,10 +59,61 @@ func TestBuildRuntimeInput(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeInputUsesConfiguredModelName(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "primary",
+		SystemPrompt: "You are the configured agent.",
+		Models: map[string]config.ModelConfig{
+			"primary": {
+				Provider: "qwen",
+				Model:    "qwen-plus",
+			},
+		},
+	}
+	input := runInput{
+		prompt: "fix the test",
+	}
+
+	got := buildRuntimeInput(cfg, input)
+	want := runtime.Input{
+		Prompt:       "fix the test",
+		Model:        "qwen-plus",
+		SystemPrompt: "You are the configured agent.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildRuntimeInput() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "primary",
+		SystemPrompt: "You are the configured agent.",
+		Models: map[string]config.ModelConfig{
+			"primary": {
+				Provider: "qwen",
+			},
+		},
+	}
+	input := runInput{
+		prompt: "fix the test",
+	}
+
+	got := buildRuntimeInput(cfg, input)
+	want := runtime.Input{
+		Prompt:       "fix the test",
+		Model:        "primary",
+		SystemPrompt: "You are the configured agent.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildRuntimeInput() = %#v, want %#v", got, want)
+	}
+}
+
 func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	var gotWorkDir string
-	var gotMode string
+	var gotModelAlias string
 
 	type printedState struct {
 		session       session.Session
@@ -77,9 +128,14 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
 			return config.Config{
-				EngineMode:   "custom-test-mode",
 				DefaultModel: "custom-model",
 				SystemPrompt: "You are the configured agent.",
+				Models: map[string]config.ModelConfig{
+					"custom-model": {
+						Provider: "placeholder",
+						Model:    "custom-model",
+					},
+				},
 				HistoryWindow: config.HistoryWindow{
 					RuntimeTurns: 2,
 					LLMTurns:     1,
@@ -98,7 +154,7 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 			}, true, nil
 		},
 		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
-			gotMode = cfg.EngineMode
+			gotModelAlias = cfg.DefaultModel
 			return llm.NewPlaceholderClient(), nil
 		},
 		printStartupState: func(
@@ -125,8 +181,8 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if gotWorkDir != "/tmp/fimi-project" {
 		t.Fatalf("openSession() got workDir = %q, want %q", gotWorkDir, "/tmp/fimi-project")
 	}
-	if gotMode != "custom-test-mode" {
-		t.Fatalf("builder got mode = %q, want %q", gotMode, "custom-test-mode")
+	if gotModelAlias != "custom-model" {
+		t.Fatalf("builder got DefaultModel = %q, want %q", gotModelAlias, "custom-model")
 	}
 	if !printed.called {
 		t.Fatalf("printStartupState() called = false, want true")
@@ -373,6 +429,13 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 
 func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
 	cfg := config.Config{
+		DefaultModel: config.DefaultModelName,
+		Models: map[string]config.ModelConfig{
+			config.DefaultModelName: {
+				Provider: "placeholder",
+				Model:    config.DefaultModelName,
+			},
+		},
 		HistoryWindow: config.HistoryWindow{
 			LLMTurns: 3,
 		},
@@ -393,16 +456,22 @@ func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
 }
 
 func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
-	var gotMode string
+	var gotCfg config.Config
 	deps := dependencies{
 		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
-			gotMode = cfg.EngineMode
+			gotCfg = cfg
 			return llm.NewPlaceholderClient(), nil
 		},
 	}
 
 	engine, err := deps.buildEngine(config.Config{
-		EngineMode: "custom-test-mode",
+		DefaultModel: "custom-model",
+		Models: map[string]config.ModelConfig{
+			"custom-model": {
+				Provider: "placeholder",
+				Model:    "custom-model",
+			},
+		},
 		HistoryWindow: config.HistoryWindow{
 			LLMTurns: 3,
 		},
@@ -411,8 +480,11 @@ func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
 		t.Fatalf("buildEngine() error = %v", err)
 	}
 
-	if gotMode != "custom-test-mode" {
-		t.Fatalf("builder got mode = %q, want %q", gotMode, "custom-test-mode")
+	if gotCfg.DefaultModel != "custom-model" {
+		t.Fatalf("builder got DefaultModel = %q, want %q", gotCfg.DefaultModel, "custom-model")
+	}
+	if gotCfg.Models["custom-model"].Provider != "placeholder" {
+		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, "placeholder")
 	}
 
 	reply, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
@@ -426,10 +498,46 @@ func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
 
 func TestBuildEngineReturnsErrorForUnsupportedMode(t *testing.T) {
 	_, err := buildEngine(config.Config{
-		EngineMode: "unsupported",
+		DefaultModel: "broken",
+		Models: map[string]config.ModelConfig{
+			"broken": {
+				Provider: "custom-provider",
+				Model:    "broken-model",
+			},
+		},
+		Providers: map[string]config.ProviderConfig{
+			"custom-provider": {
+				Type: "unsupported",
+			},
+		},
 	})
 	if !errors.Is(err, ErrUnsupportedClientMode) {
 		t.Fatalf("buildEngine() error = %v, want wrapped %v", err, ErrUnsupportedClientMode)
+	}
+}
+
+func TestBuildEngineResolvesProviderByTypeNotProviderName(t *testing.T) {
+	_, err := buildEngine(config.Config{
+		DefaultModel: "qwen-workhorse",
+		Models: map[string]config.ModelConfig{
+			"qwen-workhorse": {
+				Provider: "aliyun-prod",
+				Model:    "qwen-plus",
+			},
+		},
+		Providers: map[string]config.ProviderConfig{
+			"aliyun-prod": {
+				Type:    "qwen",
+				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("buildEngine() error = nil, want non-nil")
+	}
+	want := "qwen api_key is required; set providers.aliyun-prod.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)"
+	if err.Error() != "build llm client: "+want {
+		t.Fatalf("buildEngine() error = %q, want %q", err.Error(), "build llm client: "+want)
 	}
 }
 
@@ -437,6 +545,12 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "custom-model",
 		SystemPrompt: "You are the configured agent.",
+		Models: map[string]config.ModelConfig{
+			"custom-model": {
+				Provider: "placeholder",
+				Model:    "custom-model",
+			},
+		},
 		HistoryWindow: config.HistoryWindow{
 			RuntimeTurns: 2,
 			LLMTurns:     1,
@@ -475,17 +589,22 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 }
 
 func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
-	var gotMode string
+	var gotCfg config.Config
 	deps := dependencies{
 		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
-			gotMode = cfg.EngineMode
+			gotCfg = cfg
 			return llm.NewPlaceholderClient(), nil
 		},
 	}
 	cfg := config.Config{
-		EngineMode:   "custom-test-mode",
 		DefaultModel: "custom-model",
 		SystemPrompt: "You are the configured agent.",
+		Models: map[string]config.ModelConfig{
+			"custom-model": {
+				Provider: "placeholder",
+				Model:    "custom-model",
+			},
+		},
 	}
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 
@@ -503,14 +622,28 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if gotMode != "custom-test-mode" {
-		t.Fatalf("builder got mode = %q, want %q", gotMode, "custom-test-mode")
+	if gotCfg.DefaultModel != "custom-model" {
+		t.Fatalf("builder got DefaultModel = %q, want %q", gotCfg.DefaultModel, "custom-model")
+	}
+	if gotCfg.Models["custom-model"].Provider != "placeholder" {
+		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, "placeholder")
 	}
 }
 
 func TestBuildRunnerReturnsErrorForUnsupportedMode(t *testing.T) {
 	_, err := buildRunner(config.Config{
-		EngineMode: "unsupported",
+		DefaultModel: "broken",
+		Models: map[string]config.ModelConfig{
+			"broken": {
+				Provider: "custom-provider",
+				Model:    "broken-model",
+			},
+		},
+		Providers: map[string]config.ProviderConfig{
+			"custom-provider": {
+				Type: "unsupported",
+			},
+		},
 	})
 	if !errors.Is(err, ErrUnsupportedClientMode) {
 		t.Fatalf("buildRunner() error = %v, want wrapped %v", err, ErrUnsupportedClientMode)

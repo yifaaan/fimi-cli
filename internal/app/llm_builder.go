@@ -9,34 +9,75 @@ import (
 	"fimi-cli/internal/llm/qwen"
 )
 
-// ErrUnsupportedClientMode 表示当前 llm client 构造器不支持给定模式。
+// ErrUnsupportedClientMode 表示当前 llm client 构造器不支持给定 provider 类型。
 var ErrUnsupportedClientMode = errors.New("unsupported llm client mode")
 
 // buildLLMClientFromConfig 根据 config 构造具体 llm client。
 // 这是 app 层的构建逻辑，避免 llm 包反向依赖 config 和具体 provider。
 func buildLLMClientFromConfig(cfg config.Config) (llm.Client, error) {
-	switch cfg.EngineMode {
-	case "", "placeholder":
+	modelCfg, err := resolveConfiguredModel(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if modelCfg.Provider == config.DefaultProviderName {
 		return llm.NewPlaceholderClient(), nil
+	}
+
+	providerName, providerCfg, err := resolveConfiguredProvider(cfg, modelCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	switch providerCfg.Type {
 	case "qwen":
-		return buildQwenClient(cfg)
+		return buildQwenClient(providerName, providerCfg, modelCfg)
 	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientMode, cfg.EngineMode)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedClientMode, providerCfg.Type)
 	}
 }
 
-// buildQwenClient 从配置构建 QWEN client。
-func buildQwenClient(cfg config.Config) (llm.Client, error) {
-	providerCfg, ok := cfg.Providers["qwen"]
+// resolveConfiguredModel 统一决定当前 run 选择的模型。
+// 旧的 engine_mode 路径已经移除，app 只接受 models 配置。
+func resolveConfiguredModel(cfg config.Config) (config.ModelConfig, error) {
+	modelCfg, ok := cfg.Models[cfg.DefaultModel]
 	if !ok {
-		return nil, fmt.Errorf("qwen provider config not found in config file; add a \"providers.qwen\" section to your ~/.config/fimi/config.json")
+		return config.ModelConfig{}, fmt.Errorf("default model %q not found in config.models", cfg.DefaultModel)
 	}
+	if modelCfg.Model == "" {
+		modelCfg.Model = cfg.DefaultModel
+	}
+
+	return modelCfg, nil
+}
+
+func resolveConfiguredProvider(
+	cfg config.Config,
+	modelCfg config.ModelConfig,
+) (string, config.ProviderConfig, error) {
+	providerCfg, ok := cfg.Providers[modelCfg.Provider]
+	if !ok {
+		return "", config.ProviderConfig{}, fmt.Errorf("provider %q not found in config.providers", modelCfg.Provider)
+	}
+	if providerCfg.Type == "" {
+		return "", config.ProviderConfig{}, fmt.Errorf("providers.%s.type is required", modelCfg.Provider)
+	}
+
+	return modelCfg.Provider, providerCfg, nil
+}
+
+// buildQwenClient 从配置构建 QWEN client。
+func buildQwenClient(
+	providerName string,
+	providerCfg config.ProviderConfig,
+	modelCfg config.ModelConfig,
+) (llm.Client, error) {
 	if providerCfg.APIKey == "" {
-		return nil, fmt.Errorf("qwen api_key is required; set providers.qwen.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)")
+		return nil, fmt.Errorf("qwen api_key is required; set providers.%s.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)", providerName)
 	}
 
 	return qwen.NewClient(qwen.Config{
 		APIKey:  providerCfg.APIKey,
 		BaseURL: providerCfg.BaseURL,
+		Model:   modelCfg.Model,
 	}), nil
 }

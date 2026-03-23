@@ -116,7 +116,7 @@ func (d dependencies) run(args []string) error {
 	if printState == nil {
 		printState = printStartupState
 	}
-	printState(sess, ctx, state, sessionReused, cfg.DefaultModel)
+	printState(sess, ctx, state, sessionReused, resolveRuntimeModelName(cfg))
 
 	return nil
 }
@@ -161,9 +161,19 @@ func buildRuntimeConfig(cfg config.Config) runtime.Config {
 func buildRuntimeInput(cfg config.Config, input runInput) runtime.Input {
 	return runtime.Input{
 		Prompt:       input.prompt,
-		Model:        cfg.DefaultModel,
+		Model:        resolveRuntimeModelName(cfg),
 		SystemPrompt: cfg.SystemPrompt,
 	}
+}
+
+// resolveRuntimeModelName 把逻辑模型选择折叠成 runtime 真正要发送的模型名。
+func resolveRuntimeModelName(cfg config.Config) string {
+	modelCfg, err := resolveConfiguredModel(cfg)
+	if err == nil && modelCfg.Model != "" {
+		return modelCfg.Model
+	}
+
+	return cfg.DefaultModel
 }
 
 // buildEngine 负责装配当前默认的 llm engine。
