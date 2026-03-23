@@ -91,3 +91,18 @@ func (c Context) ReadAll() ([]TextRecord, error) {
 
 	return records, nil
 }
+
+// Last 返回最后一条文本记录。
+// bool 为 false 表示当前 history 里还没有任何记录。
+func (c Context) Last() (TextRecord, bool, error) {
+	records, err := c.ReadAll()
+	if err != nil {
+		return TextRecord{}, false, err
+	}
+
+	if len(records) == 0 {
+		return TextRecord{}, false, nil
+	}
+
+	return records[len(records)-1], true, nil
+}
