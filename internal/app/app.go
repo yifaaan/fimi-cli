@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"fimi-cli/internal/config"
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/session"
 )
 
@@ -28,6 +29,14 @@ func Run(args []string) error {
 	sess, err := session.New(workDir)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
+	}
+
+	ctx := contextstore.New(sess.HistoryFile)
+	if err := ctx.Append(contextstore.TextRecord{
+		Role:    "system",
+		Content: "session initialized",
+	}); err != nil {
+		return fmt.Errorf("append initial history record: %w", err)
 	}
 
 	_ = cfg

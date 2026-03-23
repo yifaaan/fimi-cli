@@ -1,0 +1,93 @@
+package contextstore
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// TextRecord 是当前最小可持久化的历史记录模型。
+// 先只支持纯文本内容，后面再扩展多种消息 part。
+type TextRecord struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// Context 管理某个 history file 的追加写入。
+type Context struct {
+	historyFile string
+}
+
+// New 为给定 history file 创建一个最小上下文存储。
+func New(historyFile string) Context {
+	return Context{historyFile: historyFile}
+}
+
+// Append 以 JSONL 形式向 history file 追加一条记录。
+func (c Context) Append(record TextRecord) error {
+	line, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal text record: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(c.historyFile), 0o755); err != nil {
+		return fmt.Errorf("create history dir: %w", err)
+	}
+
+	f, err := os.OpenFile(c.historyFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open history file %q: %w", c.historyFile, err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("append history file %q: %w", c.historyFile, err)
+	}
+
+	return nil
+}
+
+// AppendText 是追加文本记录的便捷方法。
+func (c Context) AppendText(role, content string) error {
+	return c.Append(TextRecord{
+		Role:    role,
+		Content: content,
+	})
+}
+
+// ReadAll 读取 history file 中的全部文本记录。
+// 如果文件还不存在，返回空结果而不是报错。
+func (c Context) ReadAll() ([]TextRecord, error) {
+	f, err := os.Open(c.historyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return []TextRecord{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open history file %q: %w", c.historyFile, err)
+	}
+	defer f.Close()
+
+	records := make([]TextRecord, 0)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var record TextRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			return nil, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
+		}
+		records = append(records, record)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan history file %q: %w", c.historyFile, err)
+	}
+
+	return records, nil
+}
