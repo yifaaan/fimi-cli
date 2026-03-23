@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,10 +30,10 @@ type Runner struct {
 }
 
 // New 创建最小 runtime runner。
-// 如果调用方暂时没有注入 engine，就退回占位实现。
+// 调用方必须显式注入 engine，避免 core runtime 反向依赖具体适配器。
 func New(engine Engine) Runner {
 	if engine == nil {
-		engine = PlaceholderEngine{}
+		engine = missingEngine{}
 	}
 
 	return Runner{
@@ -69,4 +70,10 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	return Result{
 		AppendedRecords: records,
 	}, nil
+}
+
+type missingEngine struct{}
+
+func (missingEngine) Reply(input Input) (string, error) {
+	return "", errors.New("runtime engine is required")
 }

@@ -82,18 +82,16 @@ func TestRunnerRunReturnsEngineError(t *testing.T) {
 	}
 }
 
-func TestNewUsesPlaceholderEngineByDefault(t *testing.T) {
+func TestRunnerRunReturnsMissingEngineError(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := New(nil)
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+	_, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want non-nil")
 	}
-
-	wantAssistant := contextstore.NewAssistantTextRecord("assistant placeholder reply: hello")
-	if result.AppendedRecords[1] != wantAssistant {
-		t.Fatalf("result.AppendedRecords[1] = %#v, want %#v", result.AppendedRecords[1], wantAssistant)
+	if err.Error() != "build assistant reply: runtime engine is required" {
+		t.Fatalf("Run() error = %q, want %q", err.Error(), "build assistant reply: runtime engine is required")
 	}
 }
 

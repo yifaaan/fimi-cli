@@ -7,6 +7,7 @@ import (
 
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
+	"fimi-cli/internal/llm"
 	"fimi-cli/internal/runtime"
 	"fimi-cli/internal/session"
 )
@@ -50,7 +51,7 @@ func Run(args []string) error {
 		return err
 	}
 
-	runner := runtime.New(runtime.PlaceholderEngine{})
+	runner := runtime.New(llm.PlaceholderEngine{})
 
 	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt: input.prompt,
