@@ -54,15 +54,28 @@ func Run(args []string) error {
 		return fmt.Errorf("read last history record: %w", err)
 	}
 
-	fmt.Printf("session: %s\n", sess.ID)
-	fmt.Printf("history: %s\n", ctx.Path())
-	fmt.Printf("history exists: %t\n", historyExists)
-	fmt.Printf("history records: %d\n", historyCount)
-	if ok {
-		fmt.Printf("last history role: %s\n", lastRecord.Role)
-	}
+	printStartupState(sess, ctx, historyExists, historyCount, lastRecord, ok)
 
 	_ = cfg
 
 	return nil
+}
+
+// printStartupState 统一输出当前启动阶段的关键信息。
+func printStartupState(
+	sess session.Session,
+	ctx contextstore.Context,
+	historyExists bool,
+	historyCount int,
+	lastRecord contextstore.TextRecord,
+	hasLastRecord bool,
+) {
+	fmt.Printf("session: %s\n", sess.ID)
+	fmt.Printf("history: %s\n", ctx.Path())
+	fmt.Printf("history exists: %t\n", historyExists)
+	fmt.Printf("history records: %d\n", historyCount)
+	if hasLastRecord {
+		fmt.Printf("last history role: %s\n", lastRecord.Role)
+		fmt.Printf("last history content: %s\n", lastRecord.Content)
+	}
 }
