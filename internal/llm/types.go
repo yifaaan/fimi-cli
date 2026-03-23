@@ -1,8 +1,9 @@
 package llm
 
 const (
-	RoleSystem = "system"
-	RoleUser   = "user"
+	RoleSystem    = "system"
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
 )
 
 // Message 表示最小聊天消息单元。

@@ -13,6 +13,7 @@ type Input struct {
 	Prompt       string
 	Model        string
 	SystemPrompt string
+	History      []contextstore.TextRecord
 }
 
 // Result 表示单次 runtime 追加到 history 的记录。
@@ -55,6 +56,7 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 		Prompt:       prompt,
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,
+		History:      input.History,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("build assistant reply: %w", err)

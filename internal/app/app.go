@@ -52,12 +52,18 @@ func Run(args []string) error {
 		return err
 	}
 
+	historyRecords, err := ctx.ReadAll()
+	if err != nil {
+		return fmt.Errorf("read history records: %w", err)
+	}
+
 	runner := runtime.New(llm.NewPlaceholderEngine())
 
 	runResult, err := runner.Run(ctx, runtime.Input{
 		Prompt:       input.prompt,
 		Model:        cfg.DefaultModel,
 		SystemPrompt: defaultSystemPrompt,
+		History:      historyRecords,
 	})
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)

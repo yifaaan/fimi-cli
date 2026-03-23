@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"fimi-cli/internal/contextstore"
@@ -19,6 +20,10 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 		Prompt:       " hello ",
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("previous"),
+			contextstore.NewAssistantTextRecord("previous reply"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -53,6 +58,15 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	}
 	if engine.gotInput.SystemPrompt != "You are fimi, a coding agent." {
 		t.Fatalf("engine got SystemPrompt = %q, want %q", engine.gotInput.SystemPrompt, "You are fimi, a coding agent.")
+	}
+	if !reflect.DeepEqual(engine.gotInput.History, []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("previous"),
+		contextstore.NewAssistantTextRecord("previous reply"),
+	}) {
+		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("previous"),
+			contextstore.NewAssistantTextRecord("previous reply"),
+		})
 	}
 }
 

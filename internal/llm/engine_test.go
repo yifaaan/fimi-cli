@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 )
 
@@ -19,6 +20,11 @@ func TestEngineReplyUsesClient(t *testing.T) {
 		Prompt:       " hello ",
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
+		History: []contextstore.TextRecord{
+			contextstore.NewSystemTextRecord("boot"),
+			contextstore.NewUserTextRecord("previous"),
+			contextstore.NewAssistantTextRecord("previous reply"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
@@ -33,8 +39,8 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	if client.gotRequest.SystemPrompt != "You are fimi, a coding agent." {
 		t.Fatalf("got Request.SystemPrompt = %q, want %q", client.gotRequest.SystemPrompt, "You are fimi, a coding agent.")
 	}
-	if len(client.gotRequest.Messages) != 2 {
-		t.Fatalf("len(Request.Messages) = %d, want 2", len(client.gotRequest.Messages))
+	if len(client.gotRequest.Messages) != 4 {
+		t.Fatalf("len(Request.Messages) = %d, want 4", len(client.gotRequest.Messages))
 	}
 	if client.gotRequest.Messages[0] != (Message{
 		Role:    RoleSystem,
@@ -47,9 +53,27 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	}
 	if client.gotRequest.Messages[1] != (Message{
 		Role:    RoleUser,
-		Content: "hello",
+		Content: "previous",
 	}) {
 		t.Fatalf("Request.Messages[1] = %#v, want %#v", client.gotRequest.Messages[1], Message{
+			Role:    RoleUser,
+			Content: "previous",
+		})
+	}
+	if client.gotRequest.Messages[2] != (Message{
+		Role:    RoleAssistant,
+		Content: "previous reply",
+	}) {
+		t.Fatalf("Request.Messages[2] = %#v, want %#v", client.gotRequest.Messages[2], Message{
+			Role:    RoleAssistant,
+			Content: "previous reply",
+		})
+	}
+	if client.gotRequest.Messages[3] != (Message{
+		Role:    RoleUser,
+		Content: "hello",
+	}) {
+		t.Fatalf("Request.Messages[3] = %#v, want %#v", client.gotRequest.Messages[3], Message{
 			Role:    RoleUser,
 			Content: "hello",
 		})
@@ -98,19 +122,41 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 	_, err := engine.Reply(runtime.Input{
 		Prompt: " hello ",
 		Model:  "kimi-k2-turbo-preview",
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("previous"),
+			contextstore.NewAssistantTextRecord("previous reply"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}
 
-	if len(client.gotRequest.Messages) != 1 {
-		t.Fatalf("len(Request.Messages) = %d, want 1", len(client.gotRequest.Messages))
+	if len(client.gotRequest.Messages) != 3 {
+		t.Fatalf("len(Request.Messages) = %d, want 3", len(client.gotRequest.Messages))
 	}
 	if client.gotRequest.Messages[0] != (Message{
 		Role:    RoleUser,
-		Content: "hello",
+		Content: "previous",
 	}) {
 		t.Fatalf("Request.Messages[0] = %#v, want %#v", client.gotRequest.Messages[0], Message{
+			Role:    RoleUser,
+			Content: "previous",
+		})
+	}
+	if client.gotRequest.Messages[1] != (Message{
+		Role:    RoleAssistant,
+		Content: "previous reply",
+	}) {
+		t.Fatalf("Request.Messages[1] = %#v, want %#v", client.gotRequest.Messages[1], Message{
+			Role:    RoleAssistant,
+			Content: "previous reply",
+		})
+	}
+	if client.gotRequest.Messages[2] != (Message{
+		Role:    RoleUser,
+		Content: "hello",
+	}) {
+		t.Fatalf("Request.Messages[2] = %#v, want %#v", client.gotRequest.Messages[2], Message{
 			Role:    RoleUser,
 			Content: "hello",
 		})

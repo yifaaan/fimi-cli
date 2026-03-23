@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 )
 
@@ -36,7 +37,7 @@ func (e Engine) Reply(input runtime.Input) (string, error) {
 	request := Request{
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,
-		Messages:     buildMessages(input.SystemPrompt, fallbackPrompt),
+		Messages:     buildMessages(input.SystemPrompt, input.History, fallbackPrompt),
 	}
 
 	response, err := e.client.Reply(request)
@@ -47,8 +48,12 @@ func (e Engine) Reply(input runtime.Input) (string, error) {
 	return response.Text, nil
 }
 
-func buildMessages(systemPrompt, prompt string) []Message {
-	messages := make([]Message, 0, 2)
+func buildMessages(
+	systemPrompt string,
+	history []contextstore.TextRecord,
+	prompt string,
+) []Message {
+	messages := make([]Message, 0, 1+historyMessageLimit+1)
 	if systemPrompt != "" {
 		messages = append(messages, Message{
 			Role:    RoleSystem,
@@ -56,6 +61,7 @@ func buildMessages(systemPrompt, prompt string) []Message {
 		})
 	}
 
+	messages = append(messages, buildHistoryMessages(history, historyMessageLimit)...)
 	messages = append(messages, Message{
 		Role:    RoleUser,
 		Content: prompt,
