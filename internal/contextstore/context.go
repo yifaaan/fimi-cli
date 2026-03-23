@@ -16,6 +16,13 @@ type TextRecord struct {
 	Content string `json:"content"`
 }
 
+// Snapshot 表示某个 history 文件当前的读取结果摘要。
+type Snapshot struct {
+	Count         int
+	LastRecord    TextRecord
+	HasLastRecord bool
+}
+
 // Context 管理某个 history file 的追加写入。
 type Context struct {
 	historyFile string
@@ -133,4 +140,24 @@ func (c Context) Count() (int, error) {
 	}
 
 	return len(records), nil
+}
+
+// Snapshot 返回 history 的数量和最后一条记录。
+func (c Context) Snapshot() (Snapshot, error) {
+	records, err := c.ReadAll()
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	snapshot := Snapshot{
+		Count: len(records),
+	}
+	if len(records) == 0 {
+		return snapshot, nil
+	}
+
+	snapshot.LastRecord = records[len(records)-1]
+	snapshot.HasLastRecord = true
+
+	return snapshot, nil
 }
