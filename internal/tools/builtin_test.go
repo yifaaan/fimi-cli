@@ -13,6 +13,7 @@ import (
 )
 
 func TestNewBuiltinExecutorReadFileReadsWorkspaceFile(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	filePath := filepath.Join(workDir, "notes.txt")
 	if err := os.WriteFile(filePath, []byte("hello from file\n"), 0o644); err != nil {
@@ -26,7 +27,7 @@ func TestNewBuiltinExecutorReadFileReadsWorkspaceFile(t *testing.T) {
 		},
 	}, workDir)
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReadFile,
 		Arguments: `{"path":"notes.txt"}`,
 	})
@@ -39,6 +40,7 @@ func TestNewBuiltinExecutorReadFileReadsWorkspaceFile(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorReadFileRejectsPathOutsideWorkspace(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	executor := NewBuiltinExecutor([]Definition{
 		{
@@ -47,7 +49,7 @@ func TestNewBuiltinExecutorReadFileRejectsPathOutsideWorkspace(t *testing.T) {
 		},
 	}, workDir)
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReadFile,
 		Arguments: `{"path":"../secret.txt"}`,
 	})
@@ -60,6 +62,7 @@ func TestNewBuiltinExecutorReadFileRejectsPathOutsideWorkspace(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	markerPath := filepath.Join(workDir, "marker.txt")
 	if err := os.WriteFile(markerPath, []byte("marker"), 0o644); err != nil {
@@ -73,7 +76,7 @@ func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
 		},
 	}, workDir)
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolBash,
 		Arguments: `{"command":"printf '%s' \"$PWD\" && printf '\n' && ls marker.txt && printf 'warn' >&2"}`,
 	})
@@ -103,6 +106,7 @@ func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
+	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolBash,
@@ -110,7 +114,7 @@ func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 		},
 	}, t.TempDir())
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolBash,
 		Arguments: `{"command":"printf 'ok'; printf 'fail' >&2; exit 7"}`,
 	})
@@ -129,10 +133,11 @@ func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 }
 
 func TestNewBashHandlerWithTimeoutCancelsLongRunningCommand(t *testing.T) {
+	ctx := context.Background()
 	handler := newBashHandlerWithTimeout(t.TempDir(), 20*time.Millisecond)
 
 	start := time.Now()
-	_, err := handler(runtime.ToolCall{
+	_, err := handler(ctx, runtime.ToolCall{
 		Name:      ToolBash,
 		Arguments: `{"command":"sleep 1"}`,
 	}, Definition{Name: ToolBash, Kind: KindCommand})
@@ -154,6 +159,7 @@ func TestNewBashHandlerWithTimeoutCancelsLongRunningCommand(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorGlobMatchesWorkspacePaths(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workDir, "internal", "tools"), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -175,7 +181,7 @@ func TestNewBuiltinExecutorGlobMatchesWorkspacePaths(t *testing.T) {
 		},
 	}, workDir)
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGlob,
 		Arguments: `{"pattern":"internal/**/*.go"}`,
 	})
@@ -188,6 +194,7 @@ func TestNewBuiltinExecutorGlobMatchesWorkspacePaths(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorGlobRejectsPatternOutsideWorkspace(t *testing.T) {
+	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolGlob,
@@ -195,7 +202,7 @@ func TestNewBuiltinExecutorGlobRejectsPatternOutsideWorkspace(t *testing.T) {
 		},
 	}, t.TempDir())
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGlob,
 		Arguments: `{"pattern":"../*.go"}`,
 	})
@@ -205,6 +212,7 @@ func TestNewBuiltinExecutorGlobRejectsPatternOutsideWorkspace(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorGrepSearchesDirectoryRecursively(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workDir, "internal", "tools"), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -223,7 +231,7 @@ func TestNewBuiltinExecutorGrepSearchesDirectoryRecursively(t *testing.T) {
 		},
 	}, workDir)
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
 		Arguments: `{"pattern":"ToolExecution","path":"internal"}`,
 	})
@@ -236,6 +244,7 @@ func TestNewBuiltinExecutorGrepSearchesDirectoryRecursively(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorGrepRejectsPathOutsideWorkspace(t *testing.T) {
+	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolGrep,
@@ -243,7 +252,7 @@ func TestNewBuiltinExecutorGrepRejectsPathOutsideWorkspace(t *testing.T) {
 		},
 	}, t.TempDir())
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
 		Arguments: `{"pattern":"ToolExecution","path":"../secret"}`,
 	})
@@ -256,6 +265,7 @@ func TestNewBuiltinExecutorGrepRejectsPathOutsideWorkspace(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
+	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolGrep,
@@ -263,7 +273,7 @@ func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
 		},
 	}, t.TempDir())
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
 		Arguments: `{"pattern":"   "}`,
 	})
@@ -276,6 +286,7 @@ func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorGrepRejectsInvalidRegexPattern(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(notes.txt) error = %v", err)
@@ -288,7 +299,7 @@ func TestNewBuiltinExecutorGrepRejectsInvalidRegexPattern(t *testing.T) {
 		},
 	}, workDir)
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
 		Arguments: `{"pattern":"(","path":"notes.txt"}`,
 	})
@@ -301,6 +312,7 @@ func TestNewBuiltinExecutorGrepRejectsInvalidRegexPattern(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorWriteFileCreatesParentDirectories(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	executor := NewBuiltinExecutor([]Definition{
 		{
@@ -309,7 +321,7 @@ func TestNewBuiltinExecutorWriteFileCreatesParentDirectories(t *testing.T) {
 		},
 	}, workDir)
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolWriteFile,
 		Arguments: `{"path":"notes/output.txt","content":"hello writer"}`,
 	})
@@ -330,6 +342,7 @@ func TestNewBuiltinExecutorWriteFileCreatesParentDirectories(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorWriteFileOverwritesExistingFile(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	targetPath := filepath.Join(workDir, "notes.txt")
 	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
@@ -343,7 +356,7 @@ func TestNewBuiltinExecutorWriteFileOverwritesExistingFile(t *testing.T) {
 		},
 	}, workDir)
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolWriteFile,
 		Arguments: `{"path":"notes.txt","content":"new content"}`,
 	})
@@ -361,6 +374,7 @@ func TestNewBuiltinExecutorWriteFileOverwritesExistingFile(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorWriteFileRejectsPathOutsideWorkspace(t *testing.T) {
+	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolWriteFile,
@@ -368,7 +382,7 @@ func TestNewBuiltinExecutorWriteFileRejectsPathOutsideWorkspace(t *testing.T) {
 		},
 	}, t.TempDir())
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolWriteFile,
 		Arguments: `{"path":"../secret.txt","content":"x"}`,
 	})
@@ -378,6 +392,7 @@ func TestNewBuiltinExecutorWriteFileRejectsPathOutsideWorkspace(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorReplaceFileReplacesSingleOccurrence(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	targetPath := filepath.Join(workDir, "notes.txt")
 	if err := os.WriteFile(targetPath, []byte("hello old world"), 0o640); err != nil {
@@ -391,7 +406,7 @@ func TestNewBuiltinExecutorReplaceFileReplacesSingleOccurrence(t *testing.T) {
 		},
 	}, workDir)
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
 		Arguments: `{"path":"notes.txt","old":"old","new":"new"}`,
 	})
@@ -420,6 +435,7 @@ func TestNewBuiltinExecutorReplaceFileReplacesSingleOccurrence(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetMissing(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	targetPath := filepath.Join(workDir, "notes.txt")
 	if err := os.WriteFile(targetPath, []byte("hello world"), 0o644); err != nil {
@@ -433,7 +449,7 @@ func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetMissing(t *testing.T
 		},
 	}, workDir)
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
 		Arguments: `{"path":"notes.txt","old":"missing","new":"new"}`,
 	})
@@ -449,6 +465,7 @@ func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetMissing(t *testing.T
 }
 
 func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetNotUnique(t *testing.T) {
+	ctx := context.Background()
 	workDir := t.TempDir()
 	targetPath := filepath.Join(workDir, "notes.txt")
 	if err := os.WriteFile(targetPath, []byte("old and old"), 0o644); err != nil {
@@ -462,7 +479,7 @@ func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetNotUnique(t *testing
 		},
 	}, workDir)
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
 		Arguments: `{"path":"notes.txt","old":"old","new":"new"}`,
 	})
@@ -472,6 +489,7 @@ func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetNotUnique(t *testing
 }
 
 func TestNewBuiltinExecutorReplaceFileRejectsEmptyOldText(t *testing.T) {
+	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolReplaceFile,
@@ -479,7 +497,7 @@ func TestNewBuiltinExecutorReplaceFileRejectsEmptyOldText(t *testing.T) {
 		},
 	}, t.TempDir())
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
 		Arguments: `{"path":"notes.txt","old":"","new":"new"}`,
 	})
@@ -489,6 +507,7 @@ func TestNewBuiltinExecutorReplaceFileRejectsEmptyOldText(t *testing.T) {
 }
 
 func TestNewBuiltinExecutorReplaceFileRejectsPathOutsideWorkspace(t *testing.T) {
+	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolReplaceFile,
@@ -496,7 +515,7 @@ func TestNewBuiltinExecutorReplaceFileRejectsPathOutsideWorkspace(t *testing.T) 
 		},
 	}, t.TempDir())
 
-	_, err := executor.Execute(runtime.ToolCall{
+	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
 		Arguments: `{"path":"../secret.txt","old":"x","new":"y"}`,
 	})

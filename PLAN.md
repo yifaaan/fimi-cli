@@ -37,7 +37,8 @@ Next priority items:
   - 失败内容通过 `formatToolFailureContent()` 格式化，包含 `failure_kind` 分类
   - 与 Python 的差异：Go 停止 run，Python 继续循环；但两者都让模型能看到失败
   - 停止 run 是更安全的选择，防止 runaway 行为；用户可以继续 session 让模型看到失败后决定
-- [ ] Runtime 输入语义对齐：用户 prompt 只追加一次，后续 step 基于增长的 history 推进
+- [x] Runtime 输入语义对齐：用户 prompt 只追加一次，后续 step 基于增长的 history 推进
+  - **已实现**：`Run()` 只在开始时追加 user record，后续 step 通过 `store.ReadRecentTurns()` 读取增长的历史
 
 ### Already Implemented In Go
 

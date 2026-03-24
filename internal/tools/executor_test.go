@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -9,6 +10,7 @@ import (
 )
 
 func TestExecutorExecuteUsesNoopForAllowedToolWithoutHandler(t *testing.T) {
+	ctx := context.Background()
 	executor := NewExecutor([]Definition{
 		{
 			Name:        ToolReadFile,
@@ -17,7 +19,7 @@ func TestExecutorExecuteUsesNoopForAllowedToolWithoutHandler(t *testing.T) {
 		},
 	}, nil)
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      " read_file ",
 		Arguments: `{"path":"main.go"}`,
 	})
@@ -37,6 +39,7 @@ func TestExecutorExecuteUsesNoopForAllowedToolWithoutHandler(t *testing.T) {
 }
 
 func TestExecutorExecuteUsesRegisteredHandler(t *testing.T) {
+	ctx := context.Background()
 	var gotDefinition Definition
 	var gotCall runtime.ToolCall
 	executor := NewExecutor([]Definition{
@@ -46,7 +49,7 @@ func TestExecutorExecuteUsesRegisteredHandler(t *testing.T) {
 			Description: "Run a shell command inside the workspace.",
 		},
 	}, map[string]HandlerFunc{
-		ToolBash: func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		ToolBash: func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 			gotCall = call
 			gotDefinition = definition
 
@@ -60,7 +63,7 @@ func TestExecutorExecuteUsesRegisteredHandler(t *testing.T) {
 		},
 	})
 
-	got, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolBash,
 		Arguments: `{"command":"pwd"}`,
 	})
@@ -83,6 +86,7 @@ func TestExecutorExecuteUsesRegisteredHandler(t *testing.T) {
 }
 
 func TestExecutorExecuteReturnsErrorForDisallowedTool(t *testing.T) {
+	ctx := context.Background()
 	executor := NewExecutor([]Definition{
 		{
 			Name: ToolReadFile,
@@ -90,7 +94,7 @@ func TestExecutorExecuteReturnsErrorForDisallowedTool(t *testing.T) {
 		},
 	}, nil)
 
-	_, err := executor.Execute(runtime.ToolCall{Name: ToolBash})
+	_, err := executor.Execute(ctx, runtime.ToolCall{Name: ToolBash})
 	if !errors.Is(err, ErrToolCallNotAllowed) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolCallNotAllowed)
 	}
@@ -100,9 +104,10 @@ func TestExecutorExecuteReturnsErrorForDisallowedTool(t *testing.T) {
 }
 
 func TestExecutorExecuteReturnsErrorForMissingToolName(t *testing.T) {
+	ctx := context.Background()
 	executor := NewExecutor(nil, nil)
 
-	_, err := executor.Execute(runtime.ToolCall{Name: "   "})
+	_, err := executor.Execute(ctx, runtime.ToolCall{Name: "   "})
 	if !errors.Is(err, ErrToolCallNameRequired) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolCallNameRequired)
 	}
@@ -112,6 +117,7 @@ func TestExecutorExecuteReturnsErrorForMissingToolName(t *testing.T) {
 }
 
 func TestExecutorExecuteWrapsHandlerError(t *testing.T) {
+	ctx := context.Background()
 	wantErr := errors.New("handler failed")
 	executor := NewExecutor([]Definition{
 		{
@@ -119,18 +125,19 @@ func TestExecutorExecuteWrapsHandlerError(t *testing.T) {
 			Kind: KindCommand,
 		},
 	}, map[string]HandlerFunc{
-		ToolBash: func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		ToolBash: func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 			return runtime.ToolExecution{}, wantErr
 		},
 	})
 
-	_, err := executor.Execute(runtime.ToolCall{Name: ToolBash})
+	_, err := executor.Execute(ctx, runtime.ToolCall{Name: ToolBash})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, wantErr)
 	}
 }
 
 func TestExecutorExecutePreservesTemporaryClassification(t *testing.T) {
+	ctx := context.Background()
 	wantErr := temporaryHandlerError{err: errors.New("runner unavailable")}
 	executor := NewExecutor([]Definition{
 		{
@@ -138,12 +145,12 @@ func TestExecutorExecutePreservesTemporaryClassification(t *testing.T) {
 			Kind: KindCommand,
 		},
 	}, map[string]HandlerFunc{
-		ToolBash: func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		ToolBash: func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 			return runtime.ToolExecution{}, wantErr
 		},
 	})
 
-	_, err := executor.Execute(runtime.ToolCall{Name: ToolBash})
+	_, err := executor.Execute(ctx, runtime.ToolCall{Name: ToolBash})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, wantErr)
 	}
