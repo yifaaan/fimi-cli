@@ -13,6 +13,7 @@ import (
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/runtime"
 	"fimi-cli/internal/session"
+	"fimi-cli/internal/tools"
 )
 
 const (
@@ -29,7 +30,8 @@ type sessionOpener func(workDir string) (session.Session, bool, error)
 type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
-type agentLoader func(workDir string) (loadedAgent, error)
+type agentLoader func(workDir string, registry tools.Registry) (loadedAgent, error)
+type toolRegistryBuilder func() tools.Registry
 type helpPrinter func()
 type startupStatePrinter func(
 	sess session.Session,
@@ -50,6 +52,7 @@ type runtimeRunner interface {
 type loadedAgent struct {
 	Spec         agentspec.Spec
 	SystemPrompt string
+	Tools        []tools.Definition
 }
 
 // dependencies 表示 app 装配层当前持有的可替换依赖。
@@ -58,6 +61,7 @@ type dependencies struct {
 	loadConfig         configLoader
 	resolveWorkDir     workDirResolver
 	loadAgent          agentLoader
+	buildToolRegistry  toolRegistryBuilder
 	openSession        sessionOpener
 	createSession      sessionCreator
 	buildLLMClient     llmClientBuilder
@@ -120,7 +124,9 @@ func (d dependencies) run(args []string) error {
 		return fmt.Errorf("get current work dir: %w", err)
 	}
 
-	agent, err := d.loadRunAgent(workDir)
+	registry := d.resolveToolRegistry()
+
+	agent, err := d.loadRunAgent(workDir, registry)
 	if err != nil {
 		return err
 	}
@@ -241,6 +247,7 @@ func defaultDependencies() dependencies {
 		loadConfig:        config.Load,
 		resolveWorkDir:    os.Getwd,
 		loadAgent:         loadAgentFromWorkDir,
+		buildToolRegistry: tools.BuiltinRegistry,
 		openSession:       session.OpenLatestOrCreate,
 		createSession:     session.New,
 		buildLLMClient:    buildLLMClientFromConfig,
@@ -321,18 +328,27 @@ func buildRunner(cfg config.Config) (runtimeRunner, error) {
 }
 
 // loadRunAgent 负责解析当前运行使用的默认 agent。
-func (d dependencies) loadRunAgent(workDir string) (loadedAgent, error) {
+func (d dependencies) loadRunAgent(workDir string, registry tools.Registry) (loadedAgent, error) {
 	loadAgent := d.loadAgent
 	if loadAgent == nil {
 		loadAgent = loadAgentFromWorkDir
 	}
 
-	agent, err := loadAgent(workDir)
+	agent, err := loadAgent(workDir, registry)
 	if err != nil {
 		return loadedAgent{}, fmt.Errorf("load agent: %w", err)
 	}
 
 	return agent, nil
+}
+
+func (d dependencies) resolveToolRegistry() tools.Registry {
+	buildRegistry := d.buildToolRegistry
+	if buildRegistry == nil {
+		buildRegistry = tools.BuiltinRegistry
+	}
+
+	return buildRegistry()
 }
 
 // defaultAgentFile 返回工作目录下的默认 agent 文件位置。
@@ -341,7 +357,7 @@ func defaultAgentFile(workDir string) string {
 }
 
 // loadAgentFromWorkDir 从当前工作目录加载默认 agent。
-func loadAgentFromWorkDir(workDir string) (loadedAgent, error) {
+func loadAgentFromWorkDir(workDir string, registry tools.Registry) (loadedAgent, error) {
 	agentFile := defaultAgentFile(workDir)
 
 	spec, err := agentspec.LoadFile(agentFile)
@@ -354,9 +370,15 @@ func loadAgentFromWorkDir(workDir string) (loadedAgent, error) {
 		return loadedAgent{}, fmt.Errorf("load system prompt for agent %q: %w", spec.Name, err)
 	}
 
+	resolvedTools, err := registry.ResolveAll(spec.Tools)
+	if err != nil {
+		return loadedAgent{}, fmt.Errorf("resolve tools for agent %q: %w", spec.Name, err)
+	}
+
 	return loadedAgent{
 		Spec:         spec,
 		SystemPrompt: systemPrompt,
+		Tools:        resolvedTools,
 	}, nil
 }
 

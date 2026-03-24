@@ -18,9 +18,9 @@ Active phase: Phase 1, Agent Composition Layer
 
 Current teaching unit:
 
-- keep tool loading explicit in Go instead of Python-style reflection
-- defer system prompt template expansion and agent inheritance
-- defer concrete tool instantiation until the tool runtime boundary exists
+- add system prompt template expansion
+- add agent inheritance / extension
+- keep real tool execution deferred until the runtime tool boundary exists
 
 ### Already Implemented In Go
 
@@ -90,7 +90,7 @@ Target from temp
 | `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | basic history done, checkpoint/revert missing |
 | `temp/src/kimi_cli/soul/event.py` | `internal/runtime/events` | not started |
 | `temp/src/kimi_cli/soul/message.py` | `internal/runtime/messages` | not started |
-| `temp/src/kimi_cli/tools/*` | `internal/tools/*` | not started |
+| `temp/src/kimi_cli/tools/*` | `internal/tools/*` | partially done |
 | `temp/src/kimi_cli/ui/*` | `internal/ui/*` | not started |
 
 ## Recommended Build Order
@@ -132,7 +132,7 @@ Goal: introduce the missing layer between `app` and `runtime` that knows how to 
 - [x] Support agent name, system prompt path, tool list
 - [x] Load system prompt text from file
 - [x] Resolve agent file path from CLI/app defaults
-- [ ] Keep tool loading explicit in Go instead of Python-style reflection
+- [x] Keep tool loading explicit in Go instead of Python-style reflection
 
 Why now:
 

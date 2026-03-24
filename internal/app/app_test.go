@@ -13,6 +13,7 @@ import (
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/runtime"
 	"fimi-cli/internal/session"
+	"fimi-cli/internal/tools"
 )
 
 func testLoadedAgent(prompt string) loadedAgent {
@@ -22,7 +23,7 @@ func testLoadedAgent(prompt string) loadedAgent {
 }
 
 func testAgentLoader(prompt string) agentLoader {
-	return func(workDir string) (loadedAgent, error) {
+	return func(workDir string, registry tools.Registry) (loadedAgent, error) {
 		return testLoadedAgent(prompt), nil
 	}
 }
@@ -200,7 +201,7 @@ agent:
 		t.Fatalf("WriteFile(system.md) error = %v", err)
 	}
 
-	got, err := loadAgentFromWorkDir(workDir)
+	got, err := loadAgentFromWorkDir(workDir, tools.BuiltinRegistry())
 	if err != nil {
 		t.Fatalf("loadAgentFromWorkDir() error = %v", err)
 	}
@@ -215,6 +216,41 @@ agent:
 	}
 	if got.SystemPrompt != "You are the test agent." {
 		t.Fatalf("loadAgentFromWorkDir().SystemPrompt = %q, want %q", got.SystemPrompt, "You are the test agent.")
+	}
+	if len(got.Tools) != 2 {
+		t.Fatalf("len(loadAgentFromWorkDir().Tools) = %d, want %d", len(got.Tools), 2)
+	}
+	if got.Tools[0].Name != tools.ToolBash {
+		t.Fatalf("loadAgentFromWorkDir().Tools[0].Name = %q, want %q", got.Tools[0].Name, tools.ToolBash)
+	}
+	if got.Tools[1].Name != tools.ToolReadFile {
+		t.Fatalf("loadAgentFromWorkDir().Tools[1].Name = %q, want %q", got.Tools[1].Name, tools.ToolReadFile)
+	}
+}
+
+func TestLoadAgentFromWorkDirReturnsErrorForUnknownTool(t *testing.T) {
+	workDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(workDir, defaultAgentFileName), []byte(`
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  tools:
+    - missing_tool
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(agent.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "system.md"), []byte("You are the test agent.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(system.md) error = %v", err)
+	}
+
+	_, err := loadAgentFromWorkDir(workDir, tools.BuiltinRegistry())
+	if err == nil {
+		t.Fatalf("loadAgentFromWorkDir() error = nil, want non-nil")
+	}
+	if !errors.Is(err, tools.ErrToolNotRegistered) {
+		t.Fatalf("loadAgentFromWorkDir() error = %v, want wrapped %v", err, tools.ErrToolNotRegistered)
 	}
 }
 
@@ -908,7 +944,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 					resolveWorkDir: func() (string, error) {
 						return "/tmp/fimi-project", nil
 					},
-					loadAgent: func(workDir string) (loadedAgent, error) {
+					loadAgent: func(workDir string, registry tools.Registry) (loadedAgent, error) {
 						return loadedAgent{}, errLoadAgentFailed
 					},
 				}
