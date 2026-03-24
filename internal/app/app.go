@@ -19,6 +19,7 @@ const (
 type configLoader func() (config.Config, error)
 type workDirResolver func() (string, error)
 type sessionOpener func(workDir string) (session.Session, bool, error)
+type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
 type startupStatePrinter func(
@@ -41,6 +42,7 @@ type dependencies struct {
 	loadConfig         configLoader
 	resolveWorkDir     workDirResolver
 	openSession        sessionOpener
+	createSession      sessionCreator
 	buildLLMClient     llmClientBuilder
 	buildRuntimeRunner runtimeRunnerBuilder
 	printStartupState  startupStatePrinter
@@ -84,14 +86,9 @@ func (d dependencies) run(args []string) error {
 		return fmt.Errorf("get current work dir: %w", err)
 	}
 
-	openSession := d.openSession
-	if openSession == nil {
-		openSession = session.OpenLatestOrCreate
-	}
-
-	sess, sessionReused, err := openSession(workDir)
+	sess, sessionReused, err := d.openRunSession(workDir, input)
 	if err != nil {
-		return fmt.Errorf("open session: %w", err)
+		return err
 	}
 
 	ctx := contextstore.New(sess.HistoryFile)
@@ -123,13 +120,30 @@ func (d dependencies) run(args []string) error {
 
 // runInput 表示当前 CLI 入口解析出的最小输入结果。
 type runInput struct {
-	prompt string
+	prompt          string
+	forceNewSession bool
 }
 
-// parseRunInput 把 CLI 参数折叠成一段原始 prompt 文本。
+// parseRunInput 把 CLI 参数折叠成应用层输入。
+// 这里先手写最小解析逻辑，只识别 app 层已经承诺支持的 flag。
 func parseRunInput(args []string) runInput {
+	promptParts := make([]string, 0, len(args))
+	input := runInput{}
+
+	for _, arg := range args {
+		if arg == "--new-session" {
+			input.forceNewSession = true
+			continue
+		}
+
+		promptParts = append(promptParts, arg)
+	}
+
+	input.prompt = strings.TrimSpace(strings.Join(promptParts, " "))
+
 	return runInput{
-		prompt: strings.TrimSpace(strings.Join(args, " ")),
+		prompt:          input.prompt,
+		forceNewSession: input.forceNewSession,
 	}
 }
 
@@ -138,6 +152,7 @@ func defaultDependencies() dependencies {
 		loadConfig:        config.Load,
 		resolveWorkDir:    os.Getwd,
 		openSession:       session.OpenLatestOrCreate,
+		createSession:     session.New,
 		buildLLMClient:    buildLLMClientFromConfig,
 		printStartupState: printStartupState,
 	}
@@ -211,6 +226,36 @@ func buildEngine(cfg config.Config) (llm.Engine, error) {
 
 func buildRunner(cfg config.Config) (runtimeRunner, error) {
 	return defaultDependencies().buildRunner(cfg)
+}
+
+// openRunSession 根据当前应用输入决定 session 获取策略。
+// 是否复用旧 session 属于 app 层决策，而不是 session 包内部规则。
+func (d dependencies) openRunSession(workDir string, input runInput) (session.Session, bool, error) {
+	if input.forceNewSession {
+		createSession := d.createSession
+		if createSession == nil {
+			createSession = session.New
+		}
+
+		sess, err := createSession(workDir)
+		if err != nil {
+			return session.Session{}, false, fmt.Errorf("create session: %w", err)
+		}
+
+		return sess, false, nil
+	}
+
+	openSession := d.openSession
+	if openSession == nil {
+		openSession = session.OpenLatestOrCreate
+	}
+
+	sess, reused, err := openSession(workDir)
+	if err != nil {
+		return session.Session{}, false, fmt.Errorf("open session: %w", err)
+	}
+
+	return sess, reused, nil
 }
 
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。

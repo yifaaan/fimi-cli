@@ -110,6 +110,46 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 	}
 }
 
+func TestParseRunInput(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want runInput
+	}{
+		{
+			name: "prompt only",
+			args: []string{"fix", "tests"},
+			want: runInput{
+				prompt: "fix tests",
+			},
+		},
+		{
+			name: "force new session flag removed from prompt",
+			args: []string{"--new-session", "fix", "tests"},
+			want: runInput{
+				prompt:          "fix tests",
+				forceNewSession: true,
+			},
+		},
+		{
+			name: "force new session without prompt",
+			args: []string{"--new-session"},
+			want: runInput{
+				forceNewSession: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseRunInput(tt.args)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseRunInput() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	var gotWorkDir string
@@ -232,6 +272,88 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	}
 }
 
+func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	var openCalled bool
+	var createCalled bool
+	var gotCreateWorkDir string
+	var printedSession session.Session
+	var printedReused bool
+
+	deps := dependencies{
+		loadConfig: func() (config.Config, error) {
+			return config.Config{
+				DefaultModel: "custom-model",
+				SystemPrompt: "You are the configured agent.",
+				Models: map[string]config.ModelConfig{
+					"custom-model": {
+						Provider: config.ProviderTypePlaceholder,
+						Model:    "custom-model",
+					},
+				},
+			}, nil
+		},
+		resolveWorkDir: func() (string, error) {
+			return "/tmp/fimi-project", nil
+		},
+		openSession: func(workDir string) (session.Session, bool, error) {
+			openCalled = true
+			return session.Session{}, true, nil
+		},
+		createSession: func(workDir string) (session.Session, error) {
+			createCalled = true
+			gotCreateWorkDir = workDir
+			return session.Session{
+				ID:          "session-new",
+				WorkDir:     workDir,
+				HistoryFile: historyFile,
+			}, nil
+		},
+		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+			return &stubRunner{
+				result: runtime.Result{
+					AppendedRecords: []contextstore.TextRecord{
+						contextstore.NewUserTextRecord("fix tests"),
+						contextstore.NewAssistantTextRecord("runner reply"),
+					},
+				},
+				appendToContext: true,
+			}, nil
+		},
+		printStartupState: func(
+			sess session.Session,
+			ctx contextstore.Context,
+			state startupState,
+			sessionReused bool,
+			model string,
+		) {
+			printedSession = sess
+			printedReused = sessionReused
+		},
+	}
+
+	err := deps.run([]string{"--new-session", "fix", "tests"})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if openCalled {
+		t.Fatalf("openSession() called = true, want false")
+	}
+	if !createCalled {
+		t.Fatalf("createSession() called = false, want true")
+	}
+	if gotCreateWorkDir != "/tmp/fimi-project" {
+		t.Fatalf("createSession() got workDir = %q, want %q", gotCreateWorkDir, "/tmp/fimi-project")
+	}
+	if printedSession.ID != "session-new" {
+		t.Fatalf("printed session ID = %q, want %q", printedSession.ID, "session-new")
+	}
+	if printedReused {
+		t.Fatalf("printed sessionReused = true, want false")
+	}
+}
+
 func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	runner := &stubRunner{
@@ -315,6 +437,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 	errConfigFailed := errors.New("config failed")
 	errGetWDFailed := errors.New("getwd failed")
 	errOpenSessionFailed := errors.New("open session failed")
+	errCreateSessionFailed := errors.New("create session failed")
 	errBuildRunnerFailed := errors.New("build runner failed")
 	errRunnerFailed := errors.New("runner failed")
 
@@ -364,6 +487,23 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 				}
 			},
 			wantErr: errOpenSessionFailed,
+		},
+		{
+			name: "create session",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Default(), nil
+					},
+					resolveWorkDir: func() (string, error) {
+						return "/tmp/fimi-project", nil
+					},
+					createSession: func(workDir string) (session.Session, error) {
+						return session.Session{}, errCreateSessionFailed
+					},
+				}
+			},
+			wantErr: errCreateSessionFailed,
 		},
 		{
 			name: "build runner",
@@ -419,7 +559,12 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := tt.setup(t)
 
-			err := deps.run([]string{"fix", "tests"})
+			args := []string{"fix", "tests"}
+			if tt.name == "create session" {
+				args = []string{"--new-session", "fix", "tests"}
+			}
+
+			err := deps.run(args)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("run() error = %v, want wrapped %v", err, tt.wantErr)
 			}
