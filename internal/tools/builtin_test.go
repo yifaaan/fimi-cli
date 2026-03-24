@@ -223,3 +223,80 @@ func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPatternRequired)
 	}
 }
+
+func TestNewBuiltinExecutorWriteFileCreatesParentDirectories(t *testing.T) {
+	workDir := t.TempDir()
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolWriteFile,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	got, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolWriteFile,
+		Arguments: `{"path":"notes/output.txt","content":"hello writer"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Output != "wrote 12 bytes to notes/output.txt" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "wrote 12 bytes to notes/output.txt")
+	}
+
+	data, err := os.ReadFile(filepath.Join(workDir, "notes", "output.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile(output.txt) error = %v", err)
+	}
+	if string(data) != "hello writer" {
+		t.Fatalf("written content = %q, want %q", string(data), "hello writer")
+	}
+}
+
+func TestNewBuiltinExecutorWriteFileOverwritesExistingFile(t *testing.T) {
+	workDir := t.TempDir()
+	targetPath := filepath.Join(workDir, "notes.txt")
+	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("WriteFile(notes.txt) error = %v", err)
+	}
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolWriteFile,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolWriteFile,
+		Arguments: `{"path":"notes.txt","content":"new content"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile(notes.txt) error = %v", err)
+	}
+	if string(data) != "new content" {
+		t.Fatalf("written content = %q, want %q", string(data), "new content")
+	}
+}
+
+func TestNewBuiltinExecutorWriteFileRejectsPathOutsideWorkspace(t *testing.T) {
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolWriteFile,
+			Kind: KindFile,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolWriteFile,
+		Arguments: `{"path":"../secret.txt","content":"x"}`,
+	})
+	if !errors.Is(err, ErrToolPathOutsideWorkspace) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
+	}
+}

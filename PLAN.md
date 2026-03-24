@@ -187,7 +187,7 @@ Goal: reach the first meaningfully autonomous version.
 - [x] `read_file` tool handler
 - [x] `glob` tool handler
 - [x] `grep` tool handler
-- [ ] `internal/tools/file/write`
+- [x] `write_file` tool handler
 - [ ] `internal/tools/file/replace`
 
 Guardrails required in the same phase:

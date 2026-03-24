@@ -41,18 +41,24 @@ type readFileArguments struct {
 	Path string `json:"path"`
 }
 
+type writeFileArguments struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
 // NewBuiltinExecutor 返回带内建 handler 的最小工具执行器。
-// 当前先接通 read_file 和 bash 两个基础只读能力。
+// 当前先接通最小可用的一组本地工具能力。
 func NewBuiltinExecutor(definitions []Definition, workDir string) Executor {
 	return NewExecutor(definitions, builtinHandlers(workDir))
 }
 
 func builtinHandlers(workDir string) map[string]HandlerFunc {
 	return map[string]HandlerFunc{
-		ToolBash:     newBashHandler(workDir),
-		ToolGlob:     newGlobHandler(workDir),
-		ToolGrep:     newGrepHandler(workDir),
-		ToolReadFile: newReadFileHandler(workDir),
+		ToolBash:      newBashHandler(workDir),
+		ToolGlob:      newGlobHandler(workDir),
+		ToolGrep:      newGrepHandler(workDir),
+		ToolReadFile:  newReadFileHandler(workDir),
+		ToolWriteFile: newWriteFileHandler(workDir),
 	}
 }
 
@@ -166,6 +172,41 @@ func newGrepHandler(workDir string) HandlerFunc {
 	}
 }
 
+func newWriteFileHandler(workDir string) HandlerFunc {
+	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeWriteFileArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		rootAbs, err := resolveWorkspaceRoot(workDir)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		targetAbs, err := resolveWorkspacePath(rootAbs, args.Path)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		targetRel, err := relativeWorkspacePath(rootAbs, targetAbs)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		// 写工具先采用“覆盖写入”语义，并自动补父目录，后面再单独引入 replace 这类更细粒度操作。
+		if err := os.MkdirAll(filepath.Dir(targetAbs), 0o755); err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("create parent dir for %q: %w", targetAbs, err)
+		}
+		if err := os.WriteFile(targetAbs, []byte(args.Content), 0o644); err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("write file %q: %w", targetAbs, err)
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: fmt.Sprintf("wrote %d bytes to %s", len([]byte(args.Content)), targetRel),
+		}, nil
+	}
+}
+
 func decodeBashArguments(raw string) (bashArguments, error) {
 	var args bashArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
@@ -217,6 +258,18 @@ func decodeReadFileArguments(raw string) (readFileArguments, error) {
 	return args, nil
 }
 
+func decodeWriteFileArguments(raw string) (writeFileArguments, error) {
+	var args writeFileArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return writeFileArguments{}, fmt.Errorf("%w: decode write_file arguments: %v", ErrToolArgumentsInvalid, err)
+	}
+	if strings.TrimSpace(args.Path) == "" {
+		return writeFileArguments{}, ErrToolPathRequired
+	}
+
+	return args, nil
+}
+
 func resolveWorkspaceRoot(workDir string) (string, error) {
 	root := workDir
 	if strings.TrimSpace(root) == "" {
@@ -256,6 +309,15 @@ func resolveWorkspacePath(workDir string, target string) (string, error) {
 	}
 
 	return targetAbs, nil
+}
+
+func relativeWorkspacePath(rootAbs string, targetAbs string) (string, error) {
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return "", fmt.Errorf("relativize tool path %q: %w", targetAbs, err)
+	}
+
+	return filepath.ToSlash(rel), nil
 }
 
 func normalizeWorkspacePattern(raw string) (string, error) {
