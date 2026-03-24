@@ -14,10 +14,15 @@ The old plan stopped at "build the initial CLI skeleton". That is now outdated. 
 
 Date: 2026-03-24
 
-Active phase: Phase 2, Runtime Loop Kernel (mostly complete)
+Active phase: Phase 7, Event Stream And Print UI (next active)
 
 Completed in this session:
 
+- [x] add session metadata store with per-workdir `last_session_id`
+- [x] make "new session" the default path and add an explicit continue path
+- [x] stop inferring the active session from history file mtime
+- [x] return a clear user-facing error when `--continue` has no previous session
+- [x] define `internal/runtime/events` and wire a no-op event sink into runtime
 - [x] add explicit unfinished step state
 - [x] let runtime loop represent "continue" without using errors
 - [x] keep real tool execution deferred until the runtime tool boundary exists
@@ -45,7 +50,7 @@ Next priority items:
 - [x] `cmd/fimi -> internal/app.Run` entry chain
 - [x] CLI argument parsing with `--help`, `--new-session`, `--model`, and `--`
 - [x] Config loading, defaults, validation, model/provider mapping
-- [x] Session discovery and forced new session creation
+- [x] Explicit session creation/continue semantics with metadata-backed `last_session_id`
 - [x] JSONL history persistence with bootstrap and recent-turn reads
 - [x] Minimal runtime: one prompt in, one assistant reply out
 - [x] LLM request/message construction boundary
@@ -82,11 +87,12 @@ Next priority items:
 - [ ] Runtime event bus for UI/streaming（StepBegin/StatusUpdate/Interrupted + message parts 流式输出）
 - [ ] UI modes: shell, print, ACP
 - [ ] MCP integration
-- [ ] Richer session metadata：显式 `last_session_id`（Python `metadata.py`），而不是仅用 history mtime 推断
-  - 这不是纯元数据优化，而是 `continue` 语义和未来 subagent history 隔离的前置条件
+- [x] Explicit session metadata：显式 `last_session_id`（Python `metadata.py`），而不是仅用 history mtime 推断
+  - **已实现**：`session.New()` 写入 metadata，`session.Continue()` 只读取 `last_session_id`
+  - 这让 `continue` 成为显式契约，而不是依赖 history mtime 的启发式猜测
 - [ ] Service config beyond model providers（例如 Python 的 search service 配置）
 
-> 注：`runtime tool-loop` 闭环已经完成。当前最阻塞的是 **runtime observability**（event bus + print UI）和少量 **parity gaps**（`exclude_tools`、显式 session metadata、web/subagent/MCP 能力）。
+> 注：`runtime tool-loop` 闭环和显式 session 语义都已经完成。当前最阻塞的是 **runtime observability**（event bus + print UI）和少量 **parity gaps**（`exclude_tools`、web/subagent/MCP 能力）。
 
 ## Gap Summary
 
@@ -95,6 +101,7 @@ The current Go rewrite is no longer "empty", and it is also no longer just a she
 What is already in place:
 
 - application entry and dependency wiring
+- explicit session semantics backed by metadata
 - agent spec loading and prompt expansion
 - multi-step runtime loop with tool-call closure
 - local repo tool execution with guardrails
@@ -105,7 +112,7 @@ What is still missing:
 
 - runtime event streaming / observability
 - user-facing UI modes and transports
-- parity extras in agent spec and session metadata
+- parity extras in agent spec
 - advanced tools and delegation (`web/*`, task/subagent, MCP)
 - service config beyond model providers
 
@@ -113,7 +120,7 @@ In short:
 
 ```text
 Current Go
-  = CLI + agentspec + multi-step runtime + local tools + context history/checkpoint
+  = CLI + explicit session semantics + agentspec + multi-step runtime + local tools + context history/checkpoint
 
 Target from temp
   = current core + explicit session semantics + event bus + UI/transport + delegation + advanced integrations
@@ -264,15 +271,15 @@ Why after a basic tool loop exists:
 
 ### Phase 6: Session Metadata And Continue Semantics
 
-Status: next active phase
+Status: completed
 
 Goal: replace mtime-based session reuse with the explicit contract used by Python before subagent histories and multiple transports make that heuristic unsafe.
 
-- [ ] add session metadata store with per-workdir `last_session_id`
-- [ ] make "new session" the default path and add an explicit continue path
-- [ ] return an error when continue is requested but no previous session exists
-- [ ] stop inferring the active session from history file mtime
-- [ ] cover future sibling histories (for example subagent runs) in session tests
+- [x] add session metadata store with per-workdir `last_session_id`
+- [x] make "new session" the default path and add an explicit continue path
+- [x] return an error when continue is requested but no previous session exists
+- [x] stop inferring the active session from history file mtime
+- [x] cover future sibling histories (for example subagent runs) in session tests
 
 Why now:
 
@@ -281,12 +288,16 @@ Why now:
 
 ### Phase 7: Event Stream And Print UI
 
+Status: next active phase
+
 Goal: make runtime observable before building the full interactive shell.
 
-- [ ] create `internal/runtime/events`
-- [ ] define an event sink boundary with a no-op default
-- [ ] add a `run_soul`-style coordinator between app/runtime and UI consumers
+- [x] create `internal/runtime/events`
+- [x] define an event sink boundary with a no-op default
+- [x] add a `run_soul`-style coordinator between app/runtime and UI consumers
 - [ ] widen the runtime/LLM seam enough to emit step begin / text parts / tool-call deltas / tool results / status / interruption
+  - 当前已接入非流式事件：`step begin`、`text`、`tool_call`、`tool_result`、`status`、`interrupted`
+  - `tool-call delta` 仍依赖后续 streaming LLM seam
 - [ ] create a minimal `internal/ui/printui`
 - [ ] support plain text output first
 - [ ] defer `stream-json` until the event boundary is stable
@@ -354,11 +365,10 @@ Goal: support machine-facing execution modes after the local CLI is solid.
 
 The next several implementation steps should follow the real dependency chain from `temp`:
 
-1. Add explicit session metadata with `last_session_id` and a true continue path.
-2. Define `internal/runtime/events` plus a transport-neutral run coordinator.
-3. Widen the runtime/LLM seam only as far as needed to emit step/tool/status events.
-4. Add a minimal plain-text `printui` consumer on that event stream.
-5. After that seam is stable, extend `internal/agentspec` with `exclude_tools` and `subagents` so `task` can be designed on a real contract.
+1. Define `internal/runtime/events` plus a transport-neutral run coordinator.
+2. Widen the runtime/LLM seam only as far as needed to emit step/tool/status events.
+3. Add a minimal plain-text `printui` consumer on that event stream.
+4. After that seam is stable, extend `internal/agentspec` with `exclude_tools` and `subagents` so `task` can be designed on a real contract.
 
 ## Local Architecture Diagram
 

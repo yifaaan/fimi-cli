@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"fimi-cli/internal/contextstore"
+	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
 const DefaultReplyHistoryTurnLimit = 4
@@ -162,8 +163,8 @@ func (s StepResult) BuildToolStepRecords() []contextstore.TextRecord {
 	// 构造 assistant 消息，包含 tool_calls
 	toolCallsJSON, _ := json.Marshal(s.ToolCalls)
 	records = append(records, contextstore.TextRecord{
-		Role:         contextstore.RoleAssistant,
-		Content:      s.AssistantText,
+		Role:          contextstore.RoleAssistant,
+		Content:       s.AssistantText,
 		ToolCallsJSON: string(toolCallsJSON),
 	})
 
@@ -210,6 +211,7 @@ type StepConfig struct {
 type Runner struct {
 	engine       Engine
 	toolExecutor ToolExecutor
+	eventSink    runtimeevents.Sink
 	config       Config
 	runStepFn    func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error)
 	advanceRunFn func(ctx context.Context, store contextstore.Context, result Result, stepResult StepResult) (Result, bool, error)
@@ -218,16 +220,29 @@ type Runner struct {
 // New 创建最小 runtime runner。
 // 调用方必须显式注入 engine，避免 core runtime 反向依赖具体适配器。
 func New(engine Engine, cfg Config) Runner {
-	return NewWithToolExecutor(engine, nil, cfg)
+	return NewWithToolExecutorAndEvents(engine, nil, nil, cfg)
 }
 
 // NewWithToolExecutor 创建带显式工具执行边界的 runtime runner。
 func NewWithToolExecutor(engine Engine, toolExecutor ToolExecutor, cfg Config) Runner {
+	return NewWithToolExecutorAndEvents(engine, toolExecutor, nil, cfg)
+}
+
+// NewWithToolExecutorAndEvents 创建带工具执行器和事件输出边界的 runtime runner。
+func NewWithToolExecutorAndEvents(
+	engine Engine,
+	toolExecutor ToolExecutor,
+	eventSink runtimeevents.Sink,
+	cfg Config,
+) Runner {
 	if engine == nil {
 		engine = missingEngine{}
 	}
 	if toolExecutor == nil {
 		toolExecutor = NoopToolExecutor{}
+	}
+	if eventSink == nil {
+		eventSink = runtimeevents.NoopSink{}
 	}
 	if cfg.ReplyHistoryTurnLimit <= 0 {
 		cfg.ReplyHistoryTurnLimit = DefaultReplyHistoryTurnLimit
@@ -242,8 +257,20 @@ func NewWithToolExecutor(engine Engine, toolExecutor ToolExecutor, cfg Config) R
 	return Runner{
 		engine:       engine,
 		toolExecutor: toolExecutor,
+		eventSink:    eventSink,
 		config:       cfg,
 	}
+}
+
+// WithEventSink 返回一个绑定新事件输出边界的 Runner 副本。
+// 这里用值语义返回副本，避免 UI/transport 在共享 Runner 上互相覆盖 sink。
+func (r Runner) WithEventSink(eventSink runtimeevents.Sink) Runner {
+	if eventSink == nil {
+		eventSink = runtimeevents.NoopSink{}
+	}
+
+	r.eventSink = eventSink
+	return r
 }
 
 // Run 执行当前最小 runtime 流程。
@@ -281,19 +308,28 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 	for stepNo := 1; stepNo <= r.config.MaxStepsPerRun; stepNo++ {
 		// 在每个 step 前检查是否被取消
 		if ctx.Err() != nil {
-			result.Status = RunStatusInterrupted
-			return result, ctx.Err()
+			return r.interruptedResult(ctx, result)
+		}
+		if err := r.emitEvent(ctx, runtimeevents.StepBegin{Number: stepNo}); err != nil {
+			result.Status = RunStatusFailed
+			return result, err
 		}
 
 		var stepResult StepResult
 		stepResult, err = r.runStepWithRetry(ctx, store, cfg, runStep)
 		if err != nil {
+			if isInterruptedError(err) {
+				return r.interruptedResult(ctx, result)
+			}
 			result.Status = RunStatusFailed
 			return result, err
 		}
 
 		result, finished, err = advanceRun(ctx, store, result, stepResult)
 		if err != nil {
+			if isInterruptedError(err) {
+				return r.interruptedResult(ctx, result)
+			}
 			result.Status = RunStatusFailed
 			return result, err
 		}
@@ -305,6 +341,10 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 
 	result.Status = RunStatusMaxSteps
 	return result, nil
+}
+
+func isInterruptedError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // IsRetryable 判断某个错误是否允许 runtime 重新尝试当前 step。
@@ -461,6 +501,9 @@ func (r Runner) advanceRun(
 					}
 				}
 				result.Steps = append(result.Steps, stepResult)
+				if emitErr := r.emitStepEvents(ctx, store, stepResult); emitErr != nil {
+					return result, false, emitErr
+				}
 				return result, false, err
 			}
 
@@ -478,6 +521,9 @@ func (r Runner) advanceRun(
 	}
 
 	result.Steps = append(result.Steps, stepResult)
+	if err := r.emitStepEvents(ctx, store, stepResult); err != nil {
+		return result, false, err
+	}
 
 	switch stepResult.Status {
 	case StepStatusFinished:
@@ -506,6 +552,82 @@ func (r Runner) executeToolCalls(ctx context.Context, calls []ToolCall) ([]ToolE
 	}
 
 	return toolExecutions, nil
+}
+
+func (r Runner) emitStepEvents(
+	ctx context.Context,
+	store contextstore.Context,
+	stepResult StepResult,
+) error {
+	if strings.TrimSpace(stepResult.AssistantText) != "" {
+		if err := r.emitEvent(ctx, runtimeevents.TextPart{Text: stepResult.AssistantText}); err != nil {
+			return err
+		}
+	}
+
+	for _, call := range stepResult.ToolCalls {
+		if err := r.emitEvent(ctx, runtimeevents.ToolCall{
+			ID:        call.ID,
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		}); err != nil {
+			return err
+		}
+	}
+
+	for _, exec := range stepResult.ToolExecutions {
+		if err := r.emitEvent(ctx, runtimeevents.ToolResult{
+			ToolCallID: exec.Call.ID,
+			ToolName:   exec.Call.Name,
+			Output:     exec.Output,
+			IsError:    false,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if stepResult.ToolFailure != nil {
+		if err := r.emitEvent(ctx, runtimeevents.ToolResult{
+			ToolCallID: stepResult.ToolFailure.Call.ID,
+			ToolName:   stepResult.ToolFailure.Call.Name,
+			Output:     formatToolFailureContent(stepResult.ToolFailure),
+			IsError:    true,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return r.emitEvent(ctx, runtimeevents.StatusUpdate{
+		Status: buildStatusSnapshot(store),
+	})
+}
+
+func (r Runner) emitEvent(ctx context.Context, event runtimeevents.Event) error {
+	sink := r.eventSink
+	if sink == nil {
+		sink = runtimeevents.NoopSink{}
+	}
+
+	if err := sink.Emit(ctx, event); err != nil {
+		return fmt.Errorf("emit runtime event %q: %w", event.Kind(), err)
+	}
+
+	return nil
+}
+
+func buildStatusSnapshot(store contextstore.Context) runtimeevents.StatusSnapshot {
+	// 当前 runtime 还没有 provider-specific context window，
+	// 因此这里只先稳定事件形状，ContextUsage 暂时保留零值。
+	return runtimeevents.StatusSnapshot{}
+}
+
+func (r Runner) interruptedResult(ctx context.Context, result Result) (Result, error) {
+	result.Status = RunStatusInterrupted
+	if err := r.emitEvent(ctx, runtimeevents.StepInterrupted{}); err != nil {
+		return result, err
+	}
+
+	return result, ctx.Err()
 }
 
 // NoopToolExecutor 是 runtime 当前默认的占位执行器。

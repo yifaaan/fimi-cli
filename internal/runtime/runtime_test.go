@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"fimi-cli/internal/contextstore"
+	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
 func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
@@ -325,6 +326,14 @@ func TestNewWithToolExecutorUsesNoopWhenNil(t *testing.T) {
 	}
 	if execution.Call.Name != "bash" {
 		t.Fatalf("toolExecutor.Execute().Call.Name = %q, want %q", execution.Call.Name, "bash")
+	}
+}
+
+func TestNewWithToolExecutorAndEventsUsesNoopWhenNil(t *testing.T) {
+	runner := NewWithToolExecutorAndEvents(staticEngine{}, nil, nil, Config{})
+
+	if err := runner.emitEvent(context.Background(), runtimeevents.StepBegin{Number: 1}); err != nil {
+		t.Fatalf("emitEvent() error = %v", err)
 	}
 }
 
@@ -890,6 +899,133 @@ func TestRunnerRunReturnsInterruptedStatusWhenContextCancelled(t *testing.T) {
 	}
 }
 
+func TestRunnerRunEmitsFinishedStepEvents(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	sink := &recordingEventSink{}
+	runner := NewWithToolExecutorAndEvents(staticEngine{
+		reply: AssistantReply{Text: "assistant reply"},
+	}, nil, sink, Config{})
+
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+
+	want := []runtimeevents.Event{
+		runtimeevents.StepBegin{Number: 1},
+		runtimeevents.TextPart{Text: "assistant reply"},
+		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{}},
+	}
+	if !reflect.DeepEqual(sink.events, want) {
+		t.Fatalf("captured events = %#v, want %#v", sink.events, want)
+	}
+}
+
+func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	sink := &recordingEventSink{}
+	runner := NewWithToolExecutorAndEvents(staticEngine{}, &spyToolExecutor{}, sink, Config{
+		MaxStepsPerRun: 2,
+	})
+
+	stepIndex := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		stepIndex++
+		if stepIndex == 1 {
+			return StepResult{
+				Status:        StepStatusIncomplete,
+				Kind:          StepKindToolCalls,
+				AssistantText: "I will inspect the file.",
+				ToolCalls: []ToolCall{
+					{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+				},
+			}, nil
+		}
+
+		return StepResult{
+			Status:        StepStatusFinished,
+			Kind:          StepKindFinished,
+			AssistantText: "done",
+		}, nil
+	}
+
+	_, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	want := []runtimeevents.Event{
+		runtimeevents.StepBegin{Number: 1},
+		runtimeevents.TextPart{Text: "I will inspect the file."},
+		runtimeevents.ToolCall{
+			ID:        "call_read",
+			Name:      "read_file",
+			Arguments: `{"path":"main.go"}`,
+		},
+		runtimeevents.ToolResult{
+			ToolCallID: "call_read",
+			ToolName:   "read_file",
+			Output:     "",
+			IsError:    false,
+		},
+		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{}},
+		runtimeevents.StepBegin{Number: 2},
+		runtimeevents.TextPart{Text: "done"},
+		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{}},
+	}
+	if !reflect.DeepEqual(sink.events, want) {
+		t.Fatalf("captured events = %#v, want %#v", sink.events, want)
+	}
+}
+
+func TestRunnerRunEmitsInterruptedEventWhenContextCancelled(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	sink := &recordingEventSink{}
+	runner := NewWithToolExecutorAndEvents(staticEngine{}, nil, sink, Config{
+		MaxStepsPerRun: 2,
+	})
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	stepCalls := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		stepCalls++
+		if stepCalls == 1 {
+			cancel()
+			return StepResult{
+				Status: StepStatusIncomplete,
+				Kind:   StepKindToolCalls,
+				ToolCalls: []ToolCall{
+					{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
+				},
+			}, nil
+		}
+
+		return StepResult{
+			Status: StepStatusFinished,
+			Kind:   StepKindFinished,
+		}, nil
+	}
+
+	result, err := runner.Run(rootCtx, ctx, Input{Prompt: "hello"})
+	if err != context.Canceled {
+		t.Fatalf("Run() error = %v, want %v", err, context.Canceled)
+	}
+	if result.Status != RunStatusInterrupted {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
+	}
+
+	wantLast := runtimeevents.StepInterrupted{}
+	if len(sink.events) == 0 {
+		t.Fatalf("captured events = 0, want at least 1")
+	}
+	if sink.events[len(sink.events)-1] != wantLast {
+		t.Fatalf("last event = %#v, want %#v", sink.events[len(sink.events)-1], wantLast)
+	}
+}
+
 type staticEngine struct {
 	reply AssistantReply
 	err   error
@@ -985,4 +1121,13 @@ func (e temporaryStepError) Unwrap() error {
 
 func (temporaryStepError) Temporary() bool {
 	return true
+}
+
+type recordingEventSink struct {
+	events []runtimeevents.Event
+}
+
+func (s *recordingEventSink) Emit(ctx context.Context, event runtimeevents.Event) error {
+	s.events = append(s.events, event)
+	return nil
 }
