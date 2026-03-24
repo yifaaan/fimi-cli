@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -50,7 +51,7 @@ func NewEngine(client Client, cfg Config) Engine {
 }
 
 // Reply 调用底层 llm client，为 runtime 生成结构化 assistant 回复。
-func (e Engine) Reply(input runtime.ReplyInput) (runtime.AssistantReply, error) {
+func (e Engine) Reply(ctx context.Context, input runtime.ReplyInput) (runtime.AssistantReply, error) {
 	request := Request{
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,

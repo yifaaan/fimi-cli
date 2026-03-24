@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,9 +67,10 @@ type Result struct {
 type RunStatus string
 
 const (
-	RunStatusFinished RunStatus = "finished"
-	RunStatusMaxSteps RunStatus = "max_steps"
-	RunStatusFailed   RunStatus = "failed"
+	RunStatusFinished    RunStatus = "finished"
+	RunStatusMaxSteps    RunStatus = "max_steps"
+	RunStatusFailed      RunStatus = "failed"
+	RunStatusInterrupted RunStatus = "interrupted"
 )
 
 // StepKind 表示单个 runtime step 当前产出的类型。
@@ -122,9 +124,9 @@ func (e ToolExecutionError) Unwrap() error {
 }
 
 // ToolExecutor 定义 runtime 消费工具调用的最小边界。
-// runtime 只关心“调用有没有被处理”，不关心具体 bash/file/web 细节。
+// runtime 只关心”调用有没有被处理”，不关心具体 bash/file/web 细节。
 type ToolExecutor interface {
-	Execute(call ToolCall) (ToolExecution, error)
+	Execute(ctx context.Context, call ToolCall) (ToolExecution, error)
 }
 
 // StepResult 表示单个 runtime step 的结构化结果。
@@ -185,7 +187,7 @@ func formatToolFailureContent(err *ToolExecutionError) string {
 // Engine 负责为 runtime 生成 assistant 回复文本。
 // 这里先保持最小接口，后面再扩展为真正的模型调用边界。
 type Engine interface {
-	Reply(input ReplyInput) (AssistantReply, error)
+	Reply(ctx context.Context, input ReplyInput) (AssistantReply, error)
 }
 
 // StepConfig 持有每个 step 需要的不可变 engine 参数。
@@ -200,8 +202,8 @@ type Runner struct {
 	engine       Engine
 	toolExecutor ToolExecutor
 	config       Config
-	runStepFn    func(ctx contextstore.Context, cfg StepConfig) (StepResult, error)
-	advanceRunFn func(ctx contextstore.Context, result Result, stepResult StepResult) (Result, bool, error)
+	runStepFn    func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error)
+	advanceRunFn func(ctx context.Context, store contextstore.Context, result Result, stepResult StepResult) (Result, bool, error)
 }
 
 // New 创建最小 runtime runner。
@@ -236,8 +238,8 @@ func NewWithToolExecutor(engine Engine, toolExecutor ToolExecutor, cfg Config) R
 }
 
 // Run 执行当前最小 runtime 流程。
-// 现在它还不调用真实模型，只协调 history 追加顺序和 engine 调用。
-func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
+// ctx 是 Go 标准的取消/超时传递机制；store 是 fimi 的历史存储接口。
+func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input) (Result, error) {
 	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
 		return Result{Status: RunStatusFinished}, nil
@@ -246,7 +248,7 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	// 关键语义：用户 prompt 只在一次 run 的开始时追加到 history。
 	// 后续 step 不再重复注入 prompt，而是完全基于增长的 history 驱动。
 	userRecord := contextstore.NewUserTextRecord(prompt)
-	if err := ctx.Append(userRecord); err != nil {
+	if err := store.Append(userRecord); err != nil {
 		return Result{Status: RunStatusFailed}, fmt.Errorf("append runtime record: %w", err)
 	}
 
@@ -268,14 +270,20 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	var finished bool
 	var err error
 	for stepNo := 1; stepNo <= r.config.MaxStepsPerRun; stepNo++ {
+		// 在每个 step 前检查是否被取消
+		if ctx.Err() != nil {
+			result.Status = RunStatusInterrupted
+			return result, ctx.Err()
+		}
+
 		var stepResult StepResult
-		stepResult, err = r.runStepWithRetry(ctx, cfg, runStep)
+		stepResult, err = r.runStepWithRetry(ctx, store, cfg, runStep)
 		if err != nil {
 			result.Status = RunStatusFailed
 			return result, err
 		}
 
-		result, finished, err = advanceRun(ctx, result, stepResult)
+		result, finished, err = advanceRun(ctx, store, result, stepResult)
 		if err != nil {
 			result.Status = RunStatusFailed
 			return result, err
@@ -336,15 +344,21 @@ func IsTemporary(err error) bool {
 }
 
 func (r Runner) runStepWithRetry(
-	ctx contextstore.Context,
+	ctx context.Context,
+	store contextstore.Context,
 	cfg StepConfig,
-	runStep func(ctx contextstore.Context, cfg StepConfig) (StepResult, error),
+	runStep func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error),
 ) (StepResult, error) {
 	var lastErr error
 	// 这里沿用 Python 参考实现的语义：
 	// MaxRetriesPerStep 表示当前 step 的最大尝试次数，而不是"额外重试次数"。
 	for attempt := 1; attempt <= r.config.MaxRetriesPerStep; attempt++ {
-		stepResult, err := runStep(ctx, cfg)
+		// 每次重试前检查是否被取消
+		if ctx.Err() != nil {
+			return StepResult{}, ctx.Err()
+		}
+
+		stepResult, err := runStep(ctx, store, cfg)
 		if err == nil {
 			return stepResult, nil
 		}
@@ -359,15 +373,16 @@ func (r Runner) runStepWithRetry(
 }
 
 func (r Runner) runStep(
-	ctx contextstore.Context,
+	ctx context.Context,
+	store contextstore.Context,
 	cfg StepConfig,
 ) (StepResult, error) {
-	history, err := ctx.ReadRecentTurns(r.config.ReplyHistoryTurnLimit)
+	history, err := store.ReadRecentTurns(r.config.ReplyHistoryTurnLimit)
 	if err != nil {
 		return StepResult{}, fmt.Errorf("read runtime history: %w", err)
 	}
 
-	assistantReply, err := r.engine.Reply(ReplyInput{
+	assistantReply, err := r.engine.Reply(ctx, ReplyInput{
 		Model:        cfg.Model,
 		SystemPrompt: cfg.SystemPrompt,
 		History:      history,
@@ -389,7 +404,7 @@ func (r Runner) runStep(
 		contextstore.NewAssistantTextRecord(assistantReply.Text),
 	}
 	for _, record := range records {
-		if err := ctx.Append(record); err != nil {
+		if err := store.Append(record); err != nil {
 			return StepResult{}, fmt.Errorf("append runtime record: %w", err)
 		}
 	}
@@ -403,7 +418,8 @@ func (r Runner) runStep(
 }
 
 func (r Runner) advanceRun(
-	ctx contextstore.Context,
+	ctx context.Context,
+	store contextstore.Context,
 	result Result,
 	stepResult StepResult,
 ) (Result, bool, error) {
@@ -414,7 +430,7 @@ func (r Runner) advanceRun(
 			return Result{}, false, fmt.Errorf("step kind %q requires at least one tool call", stepResult.Kind)
 		}
 
-		toolExecutions, err := r.executeToolCalls(stepResult.ToolCalls)
+		toolExecutions, err := r.executeToolCalls(ctx, stepResult.ToolCalls)
 		if err != nil {
 			var toolErr ToolExecutionError
 			if errors.As(err, &toolErr) {
@@ -422,7 +438,7 @@ func (r Runner) advanceRun(
 				stepResult.ToolFailure = &toolErr
 				// 在返回错误前，先把 tool records 写入 history
 				for _, record := range stepResult.BuildToolStepRecords() {
-					if appendErr := ctx.Append(record); appendErr != nil {
+					if appendErr := store.Append(record); appendErr != nil {
 						return Result{}, false, fmt.Errorf("append tool failure record: %w", appendErr)
 					}
 				}
@@ -435,7 +451,7 @@ func (r Runner) advanceRun(
 		stepResult.ToolExecutions = toolExecutions
 		// 成功执行后，把 tool records 写入 history
 		for _, record := range stepResult.BuildToolStepRecords() {
-			if appendErr := ctx.Append(record); appendErr != nil {
+			if appendErr := store.Append(record); appendErr != nil {
 				return Result{}, false, fmt.Errorf("append tool step record: %w", appendErr)
 			}
 		}
@@ -455,10 +471,10 @@ func (r Runner) advanceRun(
 	}
 }
 
-func (r Runner) executeToolCalls(calls []ToolCall) ([]ToolExecution, error) {
+func (r Runner) executeToolCalls(ctx context.Context, calls []ToolCall) ([]ToolExecution, error) {
 	toolExecutions := make([]ToolExecution, 0, len(calls))
 	for _, call := range calls {
-		execution, err := r.toolExecutor.Execute(call)
+		execution, err := r.toolExecutor.Execute(ctx, call)
 		if err != nil {
 			// 当前阶段先把工具执行失败视为本次 run 的终止条件。
 			// 后续如果要把失败反馈给模型，再在这里调整为结构化 step 产物。
@@ -475,10 +491,10 @@ func (r Runner) executeToolCalls(calls []ToolCall) ([]ToolExecution, error) {
 }
 
 // NoopToolExecutor 是 runtime 当前默认的占位执行器。
-// 它只把 tool call 标记为“已消费”，不做任何真实副作用。
+// 它只把 tool call 标记为”已消费”，不做任何真实副作用。
 type NoopToolExecutor struct{}
 
-func (NoopToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
+func (NoopToolExecutor) Execute(ctx context.Context, call ToolCall) (ToolExecution, error) {
 	return ToolExecution{
 		Call: call,
 	}, nil
@@ -486,6 +502,6 @@ func (NoopToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
 
 type missingEngine struct{}
 
-func (missingEngine) Reply(input ReplyInput) (AssistantReply, error) {
+func (missingEngine) Reply(ctx context.Context, input ReplyInput) (AssistantReply, error) {
 	return AssistantReply{}, errors.New("runtime engine is required")
 }

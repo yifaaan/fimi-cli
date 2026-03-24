@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"fimi-cli/internal/config"
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/runtime"
 )
@@ -199,12 +200,16 @@ func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
 		t.Fatalf("buildEngine() error = %v", err)
 	}
 
-	reply, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
+	reply, err := engine.Reply(runtime.ReplyInput{
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("hello"),
+		},
+	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}
-	if reply != "assistant placeholder reply: hello" {
-		t.Fatalf("Reply() = %q, want %q", reply, "assistant placeholder reply: hello")
+	if reply.Text != "assistant placeholder reply: hello" {
+		t.Fatalf("Reply().Text = %q, want %q", reply.Text, "assistant placeholder reply: hello")
 	}
 }
 
@@ -240,12 +245,16 @@ func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
 		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, config.ProviderTypePlaceholder)
 	}
 
-	reply, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
+	reply, err := engine.Reply(runtime.ReplyInput{
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("hello"),
+		},
+	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}
-	if reply != "assistant placeholder reply: hello" {
-		t.Fatalf("Reply() = %q, want %q", reply, "assistant placeholder reply: hello")
+	if reply.Text != "assistant placeholder reply: hello" {
+		t.Fatalf("Reply().Text = %q, want %q", reply.Text, "assistant placeholder reply: hello")
 	}
 }
 

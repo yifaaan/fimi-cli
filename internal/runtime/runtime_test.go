@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -26,7 +27,7 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	}
 	runner := New(engine, Config{})
 
-	result, err := runner.Run(ctx, Input{
+	result, err := runner.Run(context.Background(), ctx, Input{
 		Prompt:       " hello ",
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
@@ -112,7 +113,7 @@ func TestRunnerRunSkipsEmptyPrompt(t *testing.T) {
 	engine := &trackingEngine{}
 	runner := New(engine, Config{})
 
-	result, err := runner.Run(ctx, Input{Prompt: "   "})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "   "})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -144,7 +145,7 @@ func TestRunnerRunReturnsEngineError(t *testing.T) {
 		err: wantErr,
 	}, Config{})
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
 	}
@@ -157,7 +158,7 @@ func TestRunnerRunReturnsMissingEngineError(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := New(nil, Config{})
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if err == nil {
 		t.Fatalf("Run() error = nil, want non-nil")
 	}
@@ -196,7 +197,7 @@ func TestRunnerRunReadsRecentTurnWindow(t *testing.T) {
 	}
 	runner := New(engine, Config{})
 
-	_, err := runner.Run(ctx, Input{
+	_, err := runner.Run(context.Background(), ctx, Input{
 		Prompt:       "hello",
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
@@ -245,7 +246,7 @@ func TestRunnerRunUsesConfiguredTurnLimit(t *testing.T) {
 		ReplyHistoryTurnLimit: 1,
 	})
 
-	_, err := runner.Run(ctx, Input{Prompt: "hello"})
+	_, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -265,7 +266,7 @@ func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
 	runner := New(staticEngine{}, Config{
 		MaxStepsPerRun: 1,
 	})
-	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		return StepResult{
 			Status: StepStatusIncomplete,
 			Kind:   StepKindToolCalls,
@@ -275,7 +276,7 @@ func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
 		}, nil
 	}
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -314,7 +315,7 @@ func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
 func TestNewWithToolExecutorUsesNoopWhenNil(t *testing.T) {
 	runner := NewWithToolExecutor(staticEngine{}, nil, Config{})
 
-	execution, err := runner.toolExecutor.Execute(ToolCall{
+	execution, err := runner.toolExecutor.Execute(context.Background(), ToolCall{
 		ID:        "call_bash",
 		Name:      "bash",
 		Arguments: `{"command":"pwd"}`,
@@ -340,7 +341,7 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 		},
 	}
 
-	got, finished, err := runner.advanceRun(ctx, initial, step)
+	got, finished, err := runner.advanceRun(context.Background(), ctx, initial, step)
 	if err != nil {
 		t.Fatalf("advanceRun() error = %v", err)
 	}
@@ -367,7 +368,7 @@ func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
 		},
 	}
 
-	got, finished, err := runner.advanceRun(ctx, Result{}, step)
+	got, finished, err := runner.advanceRun(context.Background(), ctx, Result{}, step)
 	if err != nil {
 		t.Fatalf("advanceRun() error = %v", err)
 	}
@@ -435,7 +436,7 @@ func TestRunnerAdvanceRunAppendsFailedToolStepBeforeReturningError(t *testing.T)
 		},
 	}
 
-	got, finished, err := runner.advanceRun(ctx, Result{}, step)
+	got, finished, err := runner.advanceRun(context.Background(), ctx, Result{}, step)
 	if err == nil {
 		t.Fatalf("advanceRun() error = nil, want non-nil")
 	}
@@ -499,7 +500,7 @@ func TestRunnerRunStepReturnsToolCallStepWithoutAppendingHistory(t *testing.T) {
 	}
 	runner := New(engine, Config{})
 
-	step, err := runner.runStep(ctx, StepConfig{
+	step, err := runner.runStep(context.Background(), ctx, StepConfig{
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
 	})
@@ -544,7 +545,7 @@ func TestRunnerRunExecutesToolCallsBeforeFinishing(t *testing.T) {
 	})
 
 	stepIndex := 0
-	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		stepIndex++
 		if stepIndex == 1 {
 			return StepResult{
@@ -562,7 +563,7 @@ func TestRunnerRunExecutesToolCallsBeforeFinishing(t *testing.T) {
 		}, nil
 	}
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -588,7 +589,7 @@ func TestRunnerRunReturnsToolExecutorError(t *testing.T) {
 	}, Config{
 		MaxStepsPerRun: 1,
 	})
-	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		return StepResult{
 			Status: StepStatusIncomplete,
 			Kind:   StepKindToolCalls,
@@ -598,7 +599,7 @@ func TestRunnerRunReturnsToolExecutorError(t *testing.T) {
 		}, nil
 	}
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
 	}
@@ -632,7 +633,7 @@ func TestRunnerRunStopsImmediatelyOnTemporaryToolExecutionError(t *testing.T) {
 	})
 
 	stepCalls := 0
-	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		stepCalls++
 		return StepResult{
 			Status: StepStatusIncomplete,
@@ -643,7 +644,7 @@ func TestRunnerRunStopsImmediatelyOnTemporaryToolExecutionError(t *testing.T) {
 		}, nil
 	}
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if err == nil {
 		t.Fatalf("Run() error = nil, want non-nil")
 	}
@@ -685,7 +686,7 @@ func TestRunnerRunRetriesRetryableStepError(t *testing.T) {
 	})
 
 	attempts := 0
-	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		attempts++
 		if attempts < 3 {
 			return StepResult{}, retryableStepError{err: errors.New("temporary llm outage")}
@@ -697,7 +698,7 @@ func TestRunnerRunRetriesRetryableStepError(t *testing.T) {
 		}, nil
 	}
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v, want nil", err)
 	}
@@ -717,12 +718,12 @@ func TestRunnerRunStopsAtConfiguredRetryAttemptLimit(t *testing.T) {
 	})
 
 	attempts := 0
-	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		attempts++
 		return StepResult{}, wantErr
 	}
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
 	}
@@ -742,12 +743,12 @@ func TestRunnerRunDoesNotRetryNonRetryableStepError(t *testing.T) {
 	})
 
 	attempts := 0
-	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		attempts++
 		return StepResult{}, wantErr
 	}
 
-	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
 	}
@@ -763,7 +764,7 @@ func TestRunnerAdvanceRunRejectsUnknownStepStatus(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := Runner{}
 	advanceRun := runner.advanceRun
-	_, _, err := advanceRun(ctx, Result{}, StepResult{
+	_, _, err := advanceRun(context.Background(), ctx, Result{}, StepResult{
 		Status: StepStatus("bad-status"),
 		Kind:   StepKindFinished,
 	})
@@ -776,7 +777,7 @@ func TestRunnerAdvanceRunRejectsUnknownStepKind(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := Runner{}
 	advanceRun := runner.advanceRun
-	_, _, err := advanceRun(ctx, Result{}, StepResult{
+	_, _, err := advanceRun(context.Background(), ctx, Result{}, StepResult{
 		Status: StepStatusFinished,
 		Kind:   StepKind("bad-kind"),
 	})
@@ -829,12 +830,72 @@ func TestIsTemporaryReturnsFalseForOrdinaryError(t *testing.T) {
 	}
 }
 
+func TestRunnerRunReturnsInterruptedStatusWhenContextCancelled(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{}, Config{
+		MaxStepsPerRun: 10,
+	})
+
+	// 创建一个可取消的 context
+	rootCtx, cancel := context.WithCancel(context.Background())
+
+	// 让 runStepFn 在第二次调用时发现 ctx 已被取消
+	stepCalls := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		stepCalls++
+		if stepCalls == 1 {
+			// 第一步正常返回 tool_calls，触发后续执行
+			return StepResult{
+				Status: StepStatusIncomplete,
+				Kind:   StepKindToolCalls,
+				ToolCalls: []ToolCall{
+					{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
+				},
+			}, nil
+		}
+		// 第二步不应该被执行
+		return StepResult{
+			Status: StepStatusFinished,
+			Kind:   StepKindFinished,
+		}, nil
+	}
+
+	// 使用一个 spy executor 来追踪工具是否被执行
+	executor := &spyToolExecutor{}
+	runner.toolExecutor = executor
+
+	// 在第一次 step 完成后取消 context
+	runner.advanceRunFn = func(ctx context.Context, store contextstore.Context, result Result, stepResult StepResult) (Result, bool, error) {
+		// 在第一次 advanceRun 时取消 context
+		cancel()
+		// 继续正常的 advanceRun 逻辑
+		return Runner{toolExecutor: executor}.advanceRun(ctx, store, result, stepResult)
+	}
+
+	result, err := runner.Run(rootCtx, ctx, Input{Prompt: "hello"})
+
+	// 验证：run 应该因为 ctx 被取消而返回 interrupted 状态
+	if result.Status != RunStatusInterrupted {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
+	}
+	// 只执行了第一步
+	if stepCalls != 1 {
+		t.Fatalf("stepCalls = %d, want 1 (should stop after cancellation)", stepCalls)
+	}
+	// 工具执行应该被中断（取决于 cancel 发生的时机）
+	// 这里我们允许工具执行完成，因为 cancel 是在 advanceRun 中触发的
+	// 关键是后续的 step 不应该再执行
+	if err != context.Canceled {
+		t.Fatalf("Run() error = %v, want %v", err, context.Canceled)
+	}
+}
+
 type staticEngine struct {
 	reply AssistantReply
 	err   error
 }
 
-func (e staticEngine) Reply(input ReplyInput) (AssistantReply, error) {
+func (e staticEngine) Reply(ctx context.Context, input ReplyInput) (AssistantReply, error) {
 	return e.reply, e.err
 }
 
@@ -842,7 +903,7 @@ type trackingEngine struct {
 	called bool
 }
 
-func (e *trackingEngine) Reply(input ReplyInput) (AssistantReply, error) {
+func (e *trackingEngine) Reply(ctx context.Context, input ReplyInput) (AssistantReply, error) {
 	e.called = true
 	return AssistantReply{Text: "unused"}, nil
 }
@@ -853,7 +914,7 @@ type spyEngine struct {
 	err      error
 }
 
-func (e *spyEngine) Reply(input ReplyInput) (AssistantReply, error) {
+func (e *spyEngine) Reply(ctx context.Context, input ReplyInput) (AssistantReply, error) {
 	e.gotInput = input
 	return e.reply, e.err
 }
@@ -862,7 +923,7 @@ type spyToolExecutor struct {
 	gotCalls []ToolCall
 }
 
-func (e *spyToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
+func (e *spyToolExecutor) Execute(ctx context.Context, call ToolCall) (ToolExecution, error) {
 	e.gotCalls = append(e.gotCalls, call)
 
 	return ToolExecution{
@@ -874,7 +935,7 @@ type failingToolExecutor struct {
 	err error
 }
 
-func (e failingToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
+func (e failingToolExecutor) Execute(ctx context.Context, call ToolCall) (ToolExecution, error) {
 	return ToolExecution{}, e.err
 }
 

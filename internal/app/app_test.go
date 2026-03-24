@@ -1104,23 +1104,37 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	wantResult := []contextstore.TextRecord{
-		contextstore.NewUserTextRecord("hello"),
-		contextstore.NewAssistantTextRecord("assistant placeholder reply: hello"),
+	// 用户记录由 Run() 在开始时追加，存储在 result.UserRecord
+	if result.UserRecord == nil {
+		t.Fatalf("Run().UserRecord = nil, want non-nil")
 	}
+	if *result.UserRecord != contextstore.NewUserTextRecord("hello") {
+		t.Fatalf("Run().UserRecord = %#v, want %#v", *result.UserRecord, contextstore.NewUserTextRecord("hello"))
+	}
+
+	// Step 只包含 assistant 记录
+	wantAssistantRecord := contextstore.NewAssistantTextRecord("assistant placeholder reply: hello")
 	if len(result.Steps) != 1 {
 		t.Fatalf("len(Run().Steps) = %d, want 1", len(result.Steps))
 	}
-	if !reflect.DeepEqual(result.Steps[0].AppendedRecords, wantResult) {
-		t.Fatalf("Run().Steps[0].AppendedRecords = %#v, want %#v", result.Steps[0].AppendedRecords, wantResult)
+	if len(result.Steps[0].AppendedRecords) != 1 {
+		t.Fatalf("len(Run().Steps[0].AppendedRecords) = %d, want 1", len(result.Steps[0].AppendedRecords))
+	}
+	if result.Steps[0].AppendedRecords[0] != wantAssistantRecord {
+		t.Fatalf("Run().Steps[0].AppendedRecords[0] = %#v, want %#v", result.Steps[0].AppendedRecords[0], wantAssistantRecord)
 	}
 
+	// history 文件包含 user + assistant
+	wantRecords := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("hello"),
+		wantAssistantRecord,
+	}
 	records, err := ctx.ReadAll()
 	if err != nil {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
-	if !reflect.DeepEqual(records, wantResult) {
-		t.Fatalf("history records = %#v, want %#v", records, wantResult)
+	if !reflect.DeepEqual(records, wantRecords) {
+		t.Fatalf("history records = %#v, want %#v", records, wantRecords)
 	}
 }
 

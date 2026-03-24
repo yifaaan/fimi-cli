@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -44,8 +45,8 @@ func (temporaryError) Temporary() bool {
 }
 
 // HandlerFunc 定义单个工具名对应的执行逻辑。
-// 当前先保留最小函数签名，后面再扩展上下文、工作目录等运行参数。
-type HandlerFunc func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error)
+// ctx 用于超时/取消传播；call 是工具调用参数；definition 是工具定义。
+type HandlerFunc func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error)
 
 // Executor 是 runtime.ToolExecutor 在 tools 包内的最小适配器。
 // 它负责校验当前 agent 允许调用哪些工具，并把执行委托给对应 handler。
@@ -73,7 +74,7 @@ func NewExecutor(definitions []Definition, handlers map[string]HandlerFunc) Exec
 }
 
 // Execute 校验工具调用是否被当前 agent 允许，然后执行对应 handler。
-func (e Executor) Execute(call runtime.ToolCall) (runtime.ToolExecution, error) {
+func (e Executor) Execute(ctx context.Context, call runtime.ToolCall) (runtime.ToolExecution, error) {
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
 		return runtime.ToolExecution{}, markRefused(ErrToolCallNameRequired)
@@ -92,7 +93,7 @@ func (e Executor) Execute(call runtime.ToolCall) (runtime.ToolExecution, error) 
 		}, nil
 	}
 
-	execution, err := handler(call, definition)
+	execution, err := handler(ctx, call, definition)
 	if err != nil {
 		return runtime.ToolExecution{}, fmt.Errorf("execute tool %q: %w", name, err)
 	}

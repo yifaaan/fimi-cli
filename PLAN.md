@@ -14,9 +14,9 @@ The old plan stopped at "build the initial CLI skeleton". That is now outdated. 
 
 Date: 2026-03-24
 
-Active phase: Phase 2, Runtime Loop Kernel
+Active phase: Phase 2, Runtime Loop Kernel (mostly complete)
 
-Current teaching unit:
+Completed in this session:
 
 - [x] add explicit unfinished step state
 - [x] let runtime loop represent "continue" without using errors
@@ -27,7 +27,17 @@ Current teaching unit:
 - [x] classify command timeout / runner failure as temporary execution failure
 - [x] stop the run on temporary tool execution failure and preserve failing call context
 - [x] record tool execution failures as structured failed runtime steps
-- [ ] decide whether later phases should surface temporary tool failures as model-visible tool results
+- [x] **tool-loop closure**: persist tool call + tool result messages to history
+
+Next priority items:
+
+- [x] decide whether later phases should surface temporary tool failures as model-visible tool results
+  - **决策：是的，临时失败已经是 model-visible 的 tool result**
+  - 当前 `advanceRun()` 在返回错误前会先写入 tool records 到 history
+  - 失败内容通过 `formatToolFailureContent()` 格式化，包含 `failure_kind` 分类
+  - 与 Python 的差异：Go 停止 run，Python 继续循环；但两者都让模型能看到失败
+  - 停止 run 是更安全的选择，防止 runaway 行为；用户可以继续 session 让模型看到失败后决定
+- [ ] Runtime 输入语义对齐：用户 prompt 只追加一次，后续 step 基于增长的 history 推进
 
 ### Already Implemented In Go
 
@@ -45,18 +55,30 @@ Current teaching unit:
 
 - [x] Agent spec loading from YAML
 - [x] System prompt template expansion
-- [x] Agent inheritance / extension
-- [ ] Multi-step runtime loop with max-step and retry control
-- [ ] Structured tool-call protocol between model and runtime
-- [ ] Tool registry and tool execution layer
-- [ ] Core tools: bash, file read/write/edit, grep, glob, web
-- [ ] Task/subagent delegation
-- [ ] Checkpoint, revert, and token-usage persistence
-- [ ] Runtime event bus for UI/streaming
+- [x] Agent inheritance / extension (基础 extend)
+- [ ] Agent spec parity: `exclude_tools` / `subagents`（Python 有，Go 还没有）
+- [x] Multi-step runtime loop **闭环**：tool calls -> execute -> tool results 写回 history -> 下一步 LLM 能继续
+- [x] Runtime 输入语义对齐：用户 prompt 只追加一次，后续 step 基于增长的 history 推进（避免每步重复注入同一个 prompt）
+- [x] Structured tool-call protocol between model and runtime（tool-call + tool-result 消息形状、失败分类、是否对模型可见）
+  - 消息形状：`StepResult.BuildToolStepRecords()` 构造 assistant(tool_calls) + tool result 记录
+  - 失败分类：`formatToolFailureContent()` 包含 `failure_kind: temporary/refused/error`
+  - 模型可见：失败也写入 history，后续 session 模型能看到
+- [x] Tool registry and tool execution layer（已具雏形，`internal/tools/executor.go` + `BuiltinRegistry`）
+- [ ] Tool output shaping：`message/brief` 元信息、长度/行数/字节上限、截断提示（Python `ToolResultBuilder`）
+- [ ] Core tools parity:
+  - [x] bash/read_file/glob/grep/write_file/replace_file（最小版）
+  - [ ] patch_file
+  - [ ] web/search + web/fetch
+  - [ ] think/todo/task（子 agent / 任务派发）
+- [ ] Task/subagent delegation（runtime + tool 层协议未完成）
+- [ ] Checkpoint/revert 与 token-usage 持久化（Python `Context` 的 `_checkpoint` / `_usage` 语义）
+- [ ] Runtime event bus for UI/streaming（StepBegin/StatusUpdate/Interrupted + message parts 流式输出）
 - [ ] UI modes: shell, print, ACP
 - [ ] MCP integration
-- [ ] Richer session metadata and explicit continue semantics
-- [ ] Service config beyond model providers
+- [ ] Richer session metadata：显式 `last_session_id`（Python `metadata.py`），而不是仅用 history mtime 推断
+- [ ] Service config beyond model providers（例如 Python 的 search service 配置）
+
+> 注：当前最阻塞的是 **runtime tool-loop 闭环**（tool 结果不写回 history），否则多步代理无法基于工具输出继续执行。
 
 ## Gap Summary
 
@@ -159,12 +181,12 @@ Why now:
 
 Goal: upgrade `internal/runtime` from "single-turn runner" to "multi-step agent loop".
 
-- [ ] Add step result model: assistant output, tool calls, finish state
-- [ ] Consume `config.LoopControl` inside runtime
-- [ ] Implement max-step loop
-- [ ] Implement retry boundaries for retryable model/tool failures
+- [x] Add step result model: assistant output, tool calls, finish state
+- [x] Consume `config.LoopControl` inside runtime
+- [x] Implement max-step loop
+- [x] Implement retry boundaries for retryable model/tool failures
 - [x] Add clear run result states: finished, failed, max-steps
-- [ ] Add interrupted run state
+- [x] Add interrupted run state（需要 context.Context / cancellation 机制）
 
 Why before tools:
 
@@ -175,11 +197,11 @@ Why before tools:
 
 Goal: define how runtime sees tools, without tying runtime to bash/file/web specifics.
 
-- [ ] Create `internal/tools`
-- [ ] Define tool interface, schema, call, and result types
-- [ ] Create tool registry used by app/agentspec
+- [x] Create `internal/tools`
+- [x] Define tool interface, schema, call, and result types
+- [x] Create tool registry used by app/agentspec
 - [x] Define runtime <-> tools adapter boundary
-- [ ] Add message conversion for tool calls and tool results
+- [x] Add message conversion for tool calls and tool results
 
 Classification:
 
@@ -199,10 +221,10 @@ Goal: reach the first meaningfully autonomous version.
 
 Guardrails required in the same phase:
 
-- [ ] work-dir confinement
-- [ ] command timeout / cancellation boundary
+- [x] work-dir confinement（通过 `resolveWorkspacePath` / `normalizeWorkspacePattern` 实现）
+- [x] command timeout / cancellation boundary（bash 通过 `context.WithTimeout` 实现）
 - [x] clear stdout/stderr/result shaping
-- [ ] refusal path for unsupported or dangerous operations
+- [x] refusal path for unsupported or dangerous operations（越界路径、无效参数等标记为 refused）
 
 Why this phase is the first major milestone:
 

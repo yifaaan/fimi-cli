@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -46,7 +47,7 @@ type startupStatePrinter func(
 // runtimeRunner 是 app 对 runtime 的最小消费边界。
 // 在消费方定义接口，避免 app 依赖 runtime 的具体装配细节。
 type runtimeRunner interface {
-	Run(ctx contextstore.Context, input runtime.Input) (runtime.Result, error)
+	Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error)
 }
 
 // loadedAgent 表示 app 当前一次运行实际解析出的 agent 视图。

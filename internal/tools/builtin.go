@@ -83,13 +83,14 @@ func newBashHandler(workDir string) HandlerFunc {
 }
 
 func newBashHandlerWithTimeout(workDir string, timeout time.Duration) HandlerFunc {
-	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeBashArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		// 使用传入的 ctx 作为父 context，这样外部取消也能中断 bash 执行
+		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, "bash", "-lc", args.Command)
@@ -121,7 +122,7 @@ func newBashHandlerWithTimeout(workDir string, timeout time.Duration) HandlerFun
 }
 
 func newReadFileHandler(workDir string) HandlerFunc {
-	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeReadFileArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
@@ -145,7 +146,7 @@ func newReadFileHandler(workDir string) HandlerFunc {
 }
 
 func newGlobHandler(workDir string) HandlerFunc {
-	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeGlobArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
@@ -174,7 +175,7 @@ func newGlobHandler(workDir string) HandlerFunc {
 }
 
 func newGrepHandler(workDir string) HandlerFunc {
-	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeGrepArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
@@ -207,7 +208,7 @@ func newGrepHandler(workDir string) HandlerFunc {
 }
 
 func newWriteFileHandler(workDir string) HandlerFunc {
-	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeWriteFileArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
@@ -226,7 +227,7 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
-		// 写工具先采用“覆盖写入”语义，并自动补父目录，后面再单独引入 replace 这类更细粒度操作。
+		// 写工具先采用"覆盖写入"语义，并自动补父目录，后面再单独引入 replace 这类更细粒度操作。
 		if err := os.MkdirAll(filepath.Dir(targetAbs), 0o755); err != nil {
 			return runtime.ToolExecution{}, fmt.Errorf("create parent dir for %q: %w", targetAbs, err)
 		}
@@ -242,7 +243,7 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 }
 
 func newReplaceFileHandler(workDir string) HandlerFunc {
-	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeReplaceFileArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
