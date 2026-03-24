@@ -3,7 +3,6 @@ package llm
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
@@ -50,30 +49,31 @@ func NewEngine(client Client, cfg Config) Engine {
 	}
 }
 
-// Reply 调用底层 llm client，为 runtime 生成 assistant 文本。
-func (e Engine) Reply(input runtime.ReplyInput) (string, error) {
-	fallbackPrompt := strings.TrimSpace(input.Prompt)
+// Reply 调用底层 llm client，为 runtime 生成结构化 assistant 回复。
+func (e Engine) Reply(input runtime.ReplyInput) (runtime.AssistantReply, error) {
 	request := Request{
 		Model:        input.Model,
 		SystemPrompt: input.SystemPrompt,
-		Messages:     buildMessages(input.SystemPrompt, input.History, fallbackPrompt, e.historyTurnLimit),
+		Messages:     buildMessages(input.SystemPrompt, input.History, e.historyTurnLimit),
 	}
 
 	response, err := e.client.Reply(request)
 	if err != nil {
-		return "", fmt.Errorf("llm client reply: %w", err)
+		return runtime.AssistantReply{}, fmt.Errorf("llm client reply: %w", err)
 	}
 
-	return response.Text, nil
+	return runtime.AssistantReply{
+		Text:      response.Text,
+		ToolCalls: buildRuntimeToolCalls(response.ToolCalls),
+	}, nil
 }
 
 func buildMessages(
 	systemPrompt string,
 	history []contextstore.TextRecord,
-	prompt string,
 	historyTurnLimit int,
 ) []Message {
-	messages := make([]Message, 0, 1+historyTurnLimit*2+1)
+	messages := make([]Message, 0, 1+historyTurnLimit*2)
 	if systemPrompt != "" {
 		messages = append(messages, Message{
 			Role:    RoleSystem,
@@ -82,12 +82,25 @@ func buildMessages(
 	}
 
 	messages = append(messages, buildHistoryMessages(history, historyTurnLimit)...)
-	messages = append(messages, Message{
-		Role:    RoleUser,
-		Content: prompt,
-	})
 
 	return messages
+}
+
+func buildRuntimeToolCalls(calls []ToolCall) []runtime.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+
+	runtimeCalls := make([]runtime.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		runtimeCalls = append(runtimeCalls, runtime.ToolCall{
+			ID:        call.ID,
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		})
+	}
+
+	return runtimeCalls
 }
 
 type missingClient struct{}

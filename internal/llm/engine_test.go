@@ -18,21 +18,24 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	engine := NewEngine(client, Config{})
 
 	reply, err := engine.Reply(runtime.ReplyInput{
-		Prompt:       " hello ",
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
 		History: []contextstore.TextRecord{
 			contextstore.NewSystemTextRecord("boot"),
 			contextstore.NewUserTextRecord("previous"),
 			contextstore.NewAssistantTextRecord("previous reply"),
+			contextstore.NewUserTextRecord("hello"),
 		},
 	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}
 
-	if reply != "assistant placeholder reply: hello" {
-		t.Fatalf("Reply() = %q, want %q", reply, "assistant placeholder reply: hello")
+	if reply.Text != "assistant placeholder reply: hello" {
+		t.Fatalf("Reply().Text = %q, want %q", reply.Text, "assistant placeholder reply: hello")
+	}
+	if len(reply.ToolCalls) != 0 {
+		t.Fatalf("len(Reply().ToolCalls) = %d, want 0", len(reply.ToolCalls))
 	}
 	if client.gotRequest.Model != "kimi-k2-turbo-preview" {
 		t.Fatalf("got Request.Model = %q, want %q", client.gotRequest.Model, "kimi-k2-turbo-preview")
@@ -79,7 +82,11 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 		err: wantErr,
 	}, Config{})
 
-	_, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
+	_, err := engine.Reply(runtime.ReplyInput{
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("hello"),
+		},
+	})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Reply() error = %v, want wrapped %v", err, wantErr)
 	}
@@ -88,7 +95,11 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 func TestNewEngineWithoutClientFails(t *testing.T) {
 	engine := NewEngine(nil, Config{})
 
-	_, err := engine.Reply(runtime.ReplyInput{Prompt: "hello"})
+	_, err := engine.Reply(runtime.ReplyInput{
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("hello"),
+		},
+	})
 	if err == nil {
 		t.Fatalf("Reply() error = nil, want non-nil")
 	}
@@ -106,11 +117,11 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 	engine := NewEngine(client, Config{})
 
 	_, err := engine.Reply(runtime.ReplyInput{
-		Prompt: " hello ",
 		Model:  "kimi-k2-turbo-preview",
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("previous"),
 			contextstore.NewAssistantTextRecord("previous reply"),
+			contextstore.NewUserTextRecord("hello"),
 		},
 	})
 	if err != nil {
@@ -154,18 +165,24 @@ func TestEngineReplyUsesConfiguredTurnLimit(t *testing.T) {
 	})
 
 	_, err := engine.Reply(runtime.ReplyInput{
-		Prompt: "hello",
 		History: []contextstore.TextRecord{
+			// 历史记录：2 个完整 turn
 			contextstore.NewUserTextRecord("first"),
 			contextstore.NewAssistantTextRecord("first reply"),
 			contextstore.NewUserTextRecord("second"),
 			contextstore.NewAssistantTextRecord("second reply"),
+			// 当前用户输入（不计入 turn limit）
+			contextstore.NewUserTextRecord("hello"),
 		},
 	})
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}
 
+	// HistoryTurnLimit=1 表示保留最近 1 个历史 turn
+	// 当前用户输入 "hello" 不计入限制，所以最终是：
+	// [second(U), second reply(A), hello(U)]
+	// 这实际包含 2 个 user message，但只有 1 个历史 turn + 1 个当前输入
 	want := []Message{
 		{Role: RoleUser, Content: "second"},
 		{Role: RoleAssistant, Content: "second reply"},
@@ -173,6 +190,37 @@ func TestEngineReplyUsesConfiguredTurnLimit(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.gotRequest.Messages, want) {
 		t.Fatalf("Request.Messages = %#v, want %#v", client.gotRequest.Messages, want)
+	}
+}
+
+func TestEngineReplyMapsToolCallsToRuntimeReply(t *testing.T) {
+	client := staticClient{
+		response: Response{
+			Text: "I will inspect the file.",
+			ToolCalls: []ToolCall{
+				{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+			},
+		},
+	}
+	engine := NewEngine(client, Config{})
+
+	reply, err := engine.Reply(runtime.ReplyInput{
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("inspect main.go"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+
+	want := runtime.AssistantReply{
+		Text: "I will inspect the file.",
+		ToolCalls: []runtime.ToolCall{
+			{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+		},
+	}
+	if !reflect.DeepEqual(reply, want) {
+		t.Fatalf("Reply() = %#v, want %#v", reply, want)
 	}
 }
 

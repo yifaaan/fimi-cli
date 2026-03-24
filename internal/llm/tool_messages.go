@@ -10,6 +10,7 @@ import (
 
 var ErrToolStepRequired = errors.New("runtime tool step is required")
 var ErrToolCallsRequired = errors.New("runtime tool calls are required")
+var ErrToolCallIDRequired = errors.New("runtime tool call id is required")
 var ErrToolExecutionCountMismatch = errors.New("tool execution count exceeds tool call count")
 var ErrToolFailureCallNotFound = errors.New("tool failure call not found in tool calls")
 
@@ -31,10 +32,14 @@ func BuildToolStepMessages(step runtime.StepResult) ([]Message, error) {
 		)
 	}
 
-	messageCalls := buildMessageToolCalls(step.ToolCalls)
+	messageCalls, err := buildMessageToolCalls(step.ToolCalls)
+	if err != nil {
+		return nil, err
+	}
 	messages := make([]Message, 0, 1+len(step.ToolExecutions)+1)
 	messages = append(messages, Message{
 		Role:      RoleAssistant,
+		Content:   step.AssistantText,
 		ToolCalls: messageCalls,
 	})
 
@@ -63,24 +68,32 @@ func BuildToolStepMessages(step runtime.StepResult) ([]Message, error) {
 	return messages, nil
 }
 
-func buildMessageToolCalls(calls []runtime.ToolCall) []ToolCall {
+func buildMessageToolCalls(calls []runtime.ToolCall) ([]ToolCall, error) {
 	messageCalls := make([]ToolCall, 0, len(calls))
-	for index, call := range calls {
+	for _, call := range calls {
+		if strings.TrimSpace(call.ID) == "" {
+			return nil, fmt.Errorf("%w: %s", ErrToolCallIDRequired, call.Name)
+		}
+
 		messageCalls = append(messageCalls, ToolCall{
-			ID:        toolCallID(index),
+			ID:        call.ID,
 			Name:      call.Name,
 			Arguments: call.Arguments,
 		})
 	}
 
-	return messageCalls
-}
-
-func toolCallID(index int) string {
-	return fmt.Sprintf("call_%d", index+1)
+	return messageCalls, nil
 }
 
 func findToolCallIndex(calls []runtime.ToolCall, target runtime.ToolCall) int {
+	if target.ID != "" {
+		for index, call := range calls {
+			if call.ID == target.ID {
+				return index
+			}
+		}
+	}
+
 	for index, call := range calls {
 		if call == target {
 			return index

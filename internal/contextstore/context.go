@@ -13,13 +13,18 @@ const (
 	RoleSystem    = "system"
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
+	RoleTool      = "tool"
 )
 
 // TextRecord 是当前最小可持久化的历史记录模型。
 // 先只支持纯文本内容，后面再扩展多种消息 part。
+// ToolCallID 只在 role=tool 时有意义，用于关联工具调用结果。
+// ToolCallsJSON 只在 role=assistant 时有意义，存储序列化后的工具调用列表。
 type TextRecord struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role         string `json:"role"`
+	Content      string `json:"content"`
+	ToolCallID   string `json:"tool_call_id,omitempty"`
+	ToolCallsJSON string `json:"tool_calls,omitempty"`
 }
 
 // Snapshot 表示某个 history 文件当前的读取结果摘要。
@@ -69,6 +74,16 @@ func NewAssistantTextRecord(content string) TextRecord {
 	return TextRecord{
 		Role:    RoleAssistant,
 		Content: content,
+	}
+}
+
+// NewToolResultRecord 为工具调用结果创建记录。
+// toolCallID 用于关联回之前的工具调用。
+func NewToolResultRecord(toolCallID, content string) TextRecord {
+	return TextRecord{
+		Role:       RoleTool,
+		ToolCallID: toolCallID,
+		Content:    content,
 	}
 }
 

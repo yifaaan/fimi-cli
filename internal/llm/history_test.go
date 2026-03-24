@@ -28,6 +28,9 @@ func TestTextRecordToMessageSkipsSystemRecord(t *testing.T) {
 	}
 }
 
+// TestBuildHistoryMessagesKeepsRecentConversation 验证 turn limit 语义：
+// 最后一个 user message 是"当前输入"，不计入 turn limit。
+// limit=2 表示保留 2 个历史 turn，加上当前输入。
 func TestBuildHistoryMessagesKeepsRecentConversation(t *testing.T) {
 	records := []contextstore.TextRecord{
 		contextstore.NewSystemTextRecord("boot"),
@@ -35,35 +38,39 @@ func TestBuildHistoryMessagesKeepsRecentConversation(t *testing.T) {
 		contextstore.NewAssistantTextRecord("first reply"),
 		contextstore.NewUserTextRecord("second"),
 		contextstore.NewAssistantTextRecord("second reply"),
-		contextstore.NewUserTextRecord("third"),
-		contextstore.NewAssistantTextRecord("third reply"),
+		contextstore.NewUserTextRecord("third"), // 当前输入
 	}
 
 	got := buildHistoryMessages(records, 2)
+	// limit=2 保留 2 个历史 turn (first, second)，加上当前输入 (third)
 	want := []Message{
+		{Role: RoleUser, Content: "first"},
+		{Role: RoleAssistant, Content: "first reply"},
 		{Role: RoleUser, Content: "second"},
 		{Role: RoleAssistant, Content: "second reply"},
-		{Role: RoleUser, Content: "third"},
-		{Role: RoleAssistant, Content: "third reply"},
+		{Role: RoleUser, Content: "third"}, // 当前输入
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildHistoryMessages() = %#v, want %#v", got, want)
 	}
 }
 
+// TestBuildHistoryMessagesDropsLeadingAssistantAtWindowBoundary 验证：
+// 当最后一个 user message 是当前输入时，不参与 turn limit 计算。
 func TestBuildHistoryMessagesDropsLeadingAssistantAtWindowBoundary(t *testing.T) {
 	records := []contextstore.TextRecord{
 		contextstore.NewSystemTextRecord("boot"),
 		contextstore.NewUserTextRecord("first"),
 		contextstore.NewAssistantTextRecord("first reply"),
-		contextstore.NewUserTextRecord("second"),
-		contextstore.NewAssistantTextRecord("second reply"),
+		contextstore.NewUserTextRecord("second"), // 当前输入
 	}
 
 	got := buildHistoryMessages(records, 1)
+	// limit=1 保留 1 个历史 turn (first)，加上当前输入 (second)
 	want := []Message{
-		{Role: RoleUser, Content: "second"},
-		{Role: RoleAssistant, Content: "second reply"},
+		{Role: RoleUser, Content: "first"},
+		{Role: RoleAssistant, Content: "first reply"},
+		{Role: RoleUser, Content: "second"}, // 当前输入
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildHistoryMessages() = %#v, want %#v", got, want)

@@ -54,8 +54,21 @@ type chatRequest struct {
 
 // chatMessage 是 OpenAI chat API 的消息格式。
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+}
+
+type chatToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type,omitempty"`
+	Function chatToolFunction `json:"function"`
+}
+
+type chatToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // chatResponse 是 OpenAI Chat Completions API 的响应格式。
@@ -106,8 +119,10 @@ func (c *Client) Reply(request llm.Request) (llm.Response, error) {
 	// 添加对话历史
 	for _, msg := range request.Messages {
 		messages = append(messages, chatMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
+			ToolCalls:  buildChatToolCalls(msg.ToolCalls),
 		})
 	}
 
@@ -167,8 +182,46 @@ func (c *Client) Reply(request llm.Request) (llm.Response, error) {
 	}
 
 	return llm.Response{
-		Text: chatResp.Choices[0].Message.Content,
+		Text:      chatResp.Choices[0].Message.Content,
+		ToolCalls: buildLLMToolCalls(chatResp.Choices[0].Message.ToolCalls),
 	}, nil
+}
+
+func buildChatToolCalls(calls []llm.ToolCall) []chatToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+
+	chatCalls := make([]chatToolCall, 0, len(calls))
+	for _, call := range calls {
+		chatCalls = append(chatCalls, chatToolCall{
+			ID:   call.ID,
+			Type: "function",
+			Function: chatToolFunction{
+				Name:      call.Name,
+				Arguments: call.Arguments,
+			},
+		})
+	}
+
+	return chatCalls
+}
+
+func buildLLMToolCalls(calls []chatToolCall) []llm.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+
+	llmCalls := make([]llm.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		llmCalls = append(llmCalls, llm.ToolCall{
+			ID:        call.ID,
+			Name:      call.Function.Name,
+			Arguments: call.Function.Arguments,
+		})
+	}
+
+	return llmCalls
 }
 
 func markRetryable(err error) error {

@@ -10,18 +10,19 @@ import (
 
 func TestBuildToolStepMessagesBuildsAssistantAndToolResultMessages(t *testing.T) {
 	step := runtime.StepResult{
-		Kind: runtime.StepKindToolCalls,
+		Kind:          runtime.StepKindToolCalls,
+		AssistantText: "I will inspect the file.",
 		ToolCalls: []runtime.ToolCall{
-			{Name: "read_file", Arguments: `{"path":"main.go"}`},
-			{Name: "bash", Arguments: `{"command":"pwd"}`},
+			{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+			{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 		},
 		ToolExecutions: []runtime.ToolExecution{
 			{
-				Call:   runtime.ToolCall{Name: "read_file", Arguments: `{"path":"main.go"}`},
+				Call:   runtime.ToolCall{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
 				Output: "package main\n",
 			},
 			{
-				Call:     runtime.ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`},
+				Call:     runtime.ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 				Stdout:   "/repo\n",
 				Stderr:   "warn\n",
 				ExitCode: 0,
@@ -36,20 +37,21 @@ func TestBuildToolStepMessagesBuildsAssistantAndToolResultMessages(t *testing.T)
 
 	want := []Message{
 		{
-			Role: RoleAssistant,
+			Role:    RoleAssistant,
+			Content: "I will inspect the file.",
 			ToolCalls: []ToolCall{
-				{ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`},
-				{ID: "call_2", Name: "bash", Arguments: `{"command":"pwd"}`},
+				{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+				{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 			},
 		},
 		{
 			Role:       RoleTool,
-			ToolCallID: "call_1",
+			ToolCallID: "call_read",
 			Content:    "package main\n",
 		},
 		{
 			Role:       RoleTool,
-			ToolCallID: "call_2",
+			ToolCallID: "call_bash",
 			Content:    "stdout:\n/repo\n\nstderr:\nwarn\n\nexit_code: 0",
 		},
 	}
@@ -60,12 +62,13 @@ func TestBuildToolStepMessagesBuildsAssistantAndToolResultMessages(t *testing.T)
 
 func TestBuildToolStepMessagesBuildsTemporaryFailureMessage(t *testing.T) {
 	step := runtime.StepResult{
-		Kind: runtime.StepKindToolCalls,
+		Kind:          runtime.StepKindToolCalls,
+		AssistantText: "I will run the command.",
 		ToolCalls: []runtime.ToolCall{
-			{Name: "bash", Arguments: `{"command":"pwd"}`},
+			{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 		},
 		ToolFailure: &runtime.ToolExecutionError{
-			Call: runtime.ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`},
+			Call: runtime.ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 			Err:  temporaryToolMessageError{err: errors.New("bash timed out")},
 		},
 	}
@@ -77,14 +80,15 @@ func TestBuildToolStepMessagesBuildsTemporaryFailureMessage(t *testing.T) {
 
 	want := []Message{
 		{
-			Role: RoleAssistant,
+			Role:    RoleAssistant,
+			Content: "I will run the command.",
 			ToolCalls: []ToolCall{
-				{ID: "call_1", Name: "bash", Arguments: `{"command":"pwd"}`},
+				{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 			},
 		},
 		{
 			Role:       RoleTool,
-			ToolCallID: "call_1",
+			ToolCallID: "call_bash",
 			Content:    "error: bash timed out\nfailure_kind: temporary",
 		},
 	}
@@ -97,10 +101,10 @@ func TestBuildToolStepMessagesReturnsErrorWhenFailureCallMissing(t *testing.T) {
 	step := runtime.StepResult{
 		Kind: runtime.StepKindToolCalls,
 		ToolCalls: []runtime.ToolCall{
-			{Name: "read_file", Arguments: `{"path":"main.go"}`},
+			{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
 		},
 		ToolFailure: &runtime.ToolExecutionError{
-			Call: runtime.ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`},
+			Call: runtime.ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 			Err:  errors.New("bash failed"),
 		},
 	}
@@ -117,6 +121,18 @@ func TestBuildToolStepMessagesReturnsErrorForNonToolStep(t *testing.T) {
 	})
 	if !errors.Is(err, ErrToolStepRequired) {
 		t.Fatalf("BuildToolStepMessages() error = %v, want wrapped %v", err, ErrToolStepRequired)
+	}
+}
+
+func TestBuildToolStepMessagesReturnsErrorWhenToolCallIDMissing(t *testing.T) {
+	_, err := BuildToolStepMessages(runtime.StepResult{
+		Kind: runtime.StepKindToolCalls,
+		ToolCalls: []runtime.ToolCall{
+			{Name: "bash", Arguments: `{"command":"pwd"}`},
+		},
+	})
+	if !errors.Is(err, ErrToolCallIDRequired) {
+		t.Fatalf("BuildToolStepMessages() error = %v, want wrapped %v", err, ErrToolCallIDRequired)
 	}
 }
 

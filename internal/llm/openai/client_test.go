@@ -115,6 +115,65 @@ func TestClientReplyWithSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestClientReplyParsesToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := chatResponse{
+			Choices: []chatChoice{
+				{
+					Message: chatMessage{
+						Role:    "assistant",
+						Content: "I will inspect the file.",
+						ToolCalls: []chatToolCall{
+							{
+								ID:   "call_read",
+								Type: "function",
+								Function: chatToolFunction{
+									Name:      "read_file",
+									Arguments: `{"path":"main.go"}`,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	resp, err := client.Reply(llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "Inspect main.go"}},
+	})
+	if err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+
+	if resp.Text != "I will inspect the file." {
+		t.Fatalf("Reply().Text = %q, want %q", resp.Text, "I will inspect the file.")
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("len(Reply().ToolCalls) = %d, want 1", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0] != (llm.ToolCall{
+		ID:        "call_read",
+		Name:      "read_file",
+		Arguments: `{"path":"main.go"}`,
+	}) {
+		t.Fatalf("Reply().ToolCalls[0] = %#v, want %#v", resp.ToolCalls[0], llm.ToolCall{
+			ID:        "call_read",
+			Name:      "read_file",
+			Arguments: `{"path":"main.go"}`,
+		})
+	}
+}
+
 func TestClientReplyAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
