@@ -402,19 +402,43 @@ func printHelp() {
 
 // helpText 返回当前 CLI 入口支持的最小帮助文本。
 func helpText() string {
-	return strings.Join([]string{
-		"Usage:",
+	lines := make([]string, 0, 12)
+	lines = append(lines, helpSectionLines("Usage", helpUsageLines())...)
+	lines = append(lines, "")
+	lines = append(lines, helpSectionLines("Flags", helpFlagLines())...)
+	lines = append(lines, "")
+	lines = append(lines, helpSectionLines("Prompt Rules", helpPromptRuleLines())...)
+	lines = append(lines, "")
+
+	return strings.Join(lines, "\n")
+}
+
+func helpSectionLines(title string, lines []string) []string {
+	section := make([]string, 0, len(lines)+1)
+	section = append(section, title+":")
+	section = append(section, lines...)
+
+	return section
+}
+
+func helpUsageLines() []string {
+	return []string{
 		"  fimi [--new-session] [--model <alias>] [--help] [prompt...]",
 		"  fimi [options] -- [prompt text starting with flags]",
-		"",
-		"Flags:",
+	}
+}
+
+func helpFlagLines() []string {
+	return []string{
 		"  --new-session    Start a fresh session for this run",
 		"  --model <alias>  Override the configured model for this run",
 		"  -h, --help       Show this help message",
-		"",
-		"Prompt Rules:",
+	}
+}
+
+func helpPromptRuleLines() []string {
+	return []string{
 		"  --                Stop parsing flags; everything after it is prompt text",
 		"  prompt...         Remaining args are joined into one prompt string",
-		"",
-	}, "\n")
+	}
 }
