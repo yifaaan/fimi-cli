@@ -20,7 +20,9 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	}
 
 	engine := &spyEngine{
-		reply: "assistant placeholder reply: hello",
+		reply: AssistantReply{
+			Text: "assistant placeholder reply: hello",
+		},
 	}
 	runner := New(engine, Config{})
 
@@ -46,8 +48,8 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	if step.Kind != StepKindFinished {
 		t.Fatalf("Steps[0].Kind = %q, want %q", result.Steps[0].Kind, StepKindFinished)
 	}
-	if len(step.AppendedRecords) != 2 {
-		t.Fatalf("len(Steps[0].AppendedRecords) = %d, want 2", len(step.AppendedRecords))
+	if len(step.AppendedRecords) != 1 {
+		t.Fatalf("len(Steps[0].AppendedRecords) = %d, want 1 (only assistant; user prompt appended by Run)", len(step.AppendedRecords))
 	}
 	if len(step.ToolCalls) != 0 {
 		t.Fatalf("len(Steps[0].ToolCalls) = %d, want 0", len(step.ToolCalls))
@@ -82,9 +84,10 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	if records[3] != wantAssistant {
 		t.Fatalf("records[3] = %#v, want %#v", records[3], wantAssistant)
 	}
-	if engine.gotInput.Prompt != "hello" {
-		t.Fatalf("engine got Prompt = %q, want %q", engine.gotInput.Prompt, "hello")
+	if step.AssistantText != "assistant placeholder reply: hello" {
+		t.Fatalf("Steps[0].AssistantText = %q, want %q", step.AssistantText, "assistant placeholder reply: hello")
 	}
+	// 多 step 场景下，用户 prompt 已在 history 中，不再单独传递
 	if engine.gotInput.Model != "kimi-k2-turbo-preview" {
 		t.Fatalf("engine got Model = %q, want %q", engine.gotInput.Model, "kimi-k2-turbo-preview")
 	}
@@ -94,10 +97,12 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	if !reflect.DeepEqual(engine.gotInput.History, []contextstore.TextRecord{
 		contextstore.NewUserTextRecord("previous"),
 		contextstore.NewAssistantTextRecord("previous reply"),
+		contextstore.NewUserTextRecord("hello"), // 用户 prompt 由 Run() 在开始时追加
 	}) {
 		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("previous"),
 			contextstore.NewAssistantTextRecord("previous reply"),
+			contextstore.NewUserTextRecord("hello"),
 		})
 	}
 }
@@ -185,7 +190,9 @@ func TestRunnerRunReadsRecentTurnWindow(t *testing.T) {
 	}
 
 	engine := &spyEngine{
-		reply: "assistant placeholder reply: hello",
+		reply: AssistantReply{
+			Text: "assistant placeholder reply: hello",
+		},
 	}
 	runner := New(engine, Config{})
 
@@ -198,14 +205,17 @@ func TestRunnerRunReadsRecentTurnWindow(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	// Run() 在开始时追加 user prompt "hello"，所以 history 现在包含：
+	// boot, u1, a1, u2, a2, u3, a3, u4, a4, u5, hello
+	// turn limit = 4 时，最近的 4 个 user turn 是：u3, u4, u5, hello
+	// 所以 history 应该是：u3, a3, u4, a4, u5, hello
 	want := []contextstore.TextRecord{
-		contextstore.NewUserTextRecord("u2"),
-		contextstore.NewAssistantTextRecord("a2"),
 		contextstore.NewUserTextRecord("u3"),
 		contextstore.NewAssistantTextRecord("a3"),
 		contextstore.NewUserTextRecord("u4"),
 		contextstore.NewAssistantTextRecord("a4"),
 		contextstore.NewUserTextRecord("u5"),
+		contextstore.NewUserTextRecord("hello"), // 当前 run 追加的 prompt
 	}
 	if !reflect.DeepEqual(engine.gotInput.History, want) {
 		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, want)
@@ -227,7 +237,9 @@ func TestRunnerRunUsesConfiguredTurnLimit(t *testing.T) {
 	}
 
 	engine := &spyEngine{
-		reply: "assistant placeholder reply: hello",
+		reply: AssistantReply{
+			Text: "assistant placeholder reply: hello",
+		},
 	}
 	runner := New(engine, Config{
 		ReplyHistoryTurnLimit: 1,
@@ -238,9 +250,10 @@ func TestRunnerRunUsesConfiguredTurnLimit(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	// Run() 追加 "hello" 后，history = [u1, a1, u2, a2, hello]
+	// turn limit = 1 时，最近 1 个 user turn 是 "hello"
 	want := []contextstore.TextRecord{
-		contextstore.NewUserTextRecord("u2"),
-		contextstore.NewAssistantTextRecord("a2"),
+		contextstore.NewUserTextRecord("hello"),
 	}
 	if !reflect.DeepEqual(engine.gotInput.History, want) {
 		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, want)
@@ -252,12 +265,12 @@ func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
 	runner := New(staticEngine{}, Config{
 		MaxStepsPerRun: 1,
 	})
-	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
 		return StepResult{
 			Status: StepStatusIncomplete,
 			Kind:   StepKindToolCalls,
 			ToolCalls: []ToolCall{
-				{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+				{ID: "call_read", Name: "ReadFile", Arguments: `{"path":"main.go"}`},
 			},
 		}, nil
 	}
@@ -302,6 +315,7 @@ func TestNewWithToolExecutorUsesNoopWhenNil(t *testing.T) {
 	runner := NewWithToolExecutor(staticEngine{}, nil, Config{})
 
 	execution, err := runner.toolExecutor.Execute(ToolCall{
+		ID:        "call_bash",
 		Name:      "bash",
 		Arguments: `{"command":"pwd"}`,
 	})
@@ -314,6 +328,7 @@ func TestNewWithToolExecutorUsesNoopWhenNil(t *testing.T) {
 }
 
 func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := Runner{}
 	initial := Result{}
 	step := StepResult{
@@ -325,7 +340,7 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 		},
 	}
 
-	got, finished, err := runner.advanceRun(initial, step)
+	got, finished, err := runner.advanceRun(ctx, initial, step)
 	if err != nil {
 		t.Fatalf("advanceRun() error = %v", err)
 	}
@@ -338,19 +353,21 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 }
 
 func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	executor := &spyToolExecutor{}
 	runner := Runner{
 		toolExecutor: executor,
 	}
 	step := StepResult{
-		Status: StepStatusIncomplete,
-		Kind:   StepKindToolCalls,
+		Status:        StepStatusIncomplete,
+		Kind:          StepKindToolCalls,
+		AssistantText: "I will inspect the file.",
 		ToolCalls: []ToolCall{
-			{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+			{ID: "call_read", Name: "ReadFile", Arguments: `{"path":"main.go"}`},
 		},
 	}
 
-	got, finished, err := runner.advanceRun(Result{}, step)
+	got, finished, err := runner.advanceRun(ctx, Result{}, step)
 	if err != nil {
 		t.Fatalf("advanceRun() error = %v", err)
 	}
@@ -358,24 +375,54 @@ func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
 		t.Fatalf("advanceRun() finished = true, want false")
 	}
 	if !reflect.DeepEqual(executor.gotCalls, []ToolCall{
-		{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+		{ID: "call_read", Name: "ReadFile", Arguments: `{"path":"main.go"}`},
 	}) {
 		t.Fatalf("toolExecutor got Calls = %#v, want %#v", executor.gotCalls, []ToolCall{
-			{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+			{ID: "call_read", Name: "ReadFile", Arguments: `{"path":"main.go"}`},
 		})
 	}
-	expectedStep := step
-	expectedStep.ToolExecutions = []ToolExecution{
-		{
-			Call: ToolCall{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
-		},
+
+	// 验证工具记录已写入 history
+	records, err := ctx.ReadAll()
+	if err != nil {
+		t.Fatalf("ctx.ReadAll() error = %v", err)
 	}
-	if !reflect.DeepEqual(got.Steps, []StepResult{expectedStep}) {
-		t.Fatalf("advanceRun().Steps = %#v, want %#v", got.Steps, []StepResult{expectedStep})
+	if len(records) != 2 {
+		t.Fatalf("len(records) = %d, want 2", len(records))
+	}
+	// 第一条是 assistant 消息（带 tool_calls）
+	if records[0].Role != "assistant" {
+		t.Fatalf("records[0].Role = %q, want %q", records[0].Role, "assistant")
+	}
+	if records[0].Content != "I will inspect the file." {
+		t.Fatalf("records[0].Content = %q, want %q", records[0].Content, "I will inspect the file.")
+	}
+	// 第二条是 tool result
+	if records[1].Role != "tool" {
+		t.Fatalf("records[1].Role = %q, want %q", records[1].Role, "tool")
+	}
+	if records[1].ToolCallID != "call_read" {
+		t.Fatalf("records[1].ToolCallID = %q, want %q", records[1].ToolCallID, "call_read")
+	}
+
+	// 验证 step 结果
+	if len(got.Steps) != 1 {
+		t.Fatalf("len(got.Steps) = %d, want 1", len(got.Steps))
+	}
+	gotStep := got.Steps[0]
+	if gotStep.Status != StepStatusIncomplete {
+		t.Fatalf("got.Steps[0].Status = %q, want %q", gotStep.Status, StepStatusIncomplete)
+	}
+	if len(gotStep.ToolExecutions) != 1 {
+		t.Fatalf("len(got.Steps[0].ToolExecutions) = %d, want 1", len(gotStep.ToolExecutions))
+	}
+	if gotStep.ToolExecutions[0].Call.ID != "call_read" {
+		t.Fatalf("got.Steps[0].ToolExecutions[0].Call.ID = %q, want %q", gotStep.ToolExecutions[0].Call.ID, "call_read")
 	}
 }
 
 func TestRunnerAdvanceRunAppendsFailedToolStepBeforeReturningError(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	wantErr := temporaryStepError{err: errors.New("bash timed out")}
 	runner := Runner{
 		toolExecutor: failingToolExecutor{err: wantErr},
@@ -384,11 +431,14 @@ func TestRunnerAdvanceRunAppendsFailedToolStepBeforeReturningError(t *testing.T)
 		Status: StepStatusIncomplete,
 		Kind:   StepKindToolCalls,
 		ToolCalls: []ToolCall{
-			{Name: "bash", Arguments: `{"command":"pwd"}`},
+			{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 		},
 	}
 
-	got, finished, err := runner.advanceRun(Result{}, step)
+	got, finished, err := runner.advanceRun(ctx, Result{}, step)
+	if err == nil {
+		t.Fatalf("advanceRun() error = nil, want non-nil")
+	}
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("advanceRun() error = %v, want wrapped %v", err, wantErr)
 	}
@@ -414,11 +464,75 @@ func TestRunnerAdvanceRunAppendsFailedToolStepBeforeReturningError(t *testing.T)
 	if gotStep.ToolFailure == nil {
 		t.Fatalf("got.Steps[0].ToolFailure = nil, want non-nil")
 	}
-	if gotStep.ToolFailure.Call != (ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`}) {
-		t.Fatalf("got.Steps[0].ToolFailure.Call = %#v, want %#v", gotStep.ToolFailure.Call, ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`})
+	if gotStep.ToolFailure.Call != (ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`}) {
+		t.Fatalf("got.Steps[0].ToolFailure.Call = %#v, want %#v", gotStep.ToolFailure.Call, ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`})
 	}
 	if !IsTemporary(gotStep.ToolFailure) {
 		t.Fatalf("IsTemporary(got.Steps[0].ToolFailure) = false, want true")
+	}
+
+	// 验证失败也写入 tool result 记录
+	records, err := ctx.ReadAll()
+	if err != nil {
+		t.Fatalf("ctx.ReadAll() error = %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("len(records) = %d, want 2", len(records))
+	}
+	if records[1].Role != "tool" {
+		t.Fatalf("records[1].Role = %q, want %q", records[1].Role, "tool")
+	}
+	if records[1].ToolCallID != "call_bash" {
+		t.Fatalf("records[1].ToolCallID = %q, want %q", records[1].ToolCallID, "call_bash")
+	}
+}
+
+func TestRunnerRunStepReturnsToolCallStepWithoutAppendingHistory(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	engine := &spyEngine{
+		reply: AssistantReply{
+			Text: "I will inspect the repository.",
+			ToolCalls: []ToolCall{
+				{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+			},
+		},
+	}
+	runner := New(engine, Config{})
+
+	step, err := runner.runStep(ctx, StepConfig{
+		Model:        "kimi-k2-turbo-preview",
+		SystemPrompt: "You are fimi, a coding agent.",
+	})
+	if err != nil {
+		t.Fatalf("runStep() error = %v", err)
+	}
+
+	if step.Status != StepStatusIncomplete {
+		t.Fatalf("step.Status = %q, want %q", step.Status, StepStatusIncomplete)
+	}
+	if step.Kind != StepKindToolCalls {
+		t.Fatalf("step.Kind = %q, want %q", step.Kind, StepKindToolCalls)
+	}
+	if step.AssistantText != "I will inspect the repository." {
+		t.Fatalf("step.AssistantText = %q, want %q", step.AssistantText, "I will inspect the repository.")
+	}
+	if !reflect.DeepEqual(step.ToolCalls, []ToolCall{
+		{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+	}) {
+		t.Fatalf("step.ToolCalls = %#v, want %#v", step.ToolCalls, []ToolCall{
+			{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+		})
+	}
+	if len(step.AppendedRecords) != 0 {
+		t.Fatalf("len(step.AppendedRecords) = %d, want 0", len(step.AppendedRecords))
+	}
+
+	count, err := ctx.Count()
+	if err != nil {
+		t.Fatalf("Count() error = %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("Count() = %d, want 0", count)
 	}
 }
 
@@ -430,14 +544,14 @@ func TestRunnerRunExecutesToolCallsBeforeFinishing(t *testing.T) {
 	})
 
 	stepIndex := 0
-	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
 		stepIndex++
 		if stepIndex == 1 {
 			return StepResult{
 				Status: StepStatusIncomplete,
 				Kind:   StepKindToolCalls,
 				ToolCalls: []ToolCall{
-					{Name: "bash", Arguments: `{"command":"pwd"}`},
+					{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 				},
 			}, nil
 		}
@@ -474,12 +588,12 @@ func TestRunnerRunReturnsToolExecutorError(t *testing.T) {
 	}, Config{
 		MaxStepsPerRun: 1,
 	})
-	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
 		return StepResult{
 			Status: StepStatusIncomplete,
 			Kind:   StepKindToolCalls,
 			ToolCalls: []ToolCall{
-				{Name: "bash", Arguments: `{"command":"pwd"}`},
+				{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 			},
 		}, nil
 	}
@@ -492,8 +606,8 @@ func TestRunnerRunReturnsToolExecutorError(t *testing.T) {
 	if !errors.As(err, &toolErr) {
 		t.Fatalf("Run() error = %v, want ToolExecutionError", err)
 	}
-	if toolErr.Call != (ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`}) {
-		t.Fatalf("toolErr.Call = %#v, want %#v", toolErr.Call, ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`})
+	if toolErr.Call != (ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`}) {
+		t.Fatalf("toolErr.Call = %#v, want %#v", toolErr.Call, ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`})
 	}
 	if result.Status != RunStatusFailed {
 		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
@@ -518,13 +632,13 @@ func TestRunnerRunStopsImmediatelyOnTemporaryToolExecutionError(t *testing.T) {
 	})
 
 	stepCalls := 0
-	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
 		stepCalls++
 		return StepResult{
 			Status: StepStatusIncomplete,
 			Kind:   StepKindToolCalls,
 			ToolCalls: []ToolCall{
-				{Name: "bash", Arguments: `{"command":"pwd"}`},
+				{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
 			},
 		}, nil
 	}
@@ -540,8 +654,8 @@ func TestRunnerRunStopsImmediatelyOnTemporaryToolExecutionError(t *testing.T) {
 	if !errors.As(err, &toolErr) {
 		t.Fatalf("Run() error = %v, want ToolExecutionError", err)
 	}
-	if toolErr.Call != (ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`}) {
-		t.Fatalf("toolErr.Call = %#v, want %#v", toolErr.Call, ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`})
+	if toolErr.Call != (ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`}) {
+		t.Fatalf("toolErr.Call = %#v, want %#v", toolErr.Call, ToolCall{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`})
 	}
 	if stepCalls != 1 {
 		t.Fatalf("runStep calls = %d, want %d", stepCalls, 1)
@@ -571,7 +685,7 @@ func TestRunnerRunRetriesRetryableStepError(t *testing.T) {
 	})
 
 	attempts := 0
-	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
 		attempts++
 		if attempts < 3 {
 			return StepResult{}, retryableStepError{err: errors.New("temporary llm outage")}
@@ -603,7 +717,7 @@ func TestRunnerRunStopsAtConfiguredRetryAttemptLimit(t *testing.T) {
 	})
 
 	attempts := 0
-	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
 		attempts++
 		return StepResult{}, wantErr
 	}
@@ -628,7 +742,7 @@ func TestRunnerRunDoesNotRetryNonRetryableStepError(t *testing.T) {
 	})
 
 	attempts := 0
-	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+	runner.runStepFn = func(ctx contextstore.Context, cfg StepConfig) (StepResult, error) {
 		attempts++
 		return StepResult{}, wantErr
 	}
@@ -646,8 +760,10 @@ func TestRunnerRunDoesNotRetryNonRetryableStepError(t *testing.T) {
 }
 
 func TestRunnerAdvanceRunRejectsUnknownStepStatus(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := Runner{}
-	_, _, err := runner.advanceRun(Result{}, StepResult{
+	advanceRun := runner.advanceRun
+	_, _, err := advanceRun(ctx, Result{}, StepResult{
 		Status: StepStatus("bad-status"),
 		Kind:   StepKindFinished,
 	})
@@ -657,8 +773,10 @@ func TestRunnerAdvanceRunRejectsUnknownStepStatus(t *testing.T) {
 }
 
 func TestRunnerAdvanceRunRejectsUnknownStepKind(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := Runner{}
-	_, _, err := runner.advanceRun(Result{}, StepResult{
+	advanceRun := runner.advanceRun
+	_, _, err := advanceRun(ctx, Result{}, StepResult{
 		Status: StepStatusFinished,
 		Kind:   StepKind("bad-kind"),
 	})
@@ -712,11 +830,11 @@ func TestIsTemporaryReturnsFalseForOrdinaryError(t *testing.T) {
 }
 
 type staticEngine struct {
-	reply string
+	reply AssistantReply
 	err   error
 }
 
-func (e staticEngine) Reply(input ReplyInput) (string, error) {
+func (e staticEngine) Reply(input ReplyInput) (AssistantReply, error) {
 	return e.reply, e.err
 }
 
@@ -724,18 +842,18 @@ type trackingEngine struct {
 	called bool
 }
 
-func (e *trackingEngine) Reply(input ReplyInput) (string, error) {
+func (e *trackingEngine) Reply(input ReplyInput) (AssistantReply, error) {
 	e.called = true
-	return "unused", nil
+	return AssistantReply{Text: "unused"}, nil
 }
 
 type spyEngine struct {
 	gotInput ReplyInput
-	reply    string
+	reply    AssistantReply
 	err      error
 }
 
-func (e *spyEngine) Reply(input ReplyInput) (string, error) {
+func (e *spyEngine) Reply(input ReplyInput) (AssistantReply, error) {
 	e.gotInput = input
 	return e.reply, e.err
 }
