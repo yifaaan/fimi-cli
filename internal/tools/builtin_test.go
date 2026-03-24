@@ -300,3 +300,125 @@ func TestNewBuiltinExecutorWriteFileRejectsPathOutsideWorkspace(t *testing.T) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
 	}
 }
+
+func TestNewBuiltinExecutorReplaceFileReplacesSingleOccurrence(t *testing.T) {
+	workDir := t.TempDir()
+	targetPath := filepath.Join(workDir, "notes.txt")
+	if err := os.WriteFile(targetPath, []byte("hello old world"), 0o640); err != nil {
+		t.Fatalf("WriteFile(notes.txt) error = %v", err)
+	}
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolReplaceFile,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	got, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolReplaceFile,
+		Arguments: `{"path":"notes.txt","old":"old","new":"new"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Output != "replaced 1 occurrence in notes.txt" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "replaced 1 occurrence in notes.txt")
+	}
+
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile(notes.txt) error = %v", err)
+	}
+	if string(data) != "hello new world" {
+		t.Fatalf("replaced content = %q, want %q", string(data), "hello new world")
+	}
+
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("Stat(notes.txt) error = %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("notes.txt mode = %#o, want %#o", info.Mode().Perm(), 0o640)
+	}
+}
+
+func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetMissing(t *testing.T) {
+	workDir := t.TempDir()
+	targetPath := filepath.Join(workDir, "notes.txt")
+	if err := os.WriteFile(targetPath, []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("WriteFile(notes.txt) error = %v", err)
+	}
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolReplaceFile,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolReplaceFile,
+		Arguments: `{"path":"notes.txt","old":"missing","new":"new"}`,
+	})
+	if !errors.Is(err, ErrToolReplaceTargetMissing) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolReplaceTargetMissing)
+	}
+}
+
+func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetNotUnique(t *testing.T) {
+	workDir := t.TempDir()
+	targetPath := filepath.Join(workDir, "notes.txt")
+	if err := os.WriteFile(targetPath, []byte("old and old"), 0o644); err != nil {
+		t.Fatalf("WriteFile(notes.txt) error = %v", err)
+	}
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolReplaceFile,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolReplaceFile,
+		Arguments: `{"path":"notes.txt","old":"old","new":"new"}`,
+	})
+	if !errors.Is(err, ErrToolReplaceTargetNotUnique) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolReplaceTargetNotUnique)
+	}
+}
+
+func TestNewBuiltinExecutorReplaceFileRejectsEmptyOldText(t *testing.T) {
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolReplaceFile,
+			Kind: KindFile,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolReplaceFile,
+		Arguments: `{"path":"notes.txt","old":"","new":"new"}`,
+	})
+	if !errors.Is(err, ErrToolReplaceOldRequired) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolReplaceOldRequired)
+	}
+}
+
+func TestNewBuiltinExecutorReplaceFileRejectsPathOutsideWorkspace(t *testing.T) {
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolReplaceFile,
+			Kind: KindFile,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolReplaceFile,
+		Arguments: `{"path":"../secret.txt","old":"x","new":"y"}`,
+	})
+	if !errors.Is(err, ErrToolPathOutsideWorkspace) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
+	}
+}

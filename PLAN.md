@@ -188,7 +188,7 @@ Goal: reach the first meaningfully autonomous version.
 - [x] `glob` tool handler
 - [x] `grep` tool handler
 - [x] `write_file` tool handler
-- [ ] `internal/tools/file/replace`
+- [x] `replace_file` tool handler
 
 Guardrails required in the same phase:
 

@@ -21,6 +21,9 @@ var ErrToolArgumentsInvalid = errors.New("tool arguments are invalid")
 var ErrToolCommandRequired = errors.New("tool command is required")
 var ErrToolPathRequired = errors.New("tool path is required")
 var ErrToolPatternRequired = errors.New("tool pattern is required")
+var ErrToolReplaceOldRequired = errors.New("tool replace old text is required")
+var ErrToolReplaceTargetMissing = errors.New("tool replace target not found")
+var ErrToolReplaceTargetNotUnique = errors.New("tool replace target is not unique")
 var ErrToolPathOutsideWorkspace = errors.New("tool path escapes workspace")
 var ErrToolPatternOutsideWorkspace = errors.New("tool pattern escapes workspace")
 
@@ -46,6 +49,12 @@ type writeFileArguments struct {
 	Content string `json:"content"`
 }
 
+type replaceFileArguments struct {
+	Path string `json:"path"`
+	Old  string `json:"old"`
+	New  string `json:"new"`
+}
+
 // NewBuiltinExecutor 返回带内建 handler 的最小工具执行器。
 // 当前先接通最小可用的一组本地工具能力。
 func NewBuiltinExecutor(definitions []Definition, workDir string) Executor {
@@ -54,11 +63,12 @@ func NewBuiltinExecutor(definitions []Definition, workDir string) Executor {
 
 func builtinHandlers(workDir string) map[string]HandlerFunc {
 	return map[string]HandlerFunc{
-		ToolBash:      newBashHandler(workDir),
-		ToolGlob:      newGlobHandler(workDir),
-		ToolGrep:      newGrepHandler(workDir),
-		ToolReadFile:  newReadFileHandler(workDir),
-		ToolWriteFile: newWriteFileHandler(workDir),
+		ToolBash:        newBashHandler(workDir),
+		ToolGlob:        newGlobHandler(workDir),
+		ToolGrep:        newGrepHandler(workDir),
+		ToolReadFile:    newReadFileHandler(workDir),
+		ToolWriteFile:   newWriteFileHandler(workDir),
+		ToolReplaceFile: newReplaceFileHandler(workDir),
 	}
 }
 
@@ -207,6 +217,56 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 	}
 }
 
+func newReplaceFileHandler(workDir string) HandlerFunc {
+	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeReplaceFileArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		rootAbs, err := resolveWorkspaceRoot(workDir)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		targetAbs, err := resolveWorkspacePath(rootAbs, args.Path)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		targetRel, err := relativeWorkspacePath(rootAbs, targetAbs)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		data, err := os.ReadFile(targetAbs)
+		if err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("read file %q for replace: %w", targetAbs, err)
+		}
+		info, err := os.Stat(targetAbs)
+		if err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("stat file %q for replace: %w", targetAbs, err)
+		}
+
+		content := string(data)
+		matchCount := strings.Count(content, args.Old)
+		switch {
+		case matchCount == 0:
+			return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolReplaceTargetMissing, targetRel)
+		case matchCount > 1:
+			return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolReplaceTargetNotUnique, targetRel)
+		}
+
+		replaced := strings.Replace(content, args.Old, args.New, 1)
+		if err := os.WriteFile(targetAbs, []byte(replaced), info.Mode().Perm()); err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("write replaced file %q: %w", targetAbs, err)
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: fmt.Sprintf("replaced 1 occurrence in %s", targetRel),
+		}, nil
+	}
+}
+
 func decodeBashArguments(raw string) (bashArguments, error) {
 	var args bashArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
@@ -265,6 +325,21 @@ func decodeWriteFileArguments(raw string) (writeFileArguments, error) {
 	}
 	if strings.TrimSpace(args.Path) == "" {
 		return writeFileArguments{}, ErrToolPathRequired
+	}
+
+	return args, nil
+}
+
+func decodeReplaceFileArguments(raw string) (replaceFileArguments, error) {
+	var args replaceFileArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return replaceFileArguments{}, fmt.Errorf("%w: decode replace_file arguments: %v", ErrToolArgumentsInvalid, err)
+	}
+	if strings.TrimSpace(args.Path) == "" {
+		return replaceFileArguments{}, ErrToolPathRequired
+	}
+	if args.Old == "" {
+		return replaceFileArguments{}, ErrToolReplaceOldRequired
 	}
 
 	return args, nil
