@@ -85,7 +85,7 @@ Target from temp
 | `temp/src/kimi_cli/__init__.py` | `cmd/fimi` + `internal/app` | partially done |
 | `temp/src/kimi_cli/config.py` | `internal/config` | mostly done for model/provider basics |
 | `temp/src/kimi_cli/metadata.py` | `internal/session` | partially done |
-| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + app wiring | not started |
+| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + app wiring | partially done |
 | `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | only minimal single-turn subset done |
 | `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | basic history done, checkpoint/revert missing |
 | `temp/src/kimi_cli/soul/event.py` | `internal/runtime/events` | not started |
