@@ -176,8 +176,8 @@ func TestHelpText(t *testing.T) {
 		"  prompt...         Remaining args are joined into one prompt string\n" +
 		"\n" +
 		"Examples:\n" +
-		"  fimi fix the flaky test\n" +
-		"  fimi --model fast-model refactor the session loader\n" +
+		"  fimi --new-session fix the flaky test\n" +
+		"  fimi --new-session --model fast-model refactor the session loader\n" +
 		"  fimi -- --help should be treated as prompt text\n"
 
 	if got != want {

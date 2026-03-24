@@ -457,8 +457,8 @@ func helpPromptRuleLines() []string {
 
 func helpExampleLines() []string {
 	return []string{
-		"  fimi fix the flaky test",
-		"  fimi --model fast-model refactor the session loader",
+		"  fimi --new-session fix the flaky test",
+		"  fimi --new-session --model fast-model refactor the session loader",
 		"  fimi -- --help should be treated as prompt text",
 	}
 }
