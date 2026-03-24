@@ -419,7 +419,7 @@ func (d dependencies) openRunSession(workDir string, input runInput) (session.Se
 
 		sess, err := continueSession(workDir)
 		if err != nil {
-			return session.Session{}, false, fmt.Errorf("continue session: %w", err)
+			return session.Session{}, false, renderContinueSessionError(workDir, err)
 		}
 
 		return sess, true, nil
@@ -436,6 +436,18 @@ func (d dependencies) openRunSession(workDir string, input runInput) (session.Se
 	}
 
 	return sess, false, nil
+}
+
+func renderContinueSessionError(workDir string, err error) error {
+	if errors.Is(err, session.ErrNoPreviousSession) {
+		return fmt.Errorf(
+			"no previous session found for work dir %q; rerun without --continue to start a new session: %w",
+			workDir,
+			session.ErrNoPreviousSession,
+		)
+	}
+
+	return fmt.Errorf("continue session: %w", err)
 }
 
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。

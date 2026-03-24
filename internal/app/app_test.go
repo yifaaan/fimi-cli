@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1067,6 +1068,25 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 			wantErr: errContinueSessionFailed,
 		},
 		{
+			name: "continue session with no previous session",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Default(), nil
+					},
+					resolveWorkDir: func() (string, error) {
+						return "/tmp/fimi-project", nil
+					},
+					loadAgent: testAgentLoader("You are the configured agent."),
+					continueSession: func(workDir string) (session.Session, error) {
+						return session.Session{}, fmt.Errorf("%w for work dir %q", session.ErrNoPreviousSession, workDir)
+					},
+				}
+			},
+			wantErr:     session.ErrNoPreviousSession,
+			wantErrText: `no previous session found for work dir "/tmp/fimi-project"; rerun without --continue to start a new session: no previous session`,
+		},
+		{
 			name: "load agent",
 			setup: func(t *testing.T) dependencies {
 				return dependencies{
@@ -1173,11 +1193,17 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 			if tt.name == "continue session" {
 				args = []string{"--continue", "fix", "tests"}
 			}
+			if tt.name == "continue session with no previous session" {
+				args = []string{"--continue", "fix", "tests"}
+			}
 
 			err := deps.run(args)
 			if tt.wantErrText != "" {
 				if err == nil {
 					t.Fatalf("run() error = nil, want %q", tt.wantErrText)
+				}
+				if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+					t.Fatalf("run() error = %v, want wrapped %v", err, tt.wantErr)
 				}
 				if err.Error() != tt.wantErrText {
 					t.Fatalf("run() error = %q, want %q", err.Error(), tt.wantErrText)
