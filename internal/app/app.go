@@ -407,13 +407,14 @@ func helpText() string {
 		"  fimi [--new-session] [--model <alias>] [--help] [prompt...]",
 		"  fimi [options] -- [prompt text starting with flags]",
 		"",
-		"Options:",
+		"Flags:",
 		"  --new-session    Start a fresh session for this run",
 		"  --model <alias>  Override the configured model for this run",
 		"  -h, --help       Show this help message",
 		"",
-		"Notes:",
+		"Prompt Rules:",
 		"  --                Stop parsing flags; everything after it is prompt text",
+		"  prompt...         Remaining args are joined into one prompt string",
 		"",
 	}, "\n")
 }

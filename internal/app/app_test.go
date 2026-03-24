@@ -166,13 +166,14 @@ func TestHelpText(t *testing.T) {
 		"  fimi [--new-session] [--model <alias>] [--help] [prompt...]\n" +
 		"  fimi [options] -- [prompt text starting with flags]\n" +
 		"\n" +
-		"Options:\n" +
+		"Flags:\n" +
 		"  --new-session    Start a fresh session for this run\n" +
 		"  --model <alias>  Override the configured model for this run\n" +
 		"  -h, --help       Show this help message\n" +
 		"\n" +
-		"Notes:\n" +
-		"  --                Stop parsing flags; everything after it is prompt text\n"
+		"Prompt Rules:\n" +
+		"  --                Stop parsing flags; everything after it is prompt text\n" +
+		"  prompt...         Remaining args are joined into one prompt string\n"
 
 	if got != want {
 		t.Fatalf("helpText() = %q, want %q", got, want)
