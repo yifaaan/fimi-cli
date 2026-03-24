@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestRequestLastUserMessage(t *testing.T) {
 	request := Request{
@@ -15,14 +18,12 @@ func TestRequestLastUserMessage(t *testing.T) {
 	if !ok {
 		t.Fatalf("LastUserMessage() ok = false, want true")
 	}
-	if message != (Message{
+	want := Message{
 		Role:    RoleUser,
 		Content: "second",
-	}) {
-		t.Fatalf("LastUserMessage() = %#v, want %#v", message, Message{
-			Role:    RoleUser,
-			Content: "second",
-		})
+	}
+	if !reflect.DeepEqual(message, want) {
+		t.Fatalf("LastUserMessage() = %#v, want %#v", message, want)
 	}
 }
 
@@ -56,5 +57,65 @@ func TestRequestPrimaryUserPromptWithoutUserMessage(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("PrimaryUserPrompt() = %q, want empty string", got)
+	}
+}
+
+func TestRequestLastUserMessageIgnoresToolResultMessage(t *testing.T) {
+	request := Request{
+		Messages: []Message{
+			{Role: RoleUser, Content: "draft plan"},
+			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call_1", Name: "read_file"}}},
+			{Role: RoleTool, ToolCallID: "call_1", Content: "file content"},
+		},
+	}
+
+	message, ok := request.LastUserMessage()
+	if !ok {
+		t.Fatalf("LastUserMessage() ok = false, want true")
+	}
+
+	want := Message{
+		Role:    RoleUser,
+		Content: "draft plan",
+	}
+	if !reflect.DeepEqual(message, want) {
+		t.Fatalf("LastUserMessage() = %#v, want %#v", message, want)
+	}
+}
+
+func TestMessageHasToolCalls(t *testing.T) {
+	message := Message{
+		Role: RoleAssistant,
+		ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "bash", Arguments: `{"command":"pwd"}`},
+		},
+	}
+
+	if !message.HasToolCalls() {
+		t.Fatalf("HasToolCalls() = false, want true")
+	}
+}
+
+func TestMessageIsToolResult(t *testing.T) {
+	message := Message{
+		Role:       RoleTool,
+		ToolCallID: "call_1",
+		Content:    "command output",
+	}
+
+	if !message.IsToolResult() {
+		t.Fatalf("IsToolResult() = false, want true")
+	}
+}
+
+func TestResponseHasToolCalls(t *testing.T) {
+	response := Response{
+		ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`},
+		},
+	}
+
+	if !response.HasToolCalls() {
+		t.Fatalf("HasToolCalls() = false, want true")
 	}
 }

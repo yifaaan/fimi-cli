@@ -12,14 +12,12 @@ func TestTextRecordToMessage(t *testing.T) {
 	if !ok {
 		t.Fatalf("textRecordToMessage() ok = false, want true")
 	}
-	if message != (Message{
+	want := Message{
 		Role:    RoleAssistant,
 		Content: "answer",
-	}) {
-		t.Fatalf("textRecordToMessage() = %#v, want %#v", message, Message{
-			Role:    RoleAssistant,
-			Content: "answer",
-		})
+	}
+	if !reflect.DeepEqual(message, want) {
+		t.Fatalf("textRecordToMessage() = %#v, want %#v", message, want)
 	}
 }
 

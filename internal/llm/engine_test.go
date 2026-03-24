@@ -2,6 +2,7 @@ package llm
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"fimi-cli/internal/contextstore"
@@ -42,41 +43,26 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	if len(client.gotRequest.Messages) != 4 {
 		t.Fatalf("len(Request.Messages) = %d, want 4", len(client.gotRequest.Messages))
 	}
-	if client.gotRequest.Messages[0] != (Message{
-		Role:    RoleSystem,
-		Content: "You are fimi, a coding agent.",
-	}) {
-		t.Fatalf("Request.Messages[0] = %#v, want %#v", client.gotRequest.Messages[0], Message{
+	wantMessages := []Message{
+		{
 			Role:    RoleSystem,
 			Content: "You are fimi, a coding agent.",
-		})
-	}
-	if client.gotRequest.Messages[1] != (Message{
-		Role:    RoleUser,
-		Content: "previous",
-	}) {
-		t.Fatalf("Request.Messages[1] = %#v, want %#v", client.gotRequest.Messages[1], Message{
+		},
+		{
 			Role:    RoleUser,
 			Content: "previous",
-		})
-	}
-	if client.gotRequest.Messages[2] != (Message{
-		Role:    RoleAssistant,
-		Content: "previous reply",
-	}) {
-		t.Fatalf("Request.Messages[2] = %#v, want %#v", client.gotRequest.Messages[2], Message{
+		},
+		{
 			Role:    RoleAssistant,
 			Content: "previous reply",
-		})
-	}
-	if client.gotRequest.Messages[3] != (Message{
-		Role:    RoleUser,
-		Content: "hello",
-	}) {
-		t.Fatalf("Request.Messages[3] = %#v, want %#v", client.gotRequest.Messages[3], Message{
+		},
+		{
 			Role:    RoleUser,
 			Content: "hello",
-		})
+		},
+	}
+	if !reflect.DeepEqual(client.gotRequest.Messages, wantMessages) {
+		t.Fatalf("Request.Messages = %#v, want %#v", client.gotRequest.Messages, wantMessages)
 	}
 	prompt, ok := client.gotRequest.PrimaryUserPrompt()
 	if !ok {
@@ -131,35 +117,22 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 		t.Fatalf("Reply() error = %v", err)
 	}
 
-	if len(client.gotRequest.Messages) != 3 {
-		t.Fatalf("len(Request.Messages) = %d, want 3", len(client.gotRequest.Messages))
-	}
-	if client.gotRequest.Messages[0] != (Message{
-		Role:    RoleUser,
-		Content: "previous",
-	}) {
-		t.Fatalf("Request.Messages[0] = %#v, want %#v", client.gotRequest.Messages[0], Message{
+	wantMessages := []Message{
+		{
 			Role:    RoleUser,
 			Content: "previous",
-		})
-	}
-	if client.gotRequest.Messages[1] != (Message{
-		Role:    RoleAssistant,
-		Content: "previous reply",
-	}) {
-		t.Fatalf("Request.Messages[1] = %#v, want %#v", client.gotRequest.Messages[1], Message{
+		},
+		{
 			Role:    RoleAssistant,
 			Content: "previous reply",
-		})
-	}
-	if client.gotRequest.Messages[2] != (Message{
-		Role:    RoleUser,
-		Content: "hello",
-	}) {
-		t.Fatalf("Request.Messages[2] = %#v, want %#v", client.gotRequest.Messages[2], Message{
+		},
+		{
 			Role:    RoleUser,
 			Content: "hello",
-		})
+		},
+	}
+	if !reflect.DeepEqual(client.gotRequest.Messages, wantMessages) {
+		t.Fatalf("Request.Messages = %#v, want %#v", client.gotRequest.Messages, wantMessages)
 	}
 	prompt, ok := client.gotRequest.PrimaryUserPrompt()
 	if !ok {
@@ -198,13 +171,8 @@ func TestEngineReplyUsesConfiguredTurnLimit(t *testing.T) {
 		{Role: RoleAssistant, Content: "second reply"},
 		{Role: RoleUser, Content: "hello"},
 	}
-	if len(client.gotRequest.Messages) != len(want) {
-		t.Fatalf("len(Request.Messages) = %d, want %d", len(client.gotRequest.Messages), len(want))
-	}
-	for i, message := range want {
-		if client.gotRequest.Messages[i] != message {
-			t.Fatalf("Request.Messages[%d] = %#v, want %#v", i, client.gotRequest.Messages[i], message)
-		}
+	if !reflect.DeepEqual(client.gotRequest.Messages, want) {
+		t.Fatalf("Request.Messages = %#v, want %#v", client.gotRequest.Messages, want)
 	}
 }
 
