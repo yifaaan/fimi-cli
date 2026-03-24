@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,12 +14,16 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"fimi-cli/internal/runtime"
 )
 
+const DefaultBashCommandTimeout = 30 * time.Second
+
 var ErrToolArgumentsInvalid = errors.New("tool arguments are invalid")
 var ErrToolCommandRequired = errors.New("tool command is required")
+var ErrToolCommandTimedOut = errors.New("tool command timed out")
 var ErrToolPathRequired = errors.New("tool path is required")
 var ErrToolPatternRequired = errors.New("tool pattern is required")
 var ErrToolReplaceOldRequired = errors.New("tool replace old text is required")
@@ -73,18 +78,28 @@ func builtinHandlers(workDir string) map[string]HandlerFunc {
 }
 
 func newBashHandler(workDir string) HandlerFunc {
+	return newBashHandlerWithTimeout(workDir, DefaultBashCommandTimeout)
+}
+
+func newBashHandlerWithTimeout(workDir string, timeout time.Duration) HandlerFunc {
 	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeBashArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
 		}
 
-		cmd := exec.Command("bash", "-lc", args.Command)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "bash", "-lc", args.Command)
 		if strings.TrimSpace(workDir) != "" {
 			cmd.Dir = workDir
 		}
 
 		output, err := cmd.CombinedOutput()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolCommandTimedOut, args.Command)
+		}
 		if err != nil {
 			return runtime.ToolExecution{}, fmt.Errorf("run bash command: %w", err)
 		}

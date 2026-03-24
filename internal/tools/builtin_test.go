@@ -1,11 +1,13 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"fimi-cli/internal/runtime"
 )
@@ -105,6 +107,25 @@ func TestNewBuiltinExecutorBashReturnsErrorOnNonZeroExit(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "run bash command") {
 		t.Fatalf("Execute() error = %q, want contains %q", err.Error(), "run bash command")
+	}
+}
+
+func TestNewBashHandlerWithTimeoutCancelsLongRunningCommand(t *testing.T) {
+	handler := newBashHandlerWithTimeout(t.TempDir(), 20*time.Millisecond)
+
+	start := time.Now()
+	_, err := handler(runtime.ToolCall{
+		Name:      ToolBash,
+		Arguments: `{"command":"sleep 1"}`,
+	}, Definition{Name: ToolBash, Kind: KindCommand})
+	if !errors.Is(err, ErrToolCommandTimedOut) {
+		t.Fatalf("handler() error = %v, want wrapped %v", err, ErrToolCommandTimedOut)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("handler() error = %v, want tool-level timeout error instead of raw context error", err)
+	}
+	if time.Since(start) >= 500*time.Millisecond {
+		t.Fatalf("handler() duration = %v, want less than %v", time.Since(start), 500*time.Millisecond)
 	}
 }
 
