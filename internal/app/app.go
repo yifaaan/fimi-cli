@@ -402,12 +402,14 @@ func printHelp() {
 
 // helpText 返回当前 CLI 入口支持的最小帮助文本。
 func helpText() string {
-	lines := make([]string, 0, 12)
+	lines := make([]string, 0, 16)
 	lines = append(lines, helpSectionLines("Usage", helpUsageLines())...)
 	lines = append(lines, "")
 	lines = append(lines, helpSectionLines("Flags", helpFlagLines())...)
 	lines = append(lines, "")
 	lines = append(lines, helpSectionLines("Prompt Rules", helpPromptRuleLines())...)
+	lines = append(lines, "")
+	lines = append(lines, helpSectionLines("Examples", helpExampleLines())...)
 	lines = append(lines, "")
 
 	return strings.Join(lines, "\n")
@@ -440,5 +442,13 @@ func helpPromptRuleLines() []string {
 	return []string{
 		"  --                Stop parsing flags; everything after it is prompt text",
 		"  prompt...         Remaining args are joined into one prompt string",
+	}
+}
+
+func helpExampleLines() []string {
+	return []string{
+		"  fimi fix the flaky test",
+		"  fimi --model fast-model refactor the session loader",
+		"  fimi -- --help should be treated as prompt text",
 	}
 }

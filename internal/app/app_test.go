@@ -173,7 +173,12 @@ func TestHelpText(t *testing.T) {
 		"\n" +
 		"Prompt Rules:\n" +
 		"  --                Stop parsing flags; everything after it is prompt text\n" +
-		"  prompt...         Remaining args are joined into one prompt string\n"
+		"  prompt...         Remaining args are joined into one prompt string\n" +
+		"\n" +
+		"Examples:\n" +
+		"  fimi fix the flaky test\n" +
+		"  fimi --model fast-model refactor the session loader\n" +
+		"  fimi -- --help should be treated as prompt text\n"
 
 	if got != want {
 		t.Fatalf("helpText() = %q, want %q", got, want)
