@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +16,8 @@ import (
 const (
 	initialRecordContent = "session initialized"
 )
+
+var ErrUnknownCLIFlag = errors.New("unknown cli flag")
 
 type configLoader func() (config.Config, error)
 type workDirResolver func() (string, error)
@@ -64,6 +67,11 @@ func Run(args []string) error {
 }
 
 func (d dependencies) run(args []string) error {
+	input, err := parseRunInput(args)
+	if err != nil {
+		return err
+	}
+
 	loadConfig := d.loadConfig
 	if loadConfig == nil {
 		loadConfig = config.Load
@@ -73,8 +81,6 @@ func (d dependencies) run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-
-	input := parseRunInput(args)
 
 	resolveWorkDir := d.resolveWorkDir
 	if resolveWorkDir == nil {
@@ -126,14 +132,24 @@ type runInput struct {
 
 // parseRunInput 把 CLI 参数折叠成应用层输入。
 // 这里先手写最小解析逻辑，只识别 app 层已经承诺支持的 flag。
-func parseRunInput(args []string) runInput {
+func parseRunInput(args []string) (runInput, error) {
 	promptParts := make([]string, 0, len(args))
 	input := runInput{}
+	parseFlags := true
 
 	for _, arg := range args {
-		if arg == "--new-session" {
+		if parseFlags && arg == "--" {
+			// `--` 之后的内容全部按 prompt 字面量处理，避免和 CLI flag 冲突。
+			parseFlags = false
+			continue
+		}
+
+		if parseFlags && arg == "--new-session" {
 			input.forceNewSession = true
 			continue
+		}
+		if parseFlags && strings.HasPrefix(arg, "-") {
+			return runInput{}, fmt.Errorf("%w: %s", ErrUnknownCLIFlag, arg)
 		}
 
 		promptParts = append(promptParts, arg)
@@ -144,7 +160,7 @@ func parseRunInput(args []string) runInput {
 	return runInput{
 		prompt:          input.prompt,
 		forceNewSession: input.forceNewSession,
-	}
+	}, nil
 }
 
 func defaultDependencies() dependencies {

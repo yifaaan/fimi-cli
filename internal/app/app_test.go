@@ -112,9 +112,10 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 
 func TestParseRunInput(t *testing.T) {
 	tests := []struct {
-		name string
-		args []string
-		want runInput
+		name    string
+		args    []string
+		want    runInput
+		wantErr error
 	}{
 		{
 			name: "prompt only",
@@ -138,11 +139,30 @@ func TestParseRunInput(t *testing.T) {
 				forceNewSession: true,
 			},
 		},
+		{
+			name: "flag terminator keeps literal flag in prompt",
+			args: []string{"--new-session", "--", "--new-session", "fix"},
+			want: runInput{
+				prompt:          "--new-session fix",
+				forceNewSession: true,
+			},
+		},
+		{
+			name:    "unknown flag",
+			args:    []string{"--bad-flag", "fix"},
+			wantErr: ErrUnknownCLIFlag,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseRunInput(tt.args)
+			got, err := parseRunInput(tt.args)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("parseRunInput() error = %v, want wrapped %v", err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("parseRunInput() = %#v, want %#v", got, tt.want)
 			}
@@ -436,6 +456,7 @@ func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 	errConfigFailed := errors.New("config failed")
 	errGetWDFailed := errors.New("getwd failed")
+	errParseInputFailed := ErrUnknownCLIFlag
 	errOpenSessionFailed := errors.New("open session failed")
 	errCreateSessionFailed := errors.New("create session failed")
 	errBuildRunnerFailed := errors.New("build runner failed")
@@ -456,6 +477,13 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 				}
 			},
 			wantErr: errConfigFailed,
+		},
+		{
+			name: "parse input",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{}
+			},
+			wantErr: errParseInputFailed,
 		},
 		{
 			name: "resolve work dir",
@@ -560,6 +588,9 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 			deps := tt.setup(t)
 
 			args := []string{"fix", "tests"}
+			if tt.name == "parse input" {
+				args = []string{"--bad-flag", "fix", "tests"}
+			}
 			if tt.name == "create session" {
 				args = []string{"--new-session", "fix", "tests"}
 			}
