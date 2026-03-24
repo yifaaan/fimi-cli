@@ -73,45 +73,50 @@ Next priority items:
   - [ ] web/search + web/fetch
   - [ ] think/todo/task（子 agent / 任务派发）
 - [ ] Task/subagent delegation（runtime + tool 层协议未完成）
-- [ ] Checkpoint/revert 与 token-usage 持久化（Python `Context` 的 `_checkpoint` / `_usage` 语义）
+- [x] Checkpoint/revert 与 token-usage 持久化（Python `Context` 的 `_checkpoint` / `_usage` 语义）
   - [x] Token usage 持久化（`_usage` 记录）
   - [x] Checkpoint 创建（`_checkpoint` 记录）
   - [x] Revert 到指定 checkpoint
   - [x] History 文件轮转备份
+  - [x] `Snapshot` / recent-turn helpers 暴露给 runtime 和 app
 - [ ] Runtime event bus for UI/streaming（StepBegin/StatusUpdate/Interrupted + message parts 流式输出）
 - [ ] UI modes: shell, print, ACP
 - [ ] MCP integration
 - [ ] Richer session metadata：显式 `last_session_id`（Python `metadata.py`），而不是仅用 history mtime 推断
+  - 这不是纯元数据优化，而是 `continue` 语义和未来 subagent history 隔离的前置条件
 - [ ] Service config beyond model providers（例如 Python 的 search service 配置）
 
-> 注：当前最阻塞的是 **runtime tool-loop 闭环**（tool 结果不写回 history），否则多步代理无法基于工具输出继续执行。
+> 注：`runtime tool-loop` 闭环已经完成。当前最阻塞的是 **runtime observability**（event bus + print UI）和少量 **parity gaps**（`exclude_tools`、显式 session metadata、web/subagent/MCP 能力）。
 
 ## Gap Summary
 
-The current Go rewrite is no longer "empty", but it is still mostly the outer shell and infrastructure layer.
+The current Go rewrite is no longer "empty", and it is also no longer just a shell around a one-shot model call.
 
 What is already in place:
 
 - application entry and dependency wiring
-- local persistence primitives
+- agent spec loading and prompt expansion
+- multi-step runtime loop with tool-call closure
+- local repo tool execution with guardrails
 - model/provider configuration
-- one-shot prompt execution
+- history snapshot, usage, checkpoint, and revert primitives
 
 What is still missing:
 
-- agent composition
-- multi-step autonomous execution
-- tool runtime
-- user-facing UI modes
+- runtime event streaming / observability
+- user-facing UI modes and transports
+- parity extras in agent spec and session metadata
+- advanced tools and delegation (`web/*`, task/subagent, MCP)
+- service config beyond model providers
 
 In short:
 
 ```text
 Current Go
-  = CLI shell + config + session + history + one-turn runtime
+  = CLI + agentspec + multi-step runtime + local tools + context history/checkpoint
 
 Target from temp
-  = composition root + agent spec + multi-step loop + tools + events + UI + subagents + MCP
+  = current core + explicit session semantics + event bus + UI/transport + delegation + advanced integrations
 ```
 
 ## Reference Mapping
@@ -121,12 +126,12 @@ Target from temp
 | `temp/src/kimi_cli/__init__.py` | `cmd/fimi` + `internal/app` | partially done |
 | `temp/src/kimi_cli/config.py` | `internal/config` | mostly done for model/provider basics |
 | `temp/src/kimi_cli/metadata.py` | `internal/session` | partially done |
-| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + app wiring | mostly done for local agent loading |
-| `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | only minimal single-turn subset done |
-| `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | basic history done, checkpoint/revert missing |
+| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + app wiring | mostly done; `exclude_tools` / `subagents` still missing |
+| `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | core multi-step loop done; events/UI integration still missing |
+| `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | mostly done for history + usage + checkpoint/revert |
 | `temp/src/kimi_cli/soul/event.py` | `internal/runtime/events` | not started |
-| `temp/src/kimi_cli/soul/message.py` | `internal/runtime/messages` | not started |
-| `temp/src/kimi_cli/tools/*` | `internal/tools/*` | partially done |
+| `temp/src/kimi_cli/soul/message.py` | `internal/runtime/messages` | partial via history/tool message shaping, dedicated package not started |
+| `temp/src/kimi_cli/tools/*` | `internal/tools/*` | local repo tools done; web/task/MCP tools missing |
 | `temp/src/kimi_cli/ui/*` | `internal/ui/*` | not started |
 
 ## Recommended Build Order
@@ -135,12 +140,14 @@ The missing work should not be implemented in the same order as the Python files
 
 The safest order for the Go rewrite is:
 
-1. finish the core runtime contracts
-2. add tool execution boundaries
-3. add a minimal tool-backed agent loop
-4. enrich persistence with checkpoint/revert
-5. add event streaming
-6. add alternative UIs and advanced integrations
+1. keep session semantics explicit before more history producers appear
+2. add a shared runtime/UI event boundary
+3. build the smallest text print mode on top of that boundary
+4. add the interactive shell on the same event stream
+5. close agent-spec parity needed for delegation (`exclude_tools`, `subagents`)
+6. add isolated subagent/task execution
+7. add advanced tools together with the config they require
+8. add machine-facing transport parity last
 
 This order keeps the system runnable at each stage and avoids building shell/ACP frontends before there is a stable runtime to drive them.
 
@@ -216,6 +223,8 @@ Classification:
 
 ### Phase 4: Minimum Useful Tool Set
 
+Status: completed
+
 Goal: reach the first meaningfully autonomous version.
 
 - [x] `bash` tool handler
@@ -224,6 +233,7 @@ Goal: reach the first meaningfully autonomous version.
 - [x] `grep` tool handler
 - [x] `write_file` tool handler
 - [x] `replace_file` tool handler
+- [x] `patch_file` tool handler
 
 Guardrails required in the same phase:
 
@@ -238,33 +248,55 @@ Why this phase is the first major milestone:
 
 ### Phase 5: Richer Context Store
 
+Status: completed
+
 Goal: close the biggest persistence gap with `temp/soul/context.py`.
 
-- [ ] persist token usage records
-- [ ] persist checkpoints
-- [ ] implement revert-to-checkpoint
-- [ ] keep append-only rotation strategy for rollback history
-- [ ] expose snapshot helpers needed by runtime and UI
+- [x] persist token usage records
+- [x] persist checkpoints
+- [x] implement revert-to-checkpoint
+- [x] keep append-only rotation strategy for rollback history
+- [x] expose snapshot helpers needed by runtime and app
 
 Why after a basic tool loop exists:
 
 - checkpoint/revert is most valuable when multi-step execution can actually go wrong
 
-### Phase 6: Event Stream And Print UI
+### Phase 6: Session Metadata And Continue Semantics
+
+Status: next active phase
+
+Goal: replace mtime-based session reuse with the explicit contract used by Python before subagent histories and multiple transports make that heuristic unsafe.
+
+- [ ] add session metadata store with per-workdir `last_session_id`
+- [ ] make "new session" the default path and add an explicit continue path
+- [ ] return an error when continue is requested but no previous session exists
+- [ ] stop inferring the active session from history file mtime
+- [ ] cover future sibling histories (for example subagent runs) in session tests
+
+Why now:
+
+- Python's `Task` tool creates sibling history files for subagents
+- once multiple histories coexist, "latest mtime wins" is the wrong contract
+
+### Phase 7: Event Stream And Print UI
 
 Goal: make runtime observable before building the full interactive shell.
 
 - [ ] create `internal/runtime/events`
-- [ ] emit step begin / text part / tool call / tool result / status events
+- [ ] define an event sink boundary with a no-op default
+- [ ] add a `run_soul`-style coordinator between app/runtime and UI consumers
+- [ ] widen the runtime/LLM seam enough to emit step begin / text parts / tool-call deltas / tool results / status / interruption
 - [ ] create a minimal `internal/ui/printui`
 - [ ] support plain text output first
-- [ ] then add stream-json output for automation
+- [ ] defer `stream-json` until the event boundary is stable
 
 Why print UI before shell UI:
 
 - it exercises the runtime/event contract with less presentation complexity
+- Python's `stream-json` mode is partly history-tail based, so it is not the cleanest first slice
 
-### Phase 7: Shell UI
+### Phase 8: Shell UI
 
 Goal: add the main interactive interface only after runtime events are stable.
 
@@ -279,20 +311,38 @@ Keep out of this phase unless required:
 - MCP
 - subagents
 
-### Phase 8: Agent Parity Features
+### Phase 9: Agent Spec Parity And Delegation
 
 Goal: close the larger capability gaps with the Python reference.
 
-- [ ] subagent/task tool
-- [ ] MCP tool adapter
+- [ ] extend `internal/agentspec.Spec` with `ExcludeTools` and `Subagents`
+- [ ] add `SubagentSpec { Path, Description }` and resolve subagent paths relative to the declaring YAML
+- [ ] match Python inheritance semantics exactly: merge only `system_prompt_args`; overwrite `tools`, `exclude_tools`, and `subagents`
+- [ ] apply `exclude_tools` during app tool resolution, preserving declared tool order
+- [ ] add tests for child override behavior, path resolution, and exclusion after inheritance
+- [ ] add a minimal `task` tool contract with `description`, `subagent_name`, and `prompt`
+- [ ] add isolated subagent execution with fresh history/context and final-summary return semantics
+
+Why after shell basics:
+
+- task/subagent is not "just another tool"; it depends on agent-spec parity and explicit session/history behavior
+- getting this wrong early creates recursive runtime coupling that is harder to unwind later
+
+### Phase 10: Advanced Tools And Service Config
+
+Goal: add external-network and adapter-heavy capabilities only when their config and runtime seams can land together.
+
+- [ ] add `services` config surface only together with the tools that consume it
 - [ ] web/search/fetch tools
 - [ ] richer service config
-- [ ] session metadata for explicit continue semantics
-- [ ] optional agent inheritance and subagent declarations
+- [ ] MCP tool adapter / CLI MCP config loading
 
-These are important, but they should sit on top of a stable local-agent core.
+Why here:
 
-### Phase 9: Transport Parity
+- Python's extra config beyond model providers is mainly the search service
+- config-only placeholders are low value until the matching tools exist
+
+### Phase 11: Transport Parity
 
 Goal: support machine-facing execution modes after the local CLI is solid.
 
@@ -302,12 +352,13 @@ Goal: support machine-facing execution modes after the local CLI is solid.
 
 ## Immediate Next Teaching Units
 
-The next several implementation steps should stay close to the runtime core:
+The next several implementation steps should follow the real dependency chain from `temp`:
 
-1. Add a structured runtime step output type that can represent either plain assistant completion or pending tool calls.
-2. Introduce a tiny loop in `internal/runtime` that consumes `MaxStepsPerRun`, even if the first version still only supports "finish immediately".
-3. Define the first tool interface in `internal/tools` and wire a no-op or fake registry through app/runtime.
-4. Add one read-only tool first, preferably file read or bash echo-style execution, before implementing write-capable tools.
+1. Add explicit session metadata with `last_session_id` and a true continue path.
+2. Define `internal/runtime/events` plus a transport-neutral run coordinator.
+3. Widen the runtime/LLM seam only as far as needed to emit step/tool/status events.
+4. Add a minimal plain-text `printui` consumer on that event stream.
+5. After that seam is stable, extend `internal/agentspec` with `exclude_tools` and `subagents` so `task` can be designed on a real contract.
 
 ## Local Architecture Diagram
 
@@ -319,12 +370,19 @@ internal/app
   |
   +-- internal/config
   +-- internal/session
+  +-- internal/agentspec
+  +-- internal/tools
   +-- internal/contextstore
   +-- internal/llm
-  +-- internal/runtime
   |
-  +-- future: internal/agentspec
-  +-- future: internal/tools/*
+  v
+internal/runtime
+  |
+  +-- reads/writes internal/contextstore
+  +-- calls internal/llm
+  +-- executes internal/tools
+  |
+  +-- future: internal/runtime/events
   +-- future: internal/ui/*
 ```
 

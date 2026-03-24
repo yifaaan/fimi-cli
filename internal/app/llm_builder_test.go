@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -200,7 +201,7 @@ func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
 		t.Fatalf("buildEngine() error = %v", err)
 	}
 
-	reply, err := engine.Reply(runtime.ReplyInput{
+	reply, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("hello"),
 		},
@@ -245,7 +246,7 @@ func TestDependenciesBuildEngineUsesInjectedClientBuilder(t *testing.T) {
 		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, config.ProviderTypePlaceholder)
 	}
 
-	reply, err := engine.Reply(runtime.ReplyInput{
+	reply, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("hello"),
 		},

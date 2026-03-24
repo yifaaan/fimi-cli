@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ const (
 	SessionsDirName    = "sessions"
 	HistoryFileExtName = ".jsonl"
 )
+
+var ErrNoPreviousSession = errors.New("no previous session")
 
 // Session 表示某个工作目录上的一次 agent 会话。
 type Session struct {
@@ -110,6 +113,29 @@ func New(workDir string) (Session, error) {
 	return newSession(absWorkDir, workDirSessionsDir)
 }
 
+// Continue 按 metadata 中记录的 last_session_id 恢复工作目录对应的 session。
+// 这里故意不再根据 history 文件修改时间猜测“最近会话”，避免后续被子 session 干扰。
+func Continue(workDir string) (Session, error) {
+	absWorkDir, workDirSessionsDir, err := DirForWorkDir(workDir)
+	if err != nil {
+		return Session{}, err
+	}
+
+	lastSessionID, err := lastSessionIDForWorkDir(absWorkDir)
+	if err != nil {
+		return Session{}, err
+	}
+	if lastSessionID == "" {
+		return Session{}, fmt.Errorf("%w for work dir %q", ErrNoPreviousSession, absWorkDir)
+	}
+
+	return Session{
+		ID:          lastSessionID,
+		WorkDir:     absWorkDir,
+		HistoryFile: HistoryFileForSession(workDirSessionsDir, lastSessionID),
+	}, nil
+}
+
 func newSession(absWorkDir, workDirSessionsDir string) (Session, error) {
 	if err := os.MkdirAll(workDirSessionsDir, 0o755); err != nil {
 		return Session{}, fmt.Errorf("create sessions dir %q: %w", workDirSessionsDir, err)
@@ -122,11 +148,19 @@ func newSession(absWorkDir, workDirSessionsDir string) (Session, error) {
 
 	historyFile := HistoryFileForSession(workDirSessionsDir, sessionID)
 
-	return Session{
+	sess := Session{
 		ID:          sessionID,
 		WorkDir:     absWorkDir,
 		HistoryFile: historyFile,
-	}, nil
+	}
+
+	// 先在 metadata 中记录最后一次显式创建的新 session，
+	// 后续 continue 语义将基于这个索引，而不是 history 文件 mtime。
+	if err := setLastSessionID(absWorkDir, sessionID); err != nil {
+		return Session{}, fmt.Errorf("persist session metadata: %w", err)
+	}
+
+	return sess, nil
 }
 
 func latestHistoryFile(sessionsDir string) (string, bool, error) {

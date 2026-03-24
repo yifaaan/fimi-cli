@@ -26,10 +26,11 @@ const (
 
 var ErrUnknownCLIFlag = errors.New("unknown cli flag")
 var ErrCLIFlagValueRequired = errors.New("cli flag requires a value")
+var ErrConflictingSessionFlags = errors.New("conflicting session flags")
 
 type configLoader func() (config.Config, error)
 type workDirResolver func() (string, error)
-type sessionOpener func(workDir string) (session.Session, bool, error)
+type sessionContinuer func(workDir string) (session.Session, error)
 type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
@@ -65,7 +66,7 @@ type dependencies struct {
 	resolveWorkDir     workDirResolver
 	loadAgent          agentLoader
 	buildToolRegistry  toolRegistryBuilder
-	openSession        sessionOpener
+	continueSession    sessionContinuer
 	createSession      sessionCreator
 	buildLLMClient     llmClientBuilder
 	buildRuntimeRunner runtimeRunnerBuilder
@@ -150,7 +151,7 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 
-	runResult, err := runner.Run(ctx, buildRuntimeInput(cfg, input, agent))
+	runResult, err := runner.Run(context.Background(), ctx, buildRuntimeInput(cfg, input, agent))
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)
 	}
@@ -170,6 +171,7 @@ func (d dependencies) run(args []string) error {
 type runInput struct {
 	prompt          string
 	forceNewSession bool
+	continueSession bool
 	modelAlias      string
 	showHelp        bool
 }
@@ -192,6 +194,10 @@ func parseRunInput(args []string) (runInput, error) {
 
 		if parseFlags && arg == "--new-session" {
 			input.forceNewSession = true
+			continue
+		}
+		if parseFlags && (arg == "--continue" || arg == "-C") {
+			input.continueSession = true
 			continue
 		}
 		if parseFlags && (arg == "--help" || arg == "-h") {
@@ -220,10 +226,14 @@ func parseRunInput(args []string) (runInput, error) {
 	}
 
 	input.prompt = strings.TrimSpace(strings.Join(promptParts, " "))
+	if input.forceNewSession && input.continueSession {
+		return runInput{}, ErrConflictingSessionFlags
+	}
 
 	return runInput{
 		prompt:          input.prompt,
 		forceNewSession: input.forceNewSession,
+		continueSession: input.continueSession,
 		modelAlias:      input.modelAlias,
 		showHelp:        input.showHelp,
 	}, nil
@@ -251,7 +261,7 @@ func defaultDependencies() dependencies {
 		resolveWorkDir:    os.Getwd,
 		loadAgent:         loadAgentFromWorkDir,
 		buildToolRegistry: tools.BuiltinRegistry,
-		openSession:       session.OpenLatestOrCreate,
+		continueSession:   session.Continue,
 		createSession:     session.New,
 		buildLLMClient:    buildLLMClientFromConfig,
 		printHelp:         printHelp,
@@ -401,31 +411,31 @@ func loadAgentFromWorkDir(workDir string, registry tools.Registry) (loadedAgent,
 // openRunSession 根据当前应用输入决定 session 获取策略。
 // 是否复用旧 session 属于 app 层决策，而不是 session 包内部规则。
 func (d dependencies) openRunSession(workDir string, input runInput) (session.Session, bool, error) {
-	if input.forceNewSession {
-		createSession := d.createSession
-		if createSession == nil {
-			createSession = session.New
+	if input.continueSession {
+		continueSession := d.continueSession
+		if continueSession == nil {
+			continueSession = session.Continue
 		}
 
-		sess, err := createSession(workDir)
+		sess, err := continueSession(workDir)
 		if err != nil {
-			return session.Session{}, false, fmt.Errorf("create session: %w", err)
+			return session.Session{}, false, fmt.Errorf("continue session: %w", err)
 		}
 
-		return sess, false, nil
+		return sess, true, nil
 	}
 
-	openSession := d.openSession
-	if openSession == nil {
-		openSession = session.OpenLatestOrCreate
+	createSession := d.createSession
+	if createSession == nil {
+		createSession = session.New
 	}
 
-	sess, reused, err := openSession(workDir)
+	sess, err := createSession(workDir)
 	if err != nil {
-		return session.Session{}, false, fmt.Errorf("open session: %w", err)
+		return session.Session{}, false, fmt.Errorf("create session: %w", err)
 	}
 
-	return sess, reused, nil
+	return sess, false, nil
 }
 
 // advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
@@ -534,14 +544,15 @@ func helpSectionLines(title string, lines []string) []string {
 
 func helpUsageLines() []string {
 	return []string{
-		"  fimi [--new-session] [--model <alias>] [--help] [prompt...]",
+		"  fimi [--continue] [--model <alias>] [--help] [prompt...]",
 		"  fimi [options] -- [prompt text starting with flags]",
 	}
 }
 
 func helpFlagLines() []string {
 	return []string{
-		"  --new-session    Start a fresh session for this run",
+		"  --continue, -C   Continue the previous session for this work dir",
+		"  --new-session    Explicitly start a fresh session for this run",
 		"  --model <alias>  Override the configured model for this run",
 		"  -h, --help       Show this help message",
 	}
@@ -556,8 +567,9 @@ func helpPromptRuleLines() []string {
 
 func helpExampleLines() []string {
 	return []string{
-		"  fimi --new-session fix the flaky test",
-		"  fimi --new-session --model fast-model refactor the session loader",
+		"  fimi fix the flaky test",
+		"  fimi --continue continue the refactor from the last session",
+		"  fimi --model fast-model refactor the session loader",
 		"  fimi -- --help should be treated as prompt text",
 	}
 }

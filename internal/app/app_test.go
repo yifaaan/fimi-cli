@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -277,11 +278,12 @@ func TestHelpText(t *testing.T) {
 	got := helpText()
 	want := "" +
 		"Usage:\n" +
-		"  fimi [--new-session] [--model <alias>] [--help] [prompt...]\n" +
+		"  fimi [--continue] [--model <alias>] [--help] [prompt...]\n" +
 		"  fimi [options] -- [prompt text starting with flags]\n" +
 		"\n" +
 		"Flags:\n" +
-		"  --new-session    Start a fresh session for this run\n" +
+		"  --continue, -C   Continue the previous session for this work dir\n" +
+		"  --new-session    Explicitly start a fresh session for this run\n" +
 		"  --model <alias>  Override the configured model for this run\n" +
 		"  -h, --help       Show this help message\n" +
 		"\n" +
@@ -290,8 +292,9 @@ func TestHelpText(t *testing.T) {
 		"  prompt...         Remaining args are joined into one prompt string\n" +
 		"\n" +
 		"Examples:\n" +
-		"  fimi --new-session fix the flaky test\n" +
-		"  fimi --new-session --model fast-model refactor the session loader\n" +
+		"  fimi fix the flaky test\n" +
+		"  fimi --continue continue the refactor from the last session\n" +
+		"  fimi --model fast-model refactor the session loader\n" +
 		"  fimi -- --help should be treated as prompt text\n"
 
 	if got != want {
@@ -358,6 +361,22 @@ func TestParseRunInput(t *testing.T) {
 			},
 		},
 		{
+			name: "continue flag removed from prompt",
+			args: []string{"--continue", "fix", "tests"},
+			want: runInput{
+				prompt:          "fix tests",
+				continueSession: true,
+			},
+		},
+		{
+			name: "continue short flag",
+			args: []string{"-C", "fix"},
+			want: runInput{
+				prompt:          "fix",
+				continueSession: true,
+			},
+		},
+		{
 			name: "model override",
 			args: []string{"--model", "fast-model", "fix", "tests"},
 			want: runInput{
@@ -366,11 +385,11 @@ func TestParseRunInput(t *testing.T) {
 			},
 		},
 		{
-			name: "model override and new session",
-			args: []string{"--new-session", "--model", "fast-model", "fix"},
+			name: "model override and continue",
+			args: []string{"--continue", "--model", "fast-model", "fix"},
 			want: runInput{
 				prompt:          "fix",
-				forceNewSession: true,
+				continueSession: true,
 				modelAlias:      "fast-model",
 			},
 		},
@@ -394,6 +413,14 @@ func TestParseRunInput(t *testing.T) {
 			want: runInput{
 				prompt:          "--new-session fix",
 				forceNewSession: true,
+			},
+		},
+		{
+			name: "flag terminator keeps literal continue flag in prompt",
+			args: []string{"--continue", "--", "--continue", "fix"},
+			want: runInput{
+				prompt:          "--continue fix",
+				continueSession: true,
 			},
 		},
 		{
@@ -424,6 +451,11 @@ func TestParseRunInput(t *testing.T) {
 			name:    "model flag rejects another flag as value",
 			args:    []string{"--model", "--new-session", "fix"},
 			wantErr: ErrCLIFlagValueRequired,
+		},
+		{
+			name:    "conflicting session flags",
+			args:    []string{"--new-session", "--continue", "fix"},
+			wantErr: ErrConflictingSessionFlags,
 		},
 	}
 
@@ -478,13 +510,13 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 			return "/tmp/fimi-project", nil
 		},
 		loadAgent: testAgentLoader("You are the configured agent."),
-		openSession: func(workDir string) (session.Session, bool, error) {
+		createSession: func(workDir string) (session.Session, error) {
 			gotWorkDir = workDir
 			return session.Session{
 				ID:          "session-123",
 				WorkDir:     workDir,
 				HistoryFile: historyFile,
-			}, true, nil
+			}, nil
 		},
 		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
 			gotModelAlias = cfg.DefaultModel
@@ -512,7 +544,7 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	}
 
 	if gotWorkDir != "/tmp/fimi-project" {
-		t.Fatalf("openSession() got workDir = %q, want %q", gotWorkDir, "/tmp/fimi-project")
+		t.Fatalf("createSession() got workDir = %q, want %q", gotWorkDir, "/tmp/fimi-project")
 	}
 	if gotModelAlias != "custom-model" {
 		t.Fatalf("builder got DefaultModel = %q, want %q", gotModelAlias, "custom-model")
@@ -526,8 +558,8 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if printed.historyPath != historyFile {
 		t.Fatalf("printed history path = %q, want %q", printed.historyPath, historyFile)
 	}
-	if !printed.sessionReused {
-		t.Fatalf("printed sessionReused = false, want true")
+	if printed.sessionReused {
+		t.Fatalf("printed sessionReused = true, want false")
 	}
 	if printed.model != "custom-model" {
 		t.Fatalf("printed model = %q, want %q", printed.model, "custom-model")
@@ -540,8 +572,10 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if !printed.state.historySeeded {
 		t.Fatalf("printed historySeeded = false, want true")
 	}
-	if printed.state.historyCount != 3 {
-		t.Fatalf("printed historyCount = %d, want %d", printed.state.historyCount, 3)
+	// startupState 当前只根据 bootstrap 结果和 step 追加记录推进，
+	// runtime 的 UserRecord 已经写入 history，但不会重复计入打印态计数。
+	if printed.state.historyCount != 2 {
+		t.Fatalf("printed historyCount = %d, want %d", printed.state.historyCount, 2)
 	}
 	if !printed.state.hasLastRecord {
 		t.Fatalf("printed hasLastRecord = false, want true")
@@ -568,7 +602,7 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 	var loadConfigCalled bool
 	var resolveWorkDirCalled bool
-	var openSessionCalled bool
+	var createSessionCalled bool
 	var buildRunnerCalled bool
 	var helpCalled bool
 
@@ -581,9 +615,9 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 			resolveWorkDirCalled = true
 			return "", nil
 		},
-		openSession: func(workDir string) (session.Session, bool, error) {
-			openSessionCalled = true
-			return session.Session{}, false, nil
+		createSession: func(workDir string) (session.Session, error) {
+			createSessionCalled = true
+			return session.Session{}, nil
 		},
 		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
 			buildRunnerCalled = true
@@ -608,8 +642,8 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 	if resolveWorkDirCalled {
 		t.Fatalf("resolveWorkDir() called = true, want false")
 	}
-	if openSessionCalled {
-		t.Fatalf("openSession() called = true, want false")
+	if createSessionCalled {
+		t.Fatalf("createSession() called = true, want false")
 	}
 	if buildRunnerCalled {
 		t.Fatalf("buildRuntimeRunner() called = true, want false")
@@ -641,12 +675,12 @@ func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
 			return "/tmp/fimi-project", nil
 		},
 		loadAgent: testAgentLoader("You are the configured agent."),
-		openSession: func(workDir string) (session.Session, bool, error) {
+		createSession: func(workDir string) (session.Session, error) {
 			return session.Session{
 				ID:          "session-123",
 				WorkDir:     workDir,
 				HistoryFile: historyFile,
-			}, true, nil
+			}, nil
 		},
 		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
 			gotRunnerCfg = cfg
@@ -689,9 +723,8 @@ func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
 	}
 }
 
-func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
+func TestDependenciesRunCreatesNewSessionByDefault(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
-	var openCalled bool
 	var createCalled bool
 	var gotCreateWorkDir string
 	var printedSession session.Session
@@ -713,10 +746,6 @@ func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
 			return "/tmp/fimi-project", nil
 		},
 		loadAgent: testAgentLoader("You are the configured agent."),
-		openSession: func(workDir string) (session.Session, bool, error) {
-			openCalled = true
-			return session.Session{}, true, nil
-		},
 		createSession: func(workDir string) (session.Session, error) {
 			createCalled = true
 			gotCreateWorkDir = workDir
@@ -754,14 +783,11 @@ func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
 		},
 	}
 
-	err := deps.run([]string{"--new-session", "fix", "tests"})
+	err := deps.run([]string{"fix", "tests"})
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 
-	if openCalled {
-		t.Fatalf("openSession() called = true, want false")
-	}
 	if !createCalled {
 		t.Fatalf("createSession() called = false, want true")
 	}
@@ -773,6 +799,93 @@ func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
 	}
 	if printedReused {
 		t.Fatalf("printed sessionReused = true, want false")
+	}
+}
+
+func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	var continueCalled bool
+	var createCalled bool
+	var gotContinueWorkDir string
+	var printedSession session.Session
+	var printedReused bool
+
+	deps := dependencies{
+		loadConfig: func() (config.Config, error) {
+			return config.Config{
+				DefaultModel: "custom-model",
+				Models: map[string]config.ModelConfig{
+					"custom-model": {
+						Provider: config.ProviderTypePlaceholder,
+						Model:    "custom-model",
+					},
+				},
+			}, nil
+		},
+		resolveWorkDir: func() (string, error) {
+			return "/tmp/fimi-project", nil
+		},
+		loadAgent: testAgentLoader("You are the configured agent."),
+		continueSession: func(workDir string) (session.Session, error) {
+			continueCalled = true
+			gotContinueWorkDir = workDir
+			return session.Session{
+				ID:          "session-old",
+				WorkDir:     workDir,
+				HistoryFile: historyFile,
+			}, nil
+		},
+		createSession: func(workDir string) (session.Session, error) {
+			createCalled = true
+			return session.Session{}, nil
+		},
+		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+			return &stubRunner{
+				result: runtime.Result{
+					Steps: []runtime.StepResult{
+						{
+							Kind: runtime.StepKindFinished,
+							AppendedRecords: []contextstore.TextRecord{
+								contextstore.NewUserTextRecord("fix tests"),
+								contextstore.NewAssistantTextRecord("runner reply"),
+							},
+						},
+					},
+				},
+				appendToContext: true,
+			}, nil
+		},
+		printStartupState: func(
+			sess session.Session,
+			ctx contextstore.Context,
+			state startupState,
+			sessionReused bool,
+			model string,
+		) {
+			printedSession = sess
+			printedReused = sessionReused
+		},
+	}
+
+	err := deps.run([]string{"--continue", "fix", "tests"})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if createCalled {
+		t.Fatalf("createSession() called = true, want false")
+	}
+	if !continueCalled {
+		t.Fatalf("continueSession() called = false, want true")
+	}
+	if gotContinueWorkDir != "/tmp/fimi-project" {
+		t.Fatalf("continueSession() got workDir = %q, want %q", gotContinueWorkDir, "/tmp/fimi-project")
+	}
+	if printedSession.ID != "session-old" {
+		t.Fatalf("printed session ID = %q, want %q", printedSession.ID, "session-old")
+	}
+	if !printedReused {
+		t.Fatalf("printed sessionReused = false, want true")
 	}
 }
 
@@ -808,12 +921,12 @@ func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 			return "/tmp/fimi-project", nil
 		},
 		loadAgent: testAgentLoader("You are the configured agent."),
-		openSession: func(workDir string) (session.Session, bool, error) {
+		createSession: func(workDir string) (session.Session, error) {
 			return session.Session{
 				ID:          "session-456",
 				WorkDir:     workDir,
 				HistoryFile: historyFile,
-			}, false, nil
+			}, nil
 		},
 		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
 			gotCfg = cfg
@@ -865,7 +978,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 	errGetWDFailed := errors.New("getwd failed")
 	errParseInputFailed := ErrUnknownCLIFlag
 	errFlagValueRequired := ErrCLIFlagValueRequired
-	errOpenSessionFailed := errors.New("open session failed")
+	errContinueSessionFailed := errors.New("continue session failed")
 	errCreateSessionFailed := errors.New("create session failed")
 	errLoadAgentFailed := errors.New("load agent failed")
 	errBuildRunnerFailed := errors.New("build runner failed")
@@ -936,7 +1049,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 			wantErr: errGetWDFailed,
 		},
 		{
-			name: "open session",
+			name: "continue session",
 			setup: func(t *testing.T) dependencies {
 				return dependencies{
 					loadConfig: func() (config.Config, error) {
@@ -946,12 +1059,12 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 						return "/tmp/fimi-project", nil
 					},
 					loadAgent: testAgentLoader("You are the configured agent."),
-					openSession: func(workDir string) (session.Session, bool, error) {
-						return session.Session{}, false, errOpenSessionFailed
+					continueSession: func(workDir string) (session.Session, error) {
+						return session.Session{}, errContinueSessionFailed
 					},
 				}
 			},
-			wantErr: errOpenSessionFailed,
+			wantErr: errContinueSessionFailed,
 		},
 		{
 			name: "load agent",
@@ -999,12 +1112,12 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 						return "/tmp/fimi-project", nil
 					},
 					loadAgent: testAgentLoader("You are the configured agent."),
-					openSession: func(workDir string) (session.Session, bool, error) {
+					createSession: func(workDir string) (session.Session, error) {
 						return session.Session{
 							ID:          "session-123",
 							WorkDir:     workDir,
 							HistoryFile: filepath.Join(t.TempDir(), "history.jsonl"),
-						}, true, nil
+						}, nil
 					},
 					buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
 						return nil, errBuildRunnerFailed
@@ -1024,12 +1137,12 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 						return "/tmp/fimi-project", nil
 					},
 					loadAgent: testAgentLoader("You are the configured agent."),
-					openSession: func(workDir string) (session.Session, bool, error) {
+					createSession: func(workDir string) (session.Session, error) {
 						return session.Session{
 							ID:          "session-123",
 							WorkDir:     workDir,
 							HistoryFile: filepath.Join(t.TempDir(), "history.jsonl"),
-						}, true, nil
+						}, nil
 					},
 					buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
 						return &stubRunner{err: errRunnerFailed}, nil
@@ -1056,6 +1169,9 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 			}
 			if tt.name == "create session" {
 				args = []string{"--new-session", "fix", "tests"}
+			}
+			if tt.name == "continue session" {
+				args = []string{"--continue", "fix", "tests"}
 			}
 
 			err := deps.run(args)
@@ -1095,7 +1211,7 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
 
-	result, err := runner.Run(ctx, runtime.Input{
+	result, err := runner.Run(context.Background(), ctx, runtime.Input{
 		Prompt:       "hello",
 		Model:        cfg.DefaultModel,
 		SystemPrompt: "You are the configured agent.",
@@ -1162,7 +1278,7 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
 
-	_, err = runner.Run(ctx, runtime.Input{
+	_, err = runner.Run(context.Background(), ctx, runtime.Input{
 		Prompt:       "hello",
 		Model:        cfg.DefaultModel,
 		SystemPrompt: "You are the configured agent.",
@@ -1207,6 +1323,7 @@ func TestDependenciesBuildRunnerForAgentRunsWithResolvedAgentTools(t *testing.T)
 	}
 
 	result, err := runner.Run(
+		context.Background(),
 		contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
 		runtime.Input{
 			Prompt:       "hello",
@@ -1253,8 +1370,8 @@ type stubRunner struct {
 	appendToContext bool
 }
 
-func (r *stubRunner) Run(ctx contextstore.Context, input runtime.Input) (runtime.Result, error) {
-	r.gotCtx = ctx
+func (r *stubRunner) Run(_ context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
+	r.gotCtx = store
 	r.gotInput = input
 	if r.err != nil {
 		return runtime.Result{}, r.err
@@ -1263,7 +1380,7 @@ func (r *stubRunner) Run(ctx contextstore.Context, input runtime.Input) (runtime
 	if r.appendToContext {
 		for _, step := range r.result.Steps {
 			for _, record := range step.AppendedRecords {
-				if err := ctx.Append(record); err != nil {
+				if err := store.Append(record); err != nil {
 					return runtime.Result{}, err
 				}
 			}
