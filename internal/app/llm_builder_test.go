@@ -414,6 +414,68 @@ func TestBuildQwenClientPassesConfiguredModel(t *testing.T) {
 	}
 }
 
+func TestBuildLLMClientFromConfigBuildsQWENClientFromModelAndProviderChain(t *testing.T) {
+	var receivedModel string
+	var receivedAuth string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+
+		body := make(map[string]any)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		model, ok := body["model"].(string)
+		if !ok {
+			t.Fatalf("request model type = %T, want string", body["model"])
+		}
+		receivedModel = model
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client, err := buildLLMClientFromConfig(config.Config{
+		DefaultModel: "workhorse",
+		Models: map[string]config.ModelConfig{
+			"workhorse": {
+				Provider: "aliyun-prod",
+				Model:    "qwen-plus",
+			},
+		},
+		Providers: map[string]config.ProviderConfig{
+			"aliyun-prod": {
+				Type:    config.ProviderTypeQWEN,
+				APIKey:  "sk-test-key",
+				BaseURL: server.URL,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildLLMClientFromConfig() error = %v", err)
+	}
+
+	resp, err := client.Reply(llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("client.Reply() error = %v", err)
+	}
+
+	if resp.Text != "ok" {
+		t.Fatalf("client.Reply().Text = %q, want %q", resp.Text, "ok")
+	}
+	if receivedModel != "qwen-plus" {
+		t.Fatalf("request model = %q, want %q", receivedModel, "qwen-plus")
+	}
+	if receivedAuth != "Bearer sk-test-key" {
+		t.Fatalf("Authorization = %q, want %q", receivedAuth, "Bearer sk-test-key")
+	}
+}
+
 func TestBuildEngineResolvesProviderByTypeNotProviderName(t *testing.T) {
 	_, err := buildEngine(config.Config{
 		DefaultModel: "qwen-workhorse",
