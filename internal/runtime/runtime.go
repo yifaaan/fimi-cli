@@ -40,7 +40,31 @@ type ReplyInput struct {
 
 // Result 表示单次 runtime 追加到 history 的记录。
 type Result struct {
+	Steps           []StepResult
 	AppendedRecords []contextstore.TextRecord
+}
+
+// StepKind 表示单个 runtime step 当前产出的类型。
+type StepKind string
+
+const (
+	StepKindFinished  StepKind = "finished"
+	StepKindToolCalls StepKind = "tool_calls"
+)
+
+// ToolCall 描述 runtime 下一步需要执行的工具调用。
+// 当前先保留最小结构，后面再补 schema 和参数类型。
+type ToolCall struct {
+	Name      string
+	Arguments string
+}
+
+// StepResult 表示单个 runtime step 的结构化结果。
+// 先同时保留追加记录和平铺结果，方便上层渐进迁移。
+type StepResult struct {
+	Kind            StepKind
+	AppendedRecords []contextstore.TextRecord
+	ToolCalls       []ToolCall
 }
 
 // Engine 负责为 runtime 生成 assistant 回复文本。
@@ -106,6 +130,12 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	}
 
 	return Result{
+		Steps: []StepResult{
+			{
+				Kind:            StepKindFinished,
+				AppendedRecords: records,
+			},
+		},
 		AppendedRecords: records,
 	}, nil
 }

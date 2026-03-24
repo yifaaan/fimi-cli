@@ -35,6 +35,18 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	if len(result.AppendedRecords) != 2 {
 		t.Fatalf("len(AppendedRecords) = %d, want 2", len(result.AppendedRecords))
 	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Kind != StepKindFinished {
+		t.Fatalf("Steps[0].Kind = %q, want %q", result.Steps[0].Kind, StepKindFinished)
+	}
+	if !reflect.DeepEqual(result.Steps[0].AppendedRecords, result.AppendedRecords) {
+		t.Fatalf("Steps[0].AppendedRecords = %#v, want %#v", result.Steps[0].AppendedRecords, result.AppendedRecords)
+	}
+	if len(result.Steps[0].ToolCalls) != 0 {
+		t.Fatalf("len(Steps[0].ToolCalls) = %d, want 0", len(result.Steps[0].ToolCalls))
+	}
 
 	records, err := ctx.ReadAll()
 	if err != nil {
@@ -91,6 +103,9 @@ func TestRunnerRunSkipsEmptyPrompt(t *testing.T) {
 
 	if len(result.AppendedRecords) != 0 {
 		t.Fatalf("len(AppendedRecords) = %d, want 0", len(result.AppendedRecords))
+	}
+	if len(result.Steps) != 0 {
+		t.Fatalf("len(Steps) = %d, want 0", len(result.Steps))
 	}
 
 	if engine.called {
