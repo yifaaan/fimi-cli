@@ -46,8 +46,18 @@ type ReplyInput struct {
 
 // Result 表示单次 runtime 追加到 history 的记录。
 type Result struct {
-	Steps []StepResult
+	Status RunStatus
+	Steps  []StepResult
 }
+
+// RunStatus 表示一次 runtime.Run 的结束状态。
+type RunStatus string
+
+const (
+	RunStatusFinished RunStatus = "finished"
+	RunStatusMaxSteps RunStatus = "max_steps"
+	RunStatusFailed   RunStatus = "failed"
+)
 
 // StepKind 表示单个 runtime step 当前产出的类型。
 type StepKind string
@@ -80,8 +90,10 @@ type Engine interface {
 
 // Runner 持有一次 runtime 执行所需的核心依赖。
 type Runner struct {
-	engine Engine
-	config Config
+	engine       Engine
+	config       Config
+	runStepFn    func(ctx contextstore.Context, input Input, prompt string) (StepResult, error)
+	advanceRunFn func(result Result, stepResult StepResult) (Result, bool, error)
 }
 
 // New 创建最小 runtime runner。
@@ -108,28 +120,44 @@ func New(engine Engine, cfg Config) Runner {
 func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
-		return Result{}, nil
+		return Result{Status: RunStatusFinished}, nil
 	}
 
 	result := Result{
-		Steps: make([]StepResult, 0, 1),
+		Status: RunStatusFinished,
+		Steps:  make([]StepResult, 0, 1),
 	}
+	runStep := r.runStepFn
+	if runStep == nil {
+		runStep = r.runStep
+	}
+	advanceRun := r.advanceRunFn
+	if advanceRun == nil {
+		advanceRun = r.advanceRun
+	}
+	var finished bool
+	var err error
 	for stepNo := 1; stepNo <= r.config.MaxStepsPerRun; stepNo++ {
-		stepResult, err := r.runStep(ctx, input, prompt)
+		var stepResult StepResult
+		stepResult, err = runStep(ctx, input, prompt)
 		if err != nil {
-			return Result{}, err
+			result.Status = RunStatusFailed
+			return result, err
 		}
 
-		result, finished, err := r.advanceRun(result, stepResult)
+		result, finished, err = advanceRun(result, stepResult)
 		if err != nil {
-			return Result{}, err
+			result.Status = RunStatusFailed
+			return result, err
 		}
 		if finished {
+			result.Status = RunStatusFinished
 			return result, nil
 		}
 	}
 
-	return Result{}, fmt.Errorf("runtime exited without a finished step after %d steps", r.config.MaxStepsPerRun)
+	result.Status = RunStatusMaxSteps
+	return result, nil
 }
 
 func (r Runner) runStep(

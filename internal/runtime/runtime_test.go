@@ -35,6 +35,9 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	if len(result.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(result.Steps))
 	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
+	}
 	step := result.Steps[0]
 	if step.Kind != StepKindFinished {
 		t.Fatalf("Steps[0].Kind = %q, want %q", result.Steps[0].Kind, StepKindFinished)
@@ -102,6 +105,9 @@ func TestRunnerRunSkipsEmptyPrompt(t *testing.T) {
 	if len(result.Steps) != 0 {
 		t.Fatalf("len(Steps) = %d, want 0", len(result.Steps))
 	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
+	}
 
 	if engine.called {
 		t.Fatalf("engine called = true, want false")
@@ -123,9 +129,12 @@ func TestRunnerRunReturnsEngineError(t *testing.T) {
 		err: wantErr,
 	}, Config{})
 
-	_, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
 	}
 }
 
@@ -133,12 +142,15 @@ func TestRunnerRunReturnsMissingEngineError(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := New(nil, Config{})
 
-	_, err := runner.Run(ctx, Input{Prompt: "hello"})
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
 	if err == nil {
 		t.Fatalf("Run() error = nil, want non-nil")
 	}
 	if err.Error() != "build assistant reply: runtime engine is required" {
 		t.Fatalf("Run() error = %q, want %q", err.Error(), "build assistant reply: runtime engine is required")
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
 	}
 }
 
@@ -222,6 +234,33 @@ func TestRunnerRunUsesConfiguredTurnLimit(t *testing.T) {
 	}
 	if !reflect.DeepEqual(engine.gotInput.History, want) {
 		t.Fatalf("engine got History = %#v, want %#v", engine.gotInput.History, want)
+	}
+}
+
+func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{}, Config{
+		MaxStepsPerRun: 1,
+	})
+	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+		return StepResult{
+			Kind: StepKindFinished,
+		}, nil
+	}
+	runner.advanceRunFn = func(result Result, stepResult StepResult) (Result, bool, error) {
+		result.Steps = append(result.Steps, stepResult)
+		return result, false, nil
+	}
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusMaxSteps {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusMaxSteps)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want %d", len(result.Steps), 1)
 	}
 }
 

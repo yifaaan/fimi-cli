@@ -18,8 +18,8 @@ Active phase: Phase 2, Runtime Loop Kernel
 
 Current teaching unit:
 
-- add explicit runtime run states
-- separate finished vs max-steps vs failed outcomes
+- add explicit unfinished step state
+- let runtime loop represent "continue" without using errors
 - keep real tool execution deferred until the runtime tool boundary exists
 
 ### Already Implemented In Go
@@ -156,7 +156,8 @@ Goal: upgrade `internal/runtime` from "single-turn runner" to "multi-step agent 
 - [ ] Consume `config.LoopControl` inside runtime
 - [ ] Implement max-step loop
 - [ ] Implement retry boundaries for retryable model/tool failures
-- [ ] Add clear run result states: finished, interrupted, failed, max-steps
+- [x] Add clear run result states: finished, failed, max-steps
+- [ ] Add interrupted run state
 
 Why before tools:
 
