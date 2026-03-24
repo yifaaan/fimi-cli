@@ -15,6 +15,18 @@ import (
 	"fimi-cli/internal/session"
 )
 
+func testLoadedAgent(prompt string) loadedAgent {
+	return loadedAgent{
+		SystemPrompt: prompt,
+	}
+}
+
+func testAgentLoader(prompt string) agentLoader {
+	return func(workDir string) (loadedAgent, error) {
+		return testLoadedAgent(prompt), nil
+	}
+}
+
 func TestBuildLLMConfig(t *testing.T) {
 	cfg := config.Config{
 		HistoryWindow: config.HistoryWindow{
@@ -50,13 +62,12 @@ func TestBuildRuntimeConfig(t *testing.T) {
 func TestBuildRuntimeInput(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "custom-model",
-		SystemPrompt: "You are the configured agent.",
 	}
 	input := runInput{
 		prompt: "fix the test",
 	}
 
-	got := buildRuntimeInput(cfg, input)
+	got := buildRuntimeInput(cfg, input, testLoadedAgent("You are the configured agent."))
 	want := runtime.Input{
 		Prompt:       "fix the test",
 		Model:        "custom-model",
@@ -117,7 +128,6 @@ func TestApplyRunInputToConfigReturnsErrorForUnknownModelAlias(t *testing.T) {
 func TestBuildRuntimeInputUsesConfiguredModelName(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "primary",
-		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"primary": {
 				Provider: config.ProviderTypeQWEN,
@@ -129,7 +139,7 @@ func TestBuildRuntimeInputUsesConfiguredModelName(t *testing.T) {
 		prompt: "fix the test",
 	}
 
-	got := buildRuntimeInput(cfg, input)
+	got := buildRuntimeInput(cfg, input, testLoadedAgent("You are the configured agent."))
 	want := runtime.Input{
 		Prompt:       "fix the test",
 		Model:        "qwen-plus",
@@ -143,7 +153,6 @@ func TestBuildRuntimeInputUsesConfiguredModelName(t *testing.T) {
 func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "primary",
-		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"primary": {
 				Provider: config.ProviderTypeQWEN,
@@ -154,7 +163,7 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 		prompt: "fix the test",
 	}
 
-	got := buildRuntimeInput(cfg, input)
+	got := buildRuntimeInput(cfg, input, testLoadedAgent("You are the configured agent."))
 	want := runtime.Input{
 		Prompt:       "fix the test",
 		Model:        "primary",
@@ -162,6 +171,50 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildRuntimeInput() = %#v, want %#v", got, want)
+	}
+}
+
+func TestDefaultAgentFile(t *testing.T) {
+	got := defaultAgentFile("/tmp/fimi-project")
+	want := filepath.Join("/tmp/fimi-project", defaultAgentFileName)
+	if got != want {
+		t.Fatalf("defaultAgentFile() = %q, want %q", got, want)
+	}
+}
+
+func TestLoadAgentFromWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(workDir, defaultAgentFileName), []byte(`
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  tools:
+    - bash
+    - read_file
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(agent.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "system.md"), []byte("  You are the test agent.  \n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(system.md) error = %v", err)
+	}
+
+	got, err := loadAgentFromWorkDir(workDir)
+	if err != nil {
+		t.Fatalf("loadAgentFromWorkDir() error = %v", err)
+	}
+	if got.Spec.Name != "Test Agent" {
+		t.Fatalf("loadAgentFromWorkDir().Spec.Name = %q, want %q", got.Spec.Name, "Test Agent")
+	}
+	if got.Spec.SystemPromptPath != filepath.Join(workDir, "system.md") {
+		t.Fatalf("loadAgentFromWorkDir().Spec.SystemPromptPath = %q, want %q", got.Spec.SystemPromptPath, filepath.Join(workDir, "system.md"))
+	}
+	if !reflect.DeepEqual(got.Spec.Tools, []string{"bash", "read_file"}) {
+		t.Fatalf("loadAgentFromWorkDir().Spec.Tools = %#v, want %#v", got.Spec.Tools, []string{"bash", "read_file"})
+	}
+	if got.SystemPrompt != "You are the test agent." {
+		t.Fatalf("loadAgentFromWorkDir().SystemPrompt = %q, want %q", got.SystemPrompt, "You are the test agent.")
 	}
 }
 
@@ -354,7 +407,6 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 		loadConfig: func() (config.Config, error) {
 			return config.Config{
 				DefaultModel: "custom-model",
-				SystemPrompt: "You are the configured agent.",
 				Models: map[string]config.ModelConfig{
 					"custom-model": {
 						Provider: config.ProviderTypePlaceholder,
@@ -370,6 +422,7 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 		resolveWorkDir: func() (string, error) {
 			return "/tmp/fimi-project", nil
 		},
+		loadAgent: testAgentLoader("You are the configured agent."),
 		openSession: func(workDir string) (session.Session, bool, error) {
 			gotWorkDir = workDir
 			return session.Session{
@@ -517,7 +570,6 @@ func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
 		loadConfig: func() (config.Config, error) {
 			return config.Config{
 				DefaultModel: "default-model",
-				SystemPrompt: "You are the configured agent.",
 				Models: map[string]config.ModelConfig{
 					"default-model": {
 						Provider: config.ProviderTypePlaceholder,
@@ -533,6 +585,7 @@ func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
 		resolveWorkDir: func() (string, error) {
 			return "/tmp/fimi-project", nil
 		},
+		loadAgent: testAgentLoader("You are the configured agent."),
 		openSession: func(workDir string) (session.Session, bool, error) {
 			return session.Session{
 				ID:          "session-123",
@@ -593,7 +646,6 @@ func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
 		loadConfig: func() (config.Config, error) {
 			return config.Config{
 				DefaultModel: "custom-model",
-				SystemPrompt: "You are the configured agent.",
 				Models: map[string]config.ModelConfig{
 					"custom-model": {
 						Provider: config.ProviderTypePlaceholder,
@@ -605,6 +657,7 @@ func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
 		resolveWorkDir: func() (string, error) {
 			return "/tmp/fimi-project", nil
 		},
+		loadAgent: testAgentLoader("You are the configured agent."),
 		openSession: func(workDir string) (session.Session, bool, error) {
 			openCalled = true
 			return session.Session{}, true, nil
@@ -691,7 +744,6 @@ func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 		loadConfig: func() (config.Config, error) {
 			return config.Config{
 				DefaultModel: "custom-model",
-				SystemPrompt: "You are the configured agent.",
 				HistoryWindow: config.HistoryWindow{
 					RuntimeTurns: 4,
 				},
@@ -700,6 +752,7 @@ func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 		resolveWorkDir: func() (string, error) {
 			return "/tmp/fimi-project", nil
 		},
+		loadAgent: testAgentLoader("You are the configured agent."),
 		openSession: func(workDir string) (session.Session, bool, error) {
 			return session.Session{
 				ID:          "session-456",
@@ -759,6 +812,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 	errFlagValueRequired := ErrCLIFlagValueRequired
 	errOpenSessionFailed := errors.New("open session failed")
 	errCreateSessionFailed := errors.New("create session failed")
+	errLoadAgentFailed := errors.New("load agent failed")
 	errBuildRunnerFailed := errors.New("build runner failed")
 	errRunnerFailed := errors.New("runner failed")
 
@@ -836,12 +890,30 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 					resolveWorkDir: func() (string, error) {
 						return "/tmp/fimi-project", nil
 					},
+					loadAgent: testAgentLoader("You are the configured agent."),
 					openSession: func(workDir string) (session.Session, bool, error) {
 						return session.Session{}, false, errOpenSessionFailed
 					},
 				}
 			},
 			wantErr: errOpenSessionFailed,
+		},
+		{
+			name: "load agent",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Default(), nil
+					},
+					resolveWorkDir: func() (string, error) {
+						return "/tmp/fimi-project", nil
+					},
+					loadAgent: func(workDir string) (loadedAgent, error) {
+						return loadedAgent{}, errLoadAgentFailed
+					},
+				}
+			},
+			wantErr: errLoadAgentFailed,
 		},
 		{
 			name: "create session",
@@ -853,6 +925,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 					resolveWorkDir: func() (string, error) {
 						return "/tmp/fimi-project", nil
 					},
+					loadAgent: testAgentLoader("You are the configured agent."),
 					createSession: func(workDir string) (session.Session, error) {
 						return session.Session{}, errCreateSessionFailed
 					},
@@ -870,6 +943,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 					resolveWorkDir: func() (string, error) {
 						return "/tmp/fimi-project", nil
 					},
+					loadAgent: testAgentLoader("You are the configured agent."),
 					openSession: func(workDir string) (session.Session, bool, error) {
 						return session.Session{
 							ID:          "session-123",
@@ -894,6 +968,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 					resolveWorkDir: func() (string, error) {
 						return "/tmp/fimi-project", nil
 					},
+					loadAgent: testAgentLoader("You are the configured agent."),
 					openSession: func(workDir string) (session.Session, bool, error) {
 						return session.Session{
 							ID:          "session-123",
@@ -948,7 +1023,6 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "custom-model",
-		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"custom-model": {
 				Provider: config.ProviderTypePlaceholder,
@@ -969,7 +1043,7 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 	result, err := runner.Run(ctx, runtime.Input{
 		Prompt:       "hello",
 		Model:        cfg.DefaultModel,
-		SystemPrompt: cfg.SystemPrompt,
+		SystemPrompt: "You are the configured agent.",
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -1005,7 +1079,6 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 	}
 	cfg := config.Config{
 		DefaultModel: "custom-model",
-		SystemPrompt: "You are the configured agent.",
 		Models: map[string]config.ModelConfig{
 			"custom-model": {
 				Provider: config.ProviderTypePlaceholder,
@@ -1023,7 +1096,7 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 	_, err = runner.Run(ctx, runtime.Input{
 		Prompt:       "hello",
 		Model:        cfg.DefaultModel,
-		SystemPrompt: cfg.SystemPrompt,
+		SystemPrompt: "You are the configured agent.",
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)

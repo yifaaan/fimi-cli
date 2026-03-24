@@ -1,0 +1,11 @@
+version: 1
+agent:
+  name: fimi
+  system_prompt_path: ./system.md
+  tools:
+    - bash
+    - read_file
+    - glob
+    - grep
+    - write_file
+    - replace_file

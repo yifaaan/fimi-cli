@@ -40,7 +40,6 @@ func LoadFile(path string) (Spec, error) {
 	}
 
 	if envelope.Version == 0 {
-		// 兼容 Python 版本的默认行为：未声明 version 时按 v1 解释。
 		envelope.Version = DefaultVersion
 	}
 	if envelope.Version != DefaultVersion {

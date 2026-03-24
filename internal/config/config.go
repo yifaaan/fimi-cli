@@ -25,7 +25,6 @@ type ModelConfig struct {
 // 现在只保留后续 runtime 一定会依赖的基础字段。
 type Config struct {
 	DefaultModel  string                    `json:"default_model"`
-	SystemPrompt  string                    `json:"system_prompt"`
 	LoopControl   LoopControl               `json:"loop_control"`
 	HistoryWindow HistoryWindow             `json:"history_window"`
 	Models        map[string]ModelConfig    `json:"models"`
@@ -48,7 +47,6 @@ const (
 	AppConfigDirName      = "fimi"
 	DefaultConfigFileName = "config.json"
 	DefaultModelName      = "kimi-k2-turbo-preview"
-	DefaultSystemPrompt   = "You are fimi, a coding agent."
 	DefaultMaxStepsPerRun = 100
 	DefaultMaxRetries     = 3
 	DefaultRuntimeTurns   = 4
@@ -65,7 +63,6 @@ const (
 func Default() Config {
 	return Config{
 		DefaultModel: DefaultModelName,
-		SystemPrompt: DefaultSystemPrompt,
 		LoopControl: LoopControl{
 			MaxStepsPerRun:    DefaultMaxStepsPerRun,
 			MaxRetriesPerStep: DefaultMaxRetries,

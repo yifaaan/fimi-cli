@@ -18,9 +18,9 @@ Active phase: Phase 1, Agent Composition Layer
 
 Current teaching unit:
 
-- wire `internal/app` to consume `internal/agentspec`
-- resolve the default agent file location from app/workdir rules
-- keep inheritance, template expansion, and tool instantiation for later steps
+- keep tool loading explicit in Go instead of Python-style reflection
+- defer system prompt template expansion and agent inheritance
+- defer concrete tool instantiation until the tool runtime boundary exists
 
 ### Already Implemented In Go
 
@@ -36,7 +36,7 @@ Current teaching unit:
 
 ### Still Missing Versus `temp/kimi-cli`
 
-- [ ] Agent spec loading from YAML
+- [x] Agent spec loading from YAML
 - [ ] System prompt template expansion and agent inheritance
 - [ ] Multi-step runtime loop with max-step and retry control
 - [ ] Structured tool-call protocol between model and runtime
@@ -131,7 +131,7 @@ Goal: introduce the missing layer between `app` and `runtime` that knows how to 
 - [x] Parse agent YAML from disk
 - [x] Support agent name, system prompt path, tool list
 - [x] Load system prompt text from file
-- [ ] Resolve agent file path from CLI/app defaults
+- [x] Resolve agent file path from CLI/app defaults
 - [ ] Keep tool loading explicit in Go instead of Python-style reflection
 
 Why now:

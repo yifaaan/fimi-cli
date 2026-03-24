@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"fimi-cli/internal/agentspec"
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/llm"
@@ -15,6 +17,7 @@ import (
 
 const (
 	initialRecordContent = "session initialized"
+	defaultAgentFileName = "agent.yaml"
 )
 
 var ErrUnknownCLIFlag = errors.New("unknown cli flag")
@@ -26,6 +29,7 @@ type sessionOpener func(workDir string) (session.Session, bool, error)
 type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
+type agentLoader func(workDir string) (loadedAgent, error)
 type helpPrinter func()
 type startupStatePrinter func(
 	sess session.Session,
@@ -41,11 +45,19 @@ type runtimeRunner interface {
 	Run(ctx contextstore.Context, input runtime.Input) (runtime.Result, error)
 }
 
+// loadedAgent 表示 app 当前一次运行实际解析出的 agent 视图。
+// 这里保留最小字段，避免 app 过早持有 tools 等后续阶段才会消费的内容。
+type loadedAgent struct {
+	Spec         agentspec.Spec
+	SystemPrompt string
+}
+
 // dependencies 表示 app 装配层当前持有的可替换依赖。
 // 这些依赖都属于进程边界或适配器装配，收进来之后 Run 才容易测试。
 type dependencies struct {
 	loadConfig         configLoader
 	resolveWorkDir     workDirResolver
+	loadAgent          agentLoader
 	openSession        sessionOpener
 	createSession      sessionCreator
 	buildLLMClient     llmClientBuilder
@@ -64,7 +76,7 @@ type startupState struct {
 }
 
 // Run 是当前应用装配层的最小入口。
-// 现在它还不执行 agent，只负责把 CLI 入口稳定下来。
+// 当前它会完成配置、默认 agent、session 与 runtime 的装配。
 func Run(args []string) error {
 	return defaultDependencies().run(args)
 }
@@ -108,6 +120,11 @@ func (d dependencies) run(args []string) error {
 		return fmt.Errorf("get current work dir: %w", err)
 	}
 
+	agent, err := d.loadRunAgent(workDir)
+	if err != nil {
+		return err
+	}
+
 	sess, sessionReused, err := d.openRunSession(workDir, input)
 	if err != nil {
 		return err
@@ -124,7 +141,7 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 
-	runResult, err := runner.Run(ctx, buildRuntimeInput(cfg, input))
+	runResult, err := runner.Run(ctx, buildRuntimeInput(cfg, input, agent))
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)
 	}
@@ -223,6 +240,7 @@ func defaultDependencies() dependencies {
 	return dependencies{
 		loadConfig:        config.Load,
 		resolveWorkDir:    os.Getwd,
+		loadAgent:         loadAgentFromWorkDir,
 		openSession:       session.OpenLatestOrCreate,
 		createSession:     session.New,
 		buildLLMClient:    buildLLMClientFromConfig,
@@ -246,12 +264,12 @@ func buildRuntimeConfig(cfg config.Config) runtime.Config {
 	}
 }
 
-// buildRuntimeInput 把应用输入和全局配置映射为单次 runtime 调用输入。
-func buildRuntimeInput(cfg config.Config, input runInput) runtime.Input {
+// buildRuntimeInput 把应用输入、模型选择和 agent prompt 映射为单次 runtime 调用输入。
+func buildRuntimeInput(cfg config.Config, input runInput, agent loadedAgent) runtime.Input {
 	return runtime.Input{
 		Prompt:       input.prompt,
 		Model:        resolveRuntimeModelName(cfg),
-		SystemPrompt: cfg.SystemPrompt,
+		SystemPrompt: agent.SystemPrompt,
 	}
 }
 
@@ -300,6 +318,46 @@ func buildEngine(cfg config.Config) (llm.Engine, error) {
 
 func buildRunner(cfg config.Config) (runtimeRunner, error) {
 	return defaultDependencies().buildRunner(cfg)
+}
+
+// loadRunAgent 负责解析当前运行使用的默认 agent。
+func (d dependencies) loadRunAgent(workDir string) (loadedAgent, error) {
+	loadAgent := d.loadAgent
+	if loadAgent == nil {
+		loadAgent = loadAgentFromWorkDir
+	}
+
+	agent, err := loadAgent(workDir)
+	if err != nil {
+		return loadedAgent{}, fmt.Errorf("load agent: %w", err)
+	}
+
+	return agent, nil
+}
+
+// defaultAgentFile 返回工作目录下的默认 agent 文件位置。
+func defaultAgentFile(workDir string) string {
+	return filepath.Join(workDir, defaultAgentFileName)
+}
+
+// loadAgentFromWorkDir 从当前工作目录加载默认 agent。
+func loadAgentFromWorkDir(workDir string) (loadedAgent, error) {
+	agentFile := defaultAgentFile(workDir)
+
+	spec, err := agentspec.LoadFile(agentFile)
+	if err != nil {
+		return loadedAgent{}, fmt.Errorf("load default agent file %q: %w", agentFile, err)
+	}
+
+	systemPrompt, err := agentspec.LoadSystemPrompt(spec)
+	if err != nil {
+		return loadedAgent{}, fmt.Errorf("load system prompt for agent %q: %w", spec.Name, err)
+	}
+
+	return loadedAgent{
+		Spec:         spec,
+		SystemPrompt: systemPrompt,
+	}, nil
 }
 
 // openRunSession 根据当前应用输入决定 session 获取策略。
