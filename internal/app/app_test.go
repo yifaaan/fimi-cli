@@ -59,6 +59,53 @@ func TestBuildRuntimeInput(t *testing.T) {
 	}
 }
 
+func TestApplyRunInputToConfig(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "default-model",
+		Models: map[string]config.ModelConfig{
+			"default-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "default-model",
+			},
+			"fast-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "fast-model",
+			},
+		},
+	}
+
+	got, err := applyRunInputToConfig(cfg, runInput{modelAlias: "fast-model"})
+	if err != nil {
+		t.Fatalf("applyRunInputToConfig() error = %v", err)
+	}
+	if got.DefaultModel != "fast-model" {
+		t.Fatalf("applyRunInputToConfig().DefaultModel = %q, want %q", got.DefaultModel, "fast-model")
+	}
+	if cfg.DefaultModel != "default-model" {
+		t.Fatalf("original cfg.DefaultModel = %q, want %q", cfg.DefaultModel, "default-model")
+	}
+}
+
+func TestApplyRunInputToConfigReturnsErrorForUnknownModelAlias(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "default-model",
+		Models: map[string]config.ModelConfig{
+			"default-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "default-model",
+			},
+		},
+	}
+
+	_, err := applyRunInputToConfig(cfg, runInput{modelAlias: "missing-model"})
+	if err == nil {
+		t.Fatalf("applyRunInputToConfig() error = nil, want non-nil")
+	}
+	if err.Error() != `model "missing-model" not found in config.models` {
+		t.Fatalf("applyRunInputToConfig() error = %q, want %q", err.Error(), `model "missing-model" not found in config.models`)
+	}
+}
+
 func TestBuildRuntimeInputUsesConfiguredModelName(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "primary",
@@ -140,6 +187,23 @@ func TestParseRunInput(t *testing.T) {
 			},
 		},
 		{
+			name: "model override",
+			args: []string{"--model", "fast-model", "fix", "tests"},
+			want: runInput{
+				prompt:     "fix tests",
+				modelAlias: "fast-model",
+			},
+		},
+		{
+			name: "model override and new session",
+			args: []string{"--new-session", "--model", "fast-model", "fix"},
+			want: runInput{
+				prompt:          "fix",
+				forceNewSession: true,
+				modelAlias:      "fast-model",
+			},
+		},
+		{
 			name: "flag terminator keeps literal flag in prompt",
 			args: []string{"--new-session", "--", "--new-session", "fix"},
 			want: runInput{
@@ -148,9 +212,26 @@ func TestParseRunInput(t *testing.T) {
 			},
 		},
 		{
+			name: "flag terminator keeps literal model flag in prompt",
+			args: []string{"--", "--model", "fast-model", "fix"},
+			want: runInput{
+				prompt: "--model fast-model fix",
+			},
+		},
+		{
 			name:    "unknown flag",
 			args:    []string{"--bad-flag", "fix"},
 			wantErr: ErrUnknownCLIFlag,
+		},
+		{
+			name:    "model flag requires value",
+			args:    []string{"--model"},
+			wantErr: ErrCLIFlagValueRequired,
+		},
+		{
+			name:    "model flag rejects another flag as value",
+			args:    []string{"--model", "--new-session", "fix"},
+			wantErr: ErrCLIFlagValueRequired,
 		},
 	}
 
@@ -289,6 +370,74 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(records, wantRecords) {
 		t.Fatalf("history records = %#v, want %#v", records, wantRecords)
+	}
+}
+
+func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	var gotRunnerCfg config.Config
+	var printedModel string
+
+	deps := dependencies{
+		loadConfig: func() (config.Config, error) {
+			return config.Config{
+				DefaultModel: "default-model",
+				SystemPrompt: "You are the configured agent.",
+				Models: map[string]config.ModelConfig{
+					"default-model": {
+						Provider: config.ProviderTypePlaceholder,
+						Model:    "default-model",
+					},
+					"fast-model": {
+						Provider: config.ProviderTypePlaceholder,
+						Model:    "actual-fast-model",
+					},
+				},
+			}, nil
+		},
+		resolveWorkDir: func() (string, error) {
+			return "/tmp/fimi-project", nil
+		},
+		openSession: func(workDir string) (session.Session, bool, error) {
+			return session.Session{
+				ID:          "session-123",
+				WorkDir:     workDir,
+				HistoryFile: historyFile,
+			}, true, nil
+		},
+		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+			gotRunnerCfg = cfg
+			return &stubRunner{
+				result: runtime.Result{
+					AppendedRecords: []contextstore.TextRecord{
+						contextstore.NewUserTextRecord("fix tests"),
+						contextstore.NewAssistantTextRecord("runner reply"),
+					},
+				},
+				appendToContext: true,
+			}, nil
+		},
+		printStartupState: func(
+			sess session.Session,
+			ctx contextstore.Context,
+			state startupState,
+			sessionReused bool,
+			model string,
+		) {
+			printedModel = model
+		},
+	}
+
+	err := deps.run([]string{"--model", "fast-model", "fix", "tests"})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if gotRunnerCfg.DefaultModel != "fast-model" {
+		t.Fatalf("runner cfg.DefaultModel = %q, want %q", gotRunnerCfg.DefaultModel, "fast-model")
+	}
+	if printedModel != "actual-fast-model" {
+		t.Fatalf("printed model = %q, want %q", printedModel, "actual-fast-model")
 	}
 }
 
@@ -457,15 +606,17 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 	errConfigFailed := errors.New("config failed")
 	errGetWDFailed := errors.New("getwd failed")
 	errParseInputFailed := ErrUnknownCLIFlag
+	errFlagValueRequired := ErrCLIFlagValueRequired
 	errOpenSessionFailed := errors.New("open session failed")
 	errCreateSessionFailed := errors.New("create session failed")
 	errBuildRunnerFailed := errors.New("build runner failed")
 	errRunnerFailed := errors.New("runner failed")
 
 	tests := []struct {
-		name    string
-		setup   func(t *testing.T) dependencies
-		wantErr error
+		name        string
+		setup       func(t *testing.T) dependencies
+		wantErr     error
+		wantErrText string
 	}{
 		{
 			name: "load config",
@@ -484,6 +635,32 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 				return dependencies{}
 			},
 			wantErr: errParseInputFailed,
+		},
+		{
+			name: "flag value required",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{}
+			},
+			wantErr: errFlagValueRequired,
+		},
+		{
+			name: "apply model override",
+			setup: func(t *testing.T) dependencies {
+				return dependencies{
+					loadConfig: func() (config.Config, error) {
+						return config.Config{
+							DefaultModel: "default-model",
+							Models: map[string]config.ModelConfig{
+								"default-model": {
+									Provider: config.ProviderTypePlaceholder,
+									Model:    "default-model",
+								},
+							},
+						}, nil
+					},
+				}
+			},
+			wantErrText: `model "missing-model" not found in config.models`,
 		},
 		{
 			name: "resolve work dir",
@@ -591,11 +768,26 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 			if tt.name == "parse input" {
 				args = []string{"--bad-flag", "fix", "tests"}
 			}
+			if tt.name == "flag value required" {
+				args = []string{"--model"}
+			}
+			if tt.name == "apply model override" {
+				args = []string{"--model", "missing-model", "fix", "tests"}
+			}
 			if tt.name == "create session" {
 				args = []string{"--new-session", "fix", "tests"}
 			}
 
 			err := deps.run(args)
+			if tt.wantErrText != "" {
+				if err == nil {
+					t.Fatalf("run() error = nil, want %q", tt.wantErrText)
+				}
+				if err.Error() != tt.wantErrText {
+					t.Fatalf("run() error = %q, want %q", err.Error(), tt.wantErrText)
+				}
+				return
+			}
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("run() error = %v, want wrapped %v", err, tt.wantErr)
 			}

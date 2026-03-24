@@ -18,6 +18,7 @@ const (
 )
 
 var ErrUnknownCLIFlag = errors.New("unknown cli flag")
+var ErrCLIFlagValueRequired = errors.New("cli flag requires a value")
 
 type configLoader func() (config.Config, error)
 type workDirResolver func() (string, error)
@@ -82,6 +83,11 @@ func (d dependencies) run(args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	cfg, err = applyRunInputToConfig(cfg, input)
+	if err != nil {
+		return err
+	}
+
 	resolveWorkDir := d.resolveWorkDir
 	if resolveWorkDir == nil {
 		resolveWorkDir = os.Getwd
@@ -128,6 +134,7 @@ func (d dependencies) run(args []string) error {
 type runInput struct {
 	prompt          string
 	forceNewSession bool
+	modelAlias      string
 }
 
 // parseRunInput 把 CLI 参数折叠成应用层输入。
@@ -137,7 +144,9 @@ func parseRunInput(args []string) (runInput, error) {
 	input := runInput{}
 	parseFlags := true
 
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
 		if parseFlags && arg == "--" {
 			// `--` 之后的内容全部按 prompt 字面量处理，避免和 CLI flag 冲突。
 			parseFlags = false
@@ -146,6 +155,20 @@ func parseRunInput(args []string) (runInput, error) {
 
 		if parseFlags && arg == "--new-session" {
 			input.forceNewSession = true
+			continue
+		}
+		if parseFlags && arg == "--model" {
+			if i+1 >= len(args) {
+				return runInput{}, fmt.Errorf("%w: %s", ErrCLIFlagValueRequired, arg)
+			}
+
+			value := strings.TrimSpace(args[i+1])
+			if value == "" || strings.HasPrefix(value, "-") {
+				return runInput{}, fmt.Errorf("%w: %s", ErrCLIFlagValueRequired, arg)
+			}
+
+			input.modelAlias = value
+			i++
 			continue
 		}
 		if parseFlags && strings.HasPrefix(arg, "-") {
@@ -160,7 +183,24 @@ func parseRunInput(args []string) (runInput, error) {
 	return runInput{
 		prompt:          input.prompt,
 		forceNewSession: input.forceNewSession,
+		modelAlias:      input.modelAlias,
 	}, nil
+}
+
+// applyRunInputToConfig 把一次运行的 CLI 覆盖项折叠进当前进程内有效配置。
+// 这里只改本次运行视图，不修改磁盘配置文件。
+func applyRunInputToConfig(cfg config.Config, input runInput) (config.Config, error) {
+	if input.modelAlias == "" {
+		return cfg, nil
+	}
+
+	if _, ok := cfg.Models[input.modelAlias]; !ok {
+		return config.Config{}, fmt.Errorf("model %q not found in config.models", input.modelAlias)
+	}
+
+	cfg.DefaultModel = input.modelAlias
+
+	return cfg, nil
 }
 
 func defaultDependencies() dependencies {
