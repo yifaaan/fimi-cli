@@ -39,6 +39,9 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
 	}
 	step := result.Steps[0]
+	if step.Status != StepStatusFinished {
+		t.Fatalf("Steps[0].Status = %q, want %q", result.Steps[0].Status, StepStatusFinished)
+	}
 	if step.Kind != StepKindFinished {
 		t.Fatalf("Steps[0].Kind = %q, want %q", result.Steps[0].Kind, StepKindFinished)
 	}
@@ -244,12 +247,12 @@ func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
 	})
 	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
 		return StepResult{
-			Kind: StepKindFinished,
+			Status: StepStatusIncomplete,
+			Kind:   StepKindToolCalls,
+			ToolCalls: []ToolCall{
+				{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+			},
 		}, nil
-	}
-	runner.advanceRunFn = func(result Result, stepResult StepResult) (Result, bool, error) {
-		result.Steps = append(result.Steps, stepResult)
-		return result, false, nil
 	}
 
 	result, err := runner.Run(ctx, Input{Prompt: "hello"})
@@ -282,6 +285,7 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 	runner := Runner{}
 	initial := Result{}
 	step := StepResult{
+		Status: StepStatusFinished,
 		Kind: StepKindFinished,
 		AppendedRecords: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("hello"),
@@ -301,25 +305,43 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 	}
 }
 
-func TestRunnerAdvanceRunReturnsUnsupportedToolCallError(t *testing.T) {
+func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
 	runner := Runner{}
-	_, finished, err := runner.advanceRun(Result{}, StepResult{
+	step := StepResult{
+		Status: StepStatusIncomplete,
 		Kind: StepKindToolCalls,
 		ToolCalls: []ToolCall{
 			{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
 		},
-	})
-	if !errors.Is(err, ErrToolCallsNotSupported) {
-		t.Fatalf("advanceRun() error = %v, want wrapped %v", err, ErrToolCallsNotSupported)
+	}
+
+	got, finished, err := runner.advanceRun(Result{}, step)
+	if err != nil {
+		t.Fatalf("advanceRun() error = %v", err)
 	}
 	if finished {
 		t.Fatalf("advanceRun() finished = true, want false")
+	}
+	if !reflect.DeepEqual(got.Steps, []StepResult{step}) {
+		t.Fatalf("advanceRun().Steps = %#v, want %#v", got.Steps, []StepResult{step})
+	}
+}
+
+func TestRunnerAdvanceRunRejectsUnknownStepStatus(t *testing.T) {
+	runner := Runner{}
+	_, _, err := runner.advanceRun(Result{}, StepResult{
+		Status: StepStatus("bad-status"),
+		Kind:   StepKindFinished,
+	})
+	if !errors.Is(err, ErrUnknownStepStatus) {
+		t.Fatalf("advanceRun() error = %v, want wrapped %v", err, ErrUnknownStepStatus)
 	}
 }
 
 func TestRunnerAdvanceRunRejectsUnknownStepKind(t *testing.T) {
 	runner := Runner{}
 	_, _, err := runner.advanceRun(Result{}, StepResult{
+		Status: StepStatusFinished,
 		Kind: StepKind("bad-kind"),
 	})
 	if !errors.Is(err, ErrUnknownStepKind) {

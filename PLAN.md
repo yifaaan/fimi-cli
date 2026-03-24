@@ -18,9 +18,9 @@ Active phase: Phase 2, Runtime Loop Kernel
 
 Current teaching unit:
 
-- add explicit unfinished step state
-- let runtime loop represent "continue" without using errors
-- keep real tool execution deferred until the runtime tool boundary exists
+- [x] add explicit unfinished step state
+- [x] let runtime loop represent "continue" without using errors
+- [ ] keep real tool execution deferred until the runtime tool boundary exists
 
 ### Already Implemented In Go
 

@@ -11,8 +11,8 @@ import (
 const DefaultReplyHistoryTurnLimit = 4
 const DefaultMaxStepsPerRun = 100
 
-var ErrToolCallsNotSupported = errors.New("runtime tool calls are not supported yet")
 var ErrUnknownStepKind = errors.New("unknown runtime step kind")
+var ErrUnknownStepStatus = errors.New("unknown runtime step status")
 
 // Config 定义 runtime 自己关心的最小运行参数。
 type Config struct {
@@ -67,6 +67,14 @@ const (
 	StepKindToolCalls StepKind = "tool_calls"
 )
 
+// StepStatus 表示当前 step 是否已经完成，还是需要 runtime 继续推进。
+type StepStatus string
+
+const (
+	StepStatusFinished   StepStatus = "finished"
+	StepStatusIncomplete StepStatus = "incomplete"
+)
+
 // ToolCall 描述 runtime 下一步需要执行的工具调用。
 // 当前先保留最小结构，后面再补 schema 和参数类型。
 type ToolCall struct {
@@ -77,6 +85,7 @@ type ToolCall struct {
 // StepResult 表示单个 runtime step 的结构化结果。
 // 先同时保留追加记录和平铺结果，方便上层渐进迁移。
 type StepResult struct {
+	Status          StepStatus
 	Kind            StepKind
 	AppendedRecords []contextstore.TextRecord
 	ToolCalls       []ToolCall
@@ -191,6 +200,7 @@ func (r Runner) runStep(
 	}
 
 	return StepResult{
+		Status:          StepStatusFinished,
 		Kind:            StepKindFinished,
 		AppendedRecords: records,
 	}, nil
@@ -202,17 +212,23 @@ func (r Runner) advanceRun(
 ) (Result, bool, error) {
 	switch stepResult.Kind {
 	case StepKindFinished:
-		result.Steps = append(result.Steps, stepResult)
-
-		return result, true, nil
 	case StepKindToolCalls:
 		if len(stepResult.ToolCalls) == 0 {
 			return Result{}, false, fmt.Errorf("step kind %q requires at least one tool call", stepResult.Kind)
 		}
-
-		return Result{}, false, fmt.Errorf("%w", ErrToolCallsNotSupported)
 	default:
 		return Result{}, false, fmt.Errorf("%w: %q", ErrUnknownStepKind, stepResult.Kind)
+	}
+
+	result.Steps = append(result.Steps, stepResult)
+
+	switch stepResult.Status {
+	case StepStatusFinished:
+		return result, true, nil
+	case StepStatusIncomplete:
+		return result, false, nil
+	default:
+		return Result{}, false, fmt.Errorf("%w: %q", ErrUnknownStepStatus, stepResult.Status)
 	}
 }
 
