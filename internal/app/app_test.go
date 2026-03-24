@@ -2,6 +2,8 @@ package app
 
 import (
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -154,6 +156,51 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildRuntimeInput() = %#v, want %#v", got, want)
+	}
+}
+
+func TestHelpText(t *testing.T) {
+	got := helpText()
+	want := "" +
+		"Usage:\n" +
+		"  fimi [--new-session] [--model <alias>] [--help] [prompt...]\n" +
+		"\n" +
+		"Options:\n" +
+		"  --new-session    Start a fresh session for this run\n" +
+		"  --model <alias>  Override the configured model for this run\n" +
+		"  -h, --help       Show this help message\n"
+
+	if got != want {
+		t.Fatalf("helpText() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintHelpWritesHelpText(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	defer reader.Close()
+
+	originalStdout := os.Stdout
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	printHelp()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close() error = %v", err)
+	}
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	if string(data) != helpText() {
+		t.Fatalf("printHelp() output = %q, want %q", string(data), helpText())
 	}
 }
 

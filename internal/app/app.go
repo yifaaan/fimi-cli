@@ -397,11 +397,19 @@ func printStartupState(
 
 // printHelp 输出当前 CLI 入口支持的最小帮助信息。
 func printHelp() {
-	fmt.Println("Usage:")
-	fmt.Println("  fimi [--new-session] [--model <alias>] [--help] [prompt...]")
-	fmt.Println()
-	fmt.Println("Options:")
-	fmt.Println("  --new-session    Start a fresh session for this run")
-	fmt.Println("  --model <alias>  Override the configured model for this run")
-	fmt.Println("  -h, --help       Show this help message")
+	fmt.Print(helpText())
+}
+
+// helpText 返回当前 CLI 入口支持的最小帮助文本。
+func helpText() string {
+	return strings.Join([]string{
+		"Usage:",
+		"  fimi [--new-session] [--model <alias>] [--help] [prompt...]",
+		"",
+		"Options:",
+		"  --new-session    Start a fresh session for this run",
+		"  --model <alias>  Override the configured model for this run",
+		"  -h, --help       Show this help message",
+		"",
+	}, "\n")
 }
