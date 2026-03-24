@@ -27,6 +27,7 @@ agent:
 		}
 
 		want := Spec{
+			Extend:           "",
 			Name:             "Test Agent",
 			SystemPromptPath: promptFile,
 			SystemPromptArgs: nil,
@@ -67,6 +68,58 @@ agent:
 		}
 	})
 
+	t.Run("resolves relative extend and merges fields", func(t *testing.T) {
+		dir := t.TempDir()
+		baseAgentFile := filepath.Join(dir, "base.yaml")
+		childAgentFile := filepath.Join(dir, "child.yaml")
+		promptFile := filepath.Join(dir, "system.md")
+
+		if err := os.WriteFile(baseAgentFile, []byte(`
+version: 1
+agent:
+  name: Base Agent
+  system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE: reviewer
+  tools:
+    - tool.read
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(base.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(childAgentFile, []byte(`
+version: 1
+agent:
+  extend: ./base.yaml
+  name: Child Agent
+  system_prompt_args:
+    SCOPE: app
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(child.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(promptFile, []byte("You are a ${ROLE} for ${SCOPE}.\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(system.md) error = %v", err)
+		}
+
+		got, err := LoadFile(childAgentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		want := Spec{
+			Extend:           "",
+			Name:             "Child Agent",
+			SystemPromptPath: promptFile,
+			SystemPromptArgs: map[string]string{
+				"ROLE":  "reviewer",
+				"SCOPE": "app",
+			},
+			Tools: []string{"tool.read"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("LoadFile() = %#v, want %#v", got, want)
+		}
+	})
+
 	t.Run("defaults missing version to v1", func(t *testing.T) {
 		agentFile, promptFile := writeAgentFixture(t, `
 agent:
@@ -99,6 +152,40 @@ agent:
 		_, err := LoadFile(agentFile)
 		if !errors.Is(err, ErrUnsupportedVersion) {
 			t.Fatalf("LoadFile() error = %v, want wrapped %v", err, ErrUnsupportedVersion)
+		}
+	})
+
+	t.Run("rejects extend cycles", func(t *testing.T) {
+		dir := t.TempDir()
+		firstFile := filepath.Join(dir, "first.yaml")
+		secondFile := filepath.Join(dir, "second.yaml")
+		promptFile := filepath.Join(dir, "system.md")
+
+		if err := os.WriteFile(firstFile, []byte(`
+version: 1
+agent:
+  extend: ./second.yaml
+  name: First Agent
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(first.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(secondFile, []byte(`
+version: 1
+agent:
+  extend: ./first.yaml
+  system_prompt_path: ./system.md
+  tools:
+    - tool.read
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(second.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(promptFile, []byte("You are a test agent.\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(system.md) error = %v", err)
+		}
+
+		_, err := LoadFile(firstFile)
+		if !errors.Is(err, ErrAgentSpecExtendCycle) {
+			t.Fatalf("LoadFile() error = %v, want wrapped %v", err, ErrAgentSpecExtendCycle)
 		}
 	})
 

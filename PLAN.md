@@ -14,12 +14,12 @@ The old plan stopped at "build the initial CLI skeleton". That is now outdated. 
 
 Date: 2026-03-24
 
-Active phase: Phase 1, Agent Composition Layer
+Active phase: Phase 2, Runtime Loop Kernel
 
 Current teaching unit:
 
-- add agent inheritance / extension
-- keep builtin prompt variables deferred until app/runtime can supply them
+- add explicit runtime run states
+- separate finished vs max-steps vs failed outcomes
 - keep real tool execution deferred until the runtime tool boundary exists
 
 ### Already Implemented In Go
@@ -38,7 +38,7 @@ Current teaching unit:
 
 - [x] Agent spec loading from YAML
 - [x] System prompt template expansion
-- [ ] Agent inheritance / extension
+- [x] Agent inheritance / extension
 - [ ] Multi-step runtime loop with max-step and retry control
 - [ ] Structured tool-call protocol between model and runtime
 - [ ] Tool registry and tool execution layer
@@ -86,7 +86,7 @@ Target from temp
 | `temp/src/kimi_cli/__init__.py` | `cmd/fimi` + `internal/app` | partially done |
 | `temp/src/kimi_cli/config.py` | `internal/config` | mostly done for model/provider basics |
 | `temp/src/kimi_cli/metadata.py` | `internal/session` | partially done |
-| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + app wiring | partially done |
+| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + app wiring | mostly done for local agent loading |
 | `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | only minimal single-turn subset done |
 | `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | basic history done, checkpoint/revert missing |
 | `temp/src/kimi_cli/soul/event.py` | `internal/runtime/events` | not started |
@@ -124,7 +124,7 @@ This phase gave us a working CLI prototype and stable package seams.
 
 ### Phase 1: Agent Composition Layer
 
-Status: in progress
+Status: completed
 
 Goal: introduce the missing layer between `app` and `runtime` that knows how to load an agent definition.
 
@@ -135,6 +135,13 @@ Goal: introduce the missing layer between `app` and `runtime` that knows how to 
 - [x] Load system prompt text from file
 - [x] Resolve agent file path from CLI/app defaults
 - [x] Keep tool loading explicit in Go instead of Python-style reflection
+
+This phase now gives the Go rewrite a real local composition seam:
+
+- default agent assets live under `agents/default`
+- `app` loads agent definitions from disk
+- system prompts support explicit argument substitution
+- child agent specs can extend a base agent file
 
 Why now:
 

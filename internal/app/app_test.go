@@ -177,7 +177,7 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 
 func TestDefaultAgentFile(t *testing.T) {
 	got := defaultAgentFile("/tmp/fimi-project")
-	want := filepath.Join("/tmp/fimi-project", defaultAgentFileName)
+	want := filepath.Join("/tmp/fimi-project", defaultAgentsDirName, defaultAgentProfileName, defaultAgentFileName)
 	if got != want {
 		t.Fatalf("defaultAgentFile() = %q, want %q", got, want)
 	}
@@ -185,8 +185,12 @@ func TestDefaultAgentFile(t *testing.T) {
 
 func TestLoadAgentFromWorkDir(t *testing.T) {
 	workDir := t.TempDir()
+	agentDir := filepath.Dir(defaultAgentFile(workDir))
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", agentDir, err)
+	}
 
-	if err := os.WriteFile(filepath.Join(workDir, defaultAgentFileName), []byte(`
+	if err := os.WriteFile(defaultAgentFile(workDir), []byte(`
 version: 1
 agent:
   name: Test Agent
@@ -197,7 +201,7 @@ agent:
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile(agent.yaml) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "system.md"), []byte("  You are the test agent.  \n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir, "system.md"), []byte("  You are the test agent.  \n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(system.md) error = %v", err)
 	}
 
@@ -208,8 +212,8 @@ agent:
 	if got.Spec.Name != "Test Agent" {
 		t.Fatalf("loadAgentFromWorkDir().Spec.Name = %q, want %q", got.Spec.Name, "Test Agent")
 	}
-	if got.Spec.SystemPromptPath != filepath.Join(workDir, "system.md") {
-		t.Fatalf("loadAgentFromWorkDir().Spec.SystemPromptPath = %q, want %q", got.Spec.SystemPromptPath, filepath.Join(workDir, "system.md"))
+	if got.Spec.SystemPromptPath != filepath.Join(agentDir, "system.md") {
+		t.Fatalf("loadAgentFromWorkDir().Spec.SystemPromptPath = %q, want %q", got.Spec.SystemPromptPath, filepath.Join(agentDir, "system.md"))
 	}
 	if !reflect.DeepEqual(got.Spec.Tools, []string{"bash", "read_file"}) {
 		t.Fatalf("loadAgentFromWorkDir().Spec.Tools = %#v, want %#v", got.Spec.Tools, []string{"bash", "read_file"})
@@ -230,8 +234,12 @@ agent:
 
 func TestLoadAgentFromWorkDirReturnsErrorForUnknownTool(t *testing.T) {
 	workDir := t.TempDir()
+	agentDir := filepath.Dir(defaultAgentFile(workDir))
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", agentDir, err)
+	}
 
-	if err := os.WriteFile(filepath.Join(workDir, defaultAgentFileName), []byte(`
+	if err := os.WriteFile(defaultAgentFile(workDir), []byte(`
 version: 1
 agent:
   name: Test Agent
@@ -241,7 +249,7 @@ agent:
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile(agent.yaml) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "system.md"), []byte("You are the test agent.\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir, "system.md"), []byte("You are the test agent.\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(system.md) error = %v", err)
 	}
 

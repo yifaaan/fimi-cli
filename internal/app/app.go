@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	initialRecordContent = "session initialized"
-	defaultAgentFileName = "agent.yaml"
+	initialRecordContent    = "session initialized"
+	defaultAgentsDirName    = "agents"
+	defaultAgentProfileName = "default"
+	defaultAgentFileName    = "agent.yaml"
 )
 
 var ErrUnknownCLIFlag = errors.New("unknown cli flag")
@@ -353,7 +355,12 @@ func (d dependencies) resolveToolRegistry() tools.Registry {
 
 // defaultAgentFile 返回工作目录下的默认 agent 文件位置。
 func defaultAgentFile(workDir string) string {
-	return filepath.Join(workDir, defaultAgentFileName)
+	return filepath.Join(
+		workDir,
+		defaultAgentsDirName,
+		defaultAgentProfileName,
+		defaultAgentFileName,
+	)
 }
 
 // loadAgentFromWorkDir 从当前工作目录加载默认 agent。

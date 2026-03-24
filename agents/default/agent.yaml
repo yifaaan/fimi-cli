@@ -2,6 +2,8 @@ version: 1
 agent:
   name: fimi
   system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE: coding agent
   tools:
     - bash
     - read_file
