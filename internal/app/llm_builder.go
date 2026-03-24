@@ -36,7 +36,7 @@ func buildLLMClientForProvider(
 ) (llm.Client, error) {
 	switch providerCfg.Type {
 	case config.ProviderTypePlaceholder:
-		return llm.NewPlaceholderClient(), nil
+		return buildPlaceholderClient(providerName, providerCfg, modelCfg)
 	case config.ProviderTypeQWEN:
 		return buildQwenClient(providerName, providerCfg, modelCfg)
 	default:
@@ -77,6 +77,15 @@ func resolveConfiguredProvider(
 	}
 
 	return modelCfg.Provider, providerCfg, nil
+}
+
+// buildPlaceholderClient 构造内建的 placeholder client。
+func buildPlaceholderClient(
+	providerName string,
+	providerCfg config.ProviderConfig,
+	modelCfg config.ModelConfig,
+) (llm.Client, error) {
+	return llm.NewPlaceholderClient(), nil
 }
 
 // buildQwenClient 从配置构建 QWEN client。
