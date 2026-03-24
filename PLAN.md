@@ -20,7 +20,7 @@ Current teaching unit:
 
 - [x] add explicit unfinished step state
 - [x] let runtime loop represent "continue" without using errors
-- [ ] keep real tool execution deferred until the runtime tool boundary exists
+- [x] keep real tool execution deferred until the runtime tool boundary exists
 
 ### Already Implemented In Go
 

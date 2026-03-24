@@ -82,6 +82,18 @@ type ToolCall struct {
 	Arguments string
 }
 
+// ToolExecution 表示 runtime 已经把某个工具调用交给执行器消费。
+// 当前阶段只保留原始调用，真实输出等后续工具协议稳定后再补。
+type ToolExecution struct {
+	Call ToolCall
+}
+
+// ToolExecutor 定义 runtime 消费工具调用的最小边界。
+// runtime 只关心“调用有没有被处理”，不关心具体 bash/file/web 细节。
+type ToolExecutor interface {
+	Execute(call ToolCall) (ToolExecution, error)
+}
+
 // StepResult 表示单个 runtime step 的结构化结果。
 // 先同时保留追加记录和平铺结果，方便上层渐进迁移。
 type StepResult struct {
@@ -89,6 +101,7 @@ type StepResult struct {
 	Kind            StepKind
 	AppendedRecords []contextstore.TextRecord
 	ToolCalls       []ToolCall
+	ToolExecutions  []ToolExecution
 }
 
 // Engine 负责为 runtime 生成 assistant 回复文本。
@@ -100,6 +113,7 @@ type Engine interface {
 // Runner 持有一次 runtime 执行所需的核心依赖。
 type Runner struct {
 	engine       Engine
+	toolExecutor ToolExecutor
 	config       Config
 	runStepFn    func(ctx contextstore.Context, input Input, prompt string) (StepResult, error)
 	advanceRunFn func(result Result, stepResult StepResult) (Result, bool, error)
@@ -108,8 +122,16 @@ type Runner struct {
 // New 创建最小 runtime runner。
 // 调用方必须显式注入 engine，避免 core runtime 反向依赖具体适配器。
 func New(engine Engine, cfg Config) Runner {
+	return NewWithToolExecutor(engine, nil, cfg)
+}
+
+// NewWithToolExecutor 创建带显式工具执行边界的 runtime runner。
+func NewWithToolExecutor(engine Engine, toolExecutor ToolExecutor, cfg Config) Runner {
 	if engine == nil {
 		engine = missingEngine{}
+	}
+	if toolExecutor == nil {
+		toolExecutor = NoopToolExecutor{}
 	}
 	if cfg.ReplyHistoryTurnLimit <= 0 {
 		cfg.ReplyHistoryTurnLimit = DefaultReplyHistoryTurnLimit
@@ -119,8 +141,9 @@ func New(engine Engine, cfg Config) Runner {
 	}
 
 	return Runner{
-		engine: engine,
-		config: cfg,
+		engine:       engine,
+		toolExecutor: toolExecutor,
+		config:       cfg,
 	}
 }
 
@@ -216,6 +239,12 @@ func (r Runner) advanceRun(
 		if len(stepResult.ToolCalls) == 0 {
 			return Result{}, false, fmt.Errorf("step kind %q requires at least one tool call", stepResult.Kind)
 		}
+
+		toolExecutions, err := r.executeToolCalls(stepResult.ToolCalls)
+		if err != nil {
+			return Result{}, false, err
+		}
+		stepResult.ToolExecutions = toolExecutions
 	default:
 		return Result{}, false, fmt.Errorf("%w: %q", ErrUnknownStepKind, stepResult.Kind)
 	}
@@ -230,6 +259,30 @@ func (r Runner) advanceRun(
 	default:
 		return Result{}, false, fmt.Errorf("%w: %q", ErrUnknownStepStatus, stepResult.Status)
 	}
+}
+
+func (r Runner) executeToolCalls(calls []ToolCall) ([]ToolExecution, error) {
+	toolExecutions := make([]ToolExecution, 0, len(calls))
+	for _, call := range calls {
+		execution, err := r.toolExecutor.Execute(call)
+		if err != nil {
+			return nil, fmt.Errorf("execute tool call %q: %w", call.Name, err)
+		}
+
+		toolExecutions = append(toolExecutions, execution)
+	}
+
+	return toolExecutions, nil
+}
+
+// NoopToolExecutor 是 runtime 当前默认的占位执行器。
+// 它只把 tool call 标记为“已消费”，不做任何真实副作用。
+type NoopToolExecutor struct{}
+
+func (NoopToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
+	return ToolExecution{
+		Call: call,
+	}, nil
 }
 
 type missingEngine struct{}

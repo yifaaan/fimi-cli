@@ -51,6 +51,9 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	if len(step.ToolCalls) != 0 {
 		t.Fatalf("len(Steps[0].ToolCalls) = %d, want 0", len(step.ToolCalls))
 	}
+	if len(step.ToolExecutions) != 0 {
+		t.Fatalf("len(Steps[0].ToolExecutions) = %d, want 0", len(step.ToolExecutions))
+	}
 
 	records, err := ctx.ReadAll()
 	if err != nil {
@@ -265,6 +268,9 @@ func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
 	if len(result.Steps) != 1 {
 		t.Fatalf("len(result.Steps) = %d, want %d", len(result.Steps), 1)
 	}
+	if len(result.Steps[0].ToolExecutions) != 1 {
+		t.Fatalf("len(result.Steps[0].ToolExecutions) = %d, want %d", len(result.Steps[0].ToolExecutions), 1)
+	}
 }
 
 func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
@@ -278,6 +284,21 @@ func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
 	}
 	if runner.config.MaxStepsPerRun != DefaultMaxStepsPerRun {
 		t.Fatalf("runner.config.MaxStepsPerRun = %d, want %d", runner.config.MaxStepsPerRun, DefaultMaxStepsPerRun)
+	}
+}
+
+func TestNewWithToolExecutorUsesNoopWhenNil(t *testing.T) {
+	runner := NewWithToolExecutor(staticEngine{}, nil, Config{})
+
+	execution, err := runner.toolExecutor.Execute(ToolCall{
+		Name:      "bash",
+		Arguments: `{"command":"pwd"}`,
+	})
+	if err != nil {
+		t.Fatalf("toolExecutor.Execute() error = %v", err)
+	}
+	if execution.Call.Name != "bash" {
+		t.Fatalf("toolExecutor.Execute().Call.Name = %q, want %q", execution.Call.Name, "bash")
 	}
 }
 
@@ -306,7 +327,10 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 }
 
 func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
-	runner := Runner{}
+	executor := &spyToolExecutor{}
+	runner := Runner{
+		toolExecutor: executor,
+	}
 	step := StepResult{
 		Status: StepStatusIncomplete,
 		Kind: StepKindToolCalls,
@@ -322,8 +346,92 @@ func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
 	if finished {
 		t.Fatalf("advanceRun() finished = true, want false")
 	}
-	if !reflect.DeepEqual(got.Steps, []StepResult{step}) {
-		t.Fatalf("advanceRun().Steps = %#v, want %#v", got.Steps, []StepResult{step})
+	if !reflect.DeepEqual(executor.gotCalls, []ToolCall{
+		{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+	}) {
+		t.Fatalf("toolExecutor got Calls = %#v, want %#v", executor.gotCalls, []ToolCall{
+			{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+		})
+	}
+	expectedStep := step
+	expectedStep.ToolExecutions = []ToolExecution{
+		{
+			Call: ToolCall{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+		},
+	}
+	if !reflect.DeepEqual(got.Steps, []StepResult{expectedStep}) {
+		t.Fatalf("advanceRun().Steps = %#v, want %#v", got.Steps, []StepResult{expectedStep})
+	}
+}
+
+func TestRunnerRunExecutesToolCallsBeforeFinishing(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	executor := &spyToolExecutor{}
+	runner := NewWithToolExecutor(staticEngine{}, executor, Config{
+		MaxStepsPerRun: 2,
+	})
+
+	stepIndex := 0
+	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+		stepIndex++
+		if stepIndex == 1 {
+			return StepResult{
+				Status: StepStatusIncomplete,
+				Kind:   StepKindToolCalls,
+				ToolCalls: []ToolCall{
+					{Name: "bash", Arguments: `{"command":"pwd"}`},
+				},
+			}, nil
+		}
+
+		return StepResult{
+			Status: StepStatusFinished,
+			Kind:   StepKindFinished,
+		}, nil
+	}
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+	if len(result.Steps) != 2 {
+		t.Fatalf("len(result.Steps) = %d, want %d", len(result.Steps), 2)
+	}
+	if len(result.Steps[0].ToolExecutions) != 1 {
+		t.Fatalf("len(result.Steps[0].ToolExecutions) = %d, want %d", len(result.Steps[0].ToolExecutions), 1)
+	}
+	if len(executor.gotCalls) != 1 {
+		t.Fatalf("len(toolExecutor got Calls) = %d, want %d", len(executor.gotCalls), 1)
+	}
+}
+
+func TestRunnerRunReturnsToolExecutorError(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	wantErr := errors.New("tool executor failed")
+	runner := NewWithToolExecutor(staticEngine{}, failingToolExecutor{
+		err: wantErr,
+	}, Config{
+		MaxStepsPerRun: 1,
+	})
+	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+		return StepResult{
+			Status: StepStatusIncomplete,
+			Kind:   StepKindToolCalls,
+			ToolCalls: []ToolCall{
+				{Name: "bash", Arguments: `{"command":"pwd"}`},
+			},
+		}, nil
+	}
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
 	}
 }
 
@@ -376,4 +484,24 @@ type spyEngine struct {
 func (e *spyEngine) Reply(input ReplyInput) (string, error) {
 	e.gotInput = input
 	return e.reply, e.err
+}
+
+type spyToolExecutor struct {
+	gotCalls []ToolCall
+}
+
+func (e *spyToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
+	e.gotCalls = append(e.gotCalls, call)
+
+	return ToolExecution{
+		Call: call,
+	}, nil
+}
+
+type failingToolExecutor struct {
+	err error
+}
+
+func (e failingToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
+	return ToolExecution{}, e.err
 }
