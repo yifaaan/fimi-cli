@@ -10,6 +10,18 @@ The old plan stopped at "build the initial CLI skeleton". That is now outdated. 
 
 ## Current Status Snapshot
 
+### Current Execution Focus
+
+Date: 2026-03-24
+
+Active phase: Phase 1, Agent Composition Layer
+
+Current teaching unit:
+
+- wire `internal/app` to consume `internal/agentspec`
+- resolve the default agent file location from app/workdir rules
+- keep inheritance, template expansion, and tool instantiation for later steps
+
 ### Already Implemented In Go
 
 - [x] `cmd/fimi -> internal/app.Run` entry chain
@@ -111,12 +123,14 @@ This phase gave us a working CLI prototype and stable package seams.
 
 ### Phase 1: Agent Composition Layer
 
+Status: in progress
+
 Goal: introduce the missing layer between `app` and `runtime` that knows how to load an agent definition.
 
-- [ ] Create `internal/agentspec`
-- [ ] Parse agent YAML from disk
-- [ ] Support agent name, system prompt path, tool list
-- [ ] Load system prompt text from file
+- [x] Create `internal/agentspec`
+- [x] Parse agent YAML from disk
+- [x] Support agent name, system prompt path, tool list
+- [x] Load system prompt text from file
 - [ ] Resolve agent file path from CLI/app defaults
 - [ ] Keep tool loading explicit in Go instead of Python-style reflection
 
