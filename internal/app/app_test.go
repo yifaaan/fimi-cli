@@ -544,9 +544,14 @@ func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
 			gotRunnerCfg = cfg
 			return &stubRunner{
 				result: runtime.Result{
-					AppendedRecords: []contextstore.TextRecord{
-						contextstore.NewUserTextRecord("fix tests"),
-						contextstore.NewAssistantTextRecord("runner reply"),
+					Steps: []runtime.StepResult{
+						{
+							Kind: runtime.StepKindFinished,
+							AppendedRecords: []contextstore.TextRecord{
+								contextstore.NewUserTextRecord("fix tests"),
+								contextstore.NewAssistantTextRecord("runner reply"),
+							},
+						},
 					},
 				},
 				appendToContext: true,
@@ -616,9 +621,14 @@ func TestDependenciesRunCreatesNewSessionWhenRequested(t *testing.T) {
 		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
 			return &stubRunner{
 				result: runtime.Result{
-					AppendedRecords: []contextstore.TextRecord{
-						contextstore.NewUserTextRecord("fix tests"),
-						contextstore.NewAssistantTextRecord("runner reply"),
+					Steps: []runtime.StepResult{
+						{
+							Kind: runtime.StepKindFinished,
+							AppendedRecords: []contextstore.TextRecord{
+								contextstore.NewUserTextRecord("fix tests"),
+								contextstore.NewAssistantTextRecord("runner reply"),
+							},
+						},
 					},
 				},
 				appendToContext: true,
@@ -662,9 +672,14 @@ func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	runner := &stubRunner{
 		result: runtime.Result{
-			AppendedRecords: []contextstore.TextRecord{
-				contextstore.NewUserTextRecord("fix tests"),
-				contextstore.NewAssistantTextRecord("runner reply"),
+			Steps: []runtime.StepResult{
+				{
+					Kind: runtime.StepKindFinished,
+					AppendedRecords: []contextstore.TextRecord{
+						contextstore.NewUserTextRecord("fix tests"),
+						contextstore.NewAssistantTextRecord("runner reply"),
+					},
+				},
 			},
 		},
 		appendToContext: true,
@@ -964,8 +979,11 @@ func TestBuildRunnerRunsWithWiredPlaceholderEngine(t *testing.T) {
 		contextstore.NewUserTextRecord("hello"),
 		contextstore.NewAssistantTextRecord("assistant placeholder reply: hello"),
 	}
-	if !reflect.DeepEqual(result.AppendedRecords, wantResult) {
-		t.Fatalf("Run().AppendedRecords = %#v, want %#v", result.AppendedRecords, wantResult)
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(Run().Steps) = %d, want 1", len(result.Steps))
+	}
+	if !reflect.DeepEqual(result.Steps[0].AppendedRecords, wantResult) {
+		t.Fatalf("Run().Steps[0].AppendedRecords = %#v, want %#v", result.Steps[0].AppendedRecords, wantResult)
 	}
 
 	records, err := ctx.ReadAll()
@@ -1055,9 +1073,11 @@ func (r *stubRunner) Run(ctx contextstore.Context, input runtime.Input) (runtime
 	}
 
 	if r.appendToContext {
-		for _, record := range r.result.AppendedRecords {
-			if err := ctx.Append(record); err != nil {
-				return runtime.Result{}, err
+		for _, step := range r.result.Steps {
+			for _, record := range step.AppendedRecords {
+				if err := ctx.Append(record); err != nil {
+					return runtime.Result{}, err
+				}
 			}
 		}
 	}

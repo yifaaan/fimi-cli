@@ -352,8 +352,10 @@ func buildInitialRecord() contextstore.TextRecord {
 
 // applyRuntimeResult 把 runtime 的输出折叠回当前启动阶段状态。
 func applyRuntimeResult(state startupState, result runtime.Result) startupState {
-	for _, record := range result.AppendedRecords {
-		state = advanceStartupState(state, record)
+	for _, step := range result.Steps {
+		for _, record := range step.AppendedRecords {
+			state = advanceStartupState(state, record)
+		}
 	}
 
 	return state

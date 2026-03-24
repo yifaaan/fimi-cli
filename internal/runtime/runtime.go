@@ -46,8 +46,7 @@ type ReplyInput struct {
 
 // Result 表示单次 runtime 追加到 history 的记录。
 type Result struct {
-	Steps           []StepResult
-	AppendedRecords []contextstore.TextRecord
+	Steps []StepResult
 }
 
 // StepKind 表示单个 runtime step 当前产出的类型。
@@ -113,8 +112,7 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	}
 
 	result := Result{
-		Steps:           make([]StepResult, 0, 1),
-		AppendedRecords: make([]contextstore.TextRecord, 0, 2),
+		Steps: make([]StepResult, 0, 1),
 	}
 	for stepNo := 1; stepNo <= r.config.MaxStepsPerRun; stepNo++ {
 		stepResult, err := r.runStep(ctx, input, prompt)
@@ -177,7 +175,6 @@ func (r Runner) advanceRun(
 	switch stepResult.Kind {
 	case StepKindFinished:
 		result.Steps = append(result.Steps, stepResult)
-		result.AppendedRecords = append(result.AppendedRecords, stepResult.AppendedRecords...)
 
 		return result, true, nil
 	case StepKindToolCalls:
