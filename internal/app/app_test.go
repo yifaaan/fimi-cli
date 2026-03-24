@@ -51,7 +51,8 @@ func TestBuildLLMConfig(t *testing.T) {
 func TestBuildRuntimeConfig(t *testing.T) {
 	cfg := config.Config{
 		LoopControl: config.LoopControl{
-			MaxStepsPerRun: 9,
+			MaxStepsPerRun:    9,
+			MaxRetriesPerStep: 4,
 		},
 		HistoryWindow: config.HistoryWindow{
 			RuntimeTurns: 7,
@@ -64,6 +65,9 @@ func TestBuildRuntimeConfig(t *testing.T) {
 	}
 	if got.MaxStepsPerRun != 9 {
 		t.Fatalf("buildRuntimeConfig().MaxStepsPerRun = %d, want %d", got.MaxStepsPerRun, 9)
+	}
+	if got.MaxRetriesPerStep != 4 {
+		t.Fatalf("buildRuntimeConfig().MaxRetriesPerStep = %d, want %d", got.MaxRetriesPerStep, 4)
 	}
 }
 

@@ -104,10 +104,10 @@ func newBashHandlerWithTimeout(workDir string, timeout time.Duration) HandlerFun
 
 		err = cmd.Run()
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolCommandTimedOut, args.Command)
+			return runtime.ToolExecution{}, markTemporary(fmt.Errorf("%w: %s", ErrToolCommandTimedOut, args.Command))
 		}
 		if err != nil && !isExitError(err) {
-			return runtime.ToolExecution{}, fmt.Errorf("run bash command: %w", err)
+			return runtime.ToolExecution{}, markTemporary(fmt.Errorf("run bash command: %w", err))
 		}
 
 		return runtime.ToolExecution{
@@ -191,7 +191,7 @@ func newGrepHandler(workDir string) HandlerFunc {
 
 		expression, err := regexp.Compile(args.Pattern)
 		if err != nil {
-			return runtime.ToolExecution{}, fmt.Errorf("%w: compile grep pattern: %v", ErrToolArgumentsInvalid, err)
+			return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: compile grep pattern: %v", ErrToolArgumentsInvalid, err))
 		}
 
 		matches, err := findGrepMatches(rootAbs, targetAbs, expression)
@@ -274,9 +274,9 @@ func newReplaceFileHandler(workDir string) HandlerFunc {
 		matchCount := strings.Count(content, args.Old)
 		switch {
 		case matchCount == 0:
-			return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolReplaceTargetMissing, targetRel)
+			return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %s", ErrToolReplaceTargetMissing, targetRel))
 		case matchCount > 1:
-			return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolReplaceTargetNotUnique, targetRel)
+			return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %s", ErrToolReplaceTargetNotUnique, targetRel))
 		}
 
 		replaced := strings.Replace(content, args.Old, args.New, 1)
@@ -294,10 +294,10 @@ func newReplaceFileHandler(workDir string) HandlerFunc {
 func decodeBashArguments(raw string) (bashArguments, error) {
 	var args bashArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return bashArguments{}, fmt.Errorf("%w: decode bash arguments: %v", ErrToolArgumentsInvalid, err)
+		return bashArguments{}, markRefused(fmt.Errorf("%w: decode bash arguments: %v", ErrToolArgumentsInvalid, err))
 	}
 	if strings.TrimSpace(args.Command) == "" {
-		return bashArguments{}, ErrToolCommandRequired
+		return bashArguments{}, markRefused(ErrToolCommandRequired)
 	}
 
 	return args, nil
@@ -306,10 +306,10 @@ func decodeBashArguments(raw string) (bashArguments, error) {
 func decodeGlobArguments(raw string) (globArguments, error) {
 	var args globArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return globArguments{}, fmt.Errorf("%w: decode glob arguments: %v", ErrToolArgumentsInvalid, err)
+		return globArguments{}, markRefused(fmt.Errorf("%w: decode glob arguments: %v", ErrToolArgumentsInvalid, err))
 	}
 	if strings.TrimSpace(args.Pattern) == "" {
-		return globArguments{}, ErrToolPatternRequired
+		return globArguments{}, markRefused(ErrToolPatternRequired)
 	}
 
 	return args, nil
@@ -318,10 +318,10 @@ func decodeGlobArguments(raw string) (globArguments, error) {
 func decodeGrepArguments(raw string) (grepArguments, error) {
 	var args grepArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return grepArguments{}, fmt.Errorf("%w: decode grep arguments: %v", ErrToolArgumentsInvalid, err)
+		return grepArguments{}, markRefused(fmt.Errorf("%w: decode grep arguments: %v", ErrToolArgumentsInvalid, err))
 	}
 	if strings.TrimSpace(args.Pattern) == "" {
-		return grepArguments{}, ErrToolPatternRequired
+		return grepArguments{}, markRefused(ErrToolPatternRequired)
 	}
 	if strings.TrimSpace(args.Path) == "" {
 		args.Path = "."
@@ -333,10 +333,10 @@ func decodeGrepArguments(raw string) (grepArguments, error) {
 func decodeReadFileArguments(raw string) (readFileArguments, error) {
 	var args readFileArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return readFileArguments{}, fmt.Errorf("%w: decode read_file arguments: %v", ErrToolArgumentsInvalid, err)
+		return readFileArguments{}, markRefused(fmt.Errorf("%w: decode read_file arguments: %v", ErrToolArgumentsInvalid, err))
 	}
 	if strings.TrimSpace(args.Path) == "" {
-		return readFileArguments{}, ErrToolPathRequired
+		return readFileArguments{}, markRefused(ErrToolPathRequired)
 	}
 
 	return args, nil
@@ -345,10 +345,10 @@ func decodeReadFileArguments(raw string) (readFileArguments, error) {
 func decodeWriteFileArguments(raw string) (writeFileArguments, error) {
 	var args writeFileArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return writeFileArguments{}, fmt.Errorf("%w: decode write_file arguments: %v", ErrToolArgumentsInvalid, err)
+		return writeFileArguments{}, markRefused(fmt.Errorf("%w: decode write_file arguments: %v", ErrToolArgumentsInvalid, err))
 	}
 	if strings.TrimSpace(args.Path) == "" {
-		return writeFileArguments{}, ErrToolPathRequired
+		return writeFileArguments{}, markRefused(ErrToolPathRequired)
 	}
 
 	return args, nil
@@ -357,13 +357,13 @@ func decodeWriteFileArguments(raw string) (writeFileArguments, error) {
 func decodeReplaceFileArguments(raw string) (replaceFileArguments, error) {
 	var args replaceFileArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return replaceFileArguments{}, fmt.Errorf("%w: decode replace_file arguments: %v", ErrToolArgumentsInvalid, err)
+		return replaceFileArguments{}, markRefused(fmt.Errorf("%w: decode replace_file arguments: %v", ErrToolArgumentsInvalid, err))
 	}
 	if strings.TrimSpace(args.Path) == "" {
-		return replaceFileArguments{}, ErrToolPathRequired
+		return replaceFileArguments{}, markRefused(ErrToolPathRequired)
 	}
 	if args.Old == "" {
-		return replaceFileArguments{}, ErrToolReplaceOldRequired
+		return replaceFileArguments{}, markRefused(ErrToolReplaceOldRequired)
 	}
 
 	return args, nil
@@ -404,7 +404,7 @@ func resolveWorkspacePath(workDir string, target string) (string, error) {
 		return "", fmt.Errorf("relativize tool path %q: %w", targetAbs, err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: %s", ErrToolPathOutsideWorkspace, target)
+		return "", markRefused(fmt.Errorf("%w: %s", ErrToolPathOutsideWorkspace, target))
 	}
 
 	return targetAbs, nil
@@ -447,7 +447,7 @@ func normalizeWorkspacePattern(raw string) (string, error) {
 		return pattern, nil
 	}
 	if path.IsAbs(pattern) || pattern == ".." || strings.HasPrefix(pattern, "../") {
-		return "", fmt.Errorf("%w: %s", ErrToolPatternOutsideWorkspace, raw)
+		return "", markRefused(fmt.Errorf("%w: %s", ErrToolPatternOutsideWorkspace, raw))
 	}
 
 	return pattern, nil
@@ -471,7 +471,7 @@ func findGlobMatches(rootAbs string, pattern string) ([]string, error) {
 		rel = filepath.ToSlash(rel)
 		ok, err := matchWorkspacePattern(pattern, rel)
 		if err != nil {
-			return fmt.Errorf("%w: match glob pattern %q: %v", ErrToolArgumentsInvalid, pattern, err)
+			return markRefused(fmt.Errorf("%w: match glob pattern %q: %v", ErrToolArgumentsInvalid, pattern, err))
 		}
 		if ok {
 			matches = append(matches, rel)

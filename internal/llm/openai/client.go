@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"fimi-cli/internal/llm"
 )
@@ -74,6 +75,22 @@ type chatError struct {
 	Type    string `json:"type"`
 }
 
+type retryableError struct {
+	err error
+}
+
+func (e retryableError) Error() string {
+	return e.err.Error()
+}
+
+func (e retryableError) Unwrap() error {
+	return e.err
+}
+
+func (retryableError) Retryable() bool {
+	return true
+}
+
 // Reply 实现 llm.Client 接口。
 func (c *Client) Reply(request llm.Request) (llm.Response, error) {
 	messages := make([]chatMessage, 0, len(request.Messages)+1)
@@ -121,13 +138,17 @@ func (c *Client) Reply(request llm.Request) (llm.Response, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return llm.Response{}, fmt.Errorf("send request: %w", err)
+		return llm.Response{}, fmt.Errorf("send request: %w", markRetryable(err))
 	}
 	defer resp.Body.Close()
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return llm.Response{}, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return llm.Response{}, statusError(resp.StatusCode, respBytes)
 	}
 
 	var chatResp chatResponse
@@ -148,4 +169,54 @@ func (c *Client) Reply(request llm.Request) (llm.Response, error) {
 	return llm.Response{
 		Text: chatResp.Choices[0].Message.Content,
 	}, nil
+}
+
+func markRetryable(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return retryableError{err: err}
+}
+
+func statusError(statusCode int, body []byte) error {
+	var chatResp chatResponse
+	if err := json.Unmarshal(body, &chatResp); err == nil && chatResp.Error != nil {
+		err := fmt.Errorf(
+			"api status %d: %s: %s",
+			statusCode,
+			chatResp.Error.Type,
+			chatResp.Error.Message,
+		)
+		if isRetryableStatus(statusCode) {
+			return markRetryable(err)
+		}
+
+		return err
+	}
+
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		message = http.StatusText(statusCode)
+	}
+
+	err := fmt.Errorf("api status %d: %s", statusCode, message)
+	if isRetryableStatus(statusCode) {
+		return markRetryable(err)
+	}
+
+	return err
+}
+
+func isRetryableStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }

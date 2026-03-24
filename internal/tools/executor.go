@@ -11,6 +11,38 @@ import (
 var ErrToolCallNameRequired = errors.New("tool call name is required")
 var ErrToolCallNotAllowed = errors.New("tool call is not allowed")
 
+type refusedError struct {
+	err error
+}
+
+func (e refusedError) Error() string {
+	return e.err.Error()
+}
+
+func (e refusedError) Unwrap() error {
+	return e.err
+}
+
+func (refusedError) Refused() bool {
+	return true
+}
+
+type temporaryError struct {
+	err error
+}
+
+func (e temporaryError) Error() string {
+	return e.err.Error()
+}
+
+func (e temporaryError) Unwrap() error {
+	return e.err
+}
+
+func (temporaryError) Temporary() bool {
+	return true
+}
+
 // HandlerFunc 定义单个工具名对应的执行逻辑。
 // 当前先保留最小函数签名，后面再扩展上下文、工作目录等运行参数。
 type HandlerFunc func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error)
@@ -44,12 +76,12 @@ func NewExecutor(definitions []Definition, handlers map[string]HandlerFunc) Exec
 func (e Executor) Execute(call runtime.ToolCall) (runtime.ToolExecution, error) {
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
-		return runtime.ToolExecution{}, ErrToolCallNameRequired
+		return runtime.ToolExecution{}, markRefused(ErrToolCallNameRequired)
 	}
 
 	definition, ok := e.allowedTools[name]
 	if !ok {
-		return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolCallNotAllowed, name)
+		return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %s", ErrToolCallNotAllowed, name))
 	}
 
 	call.Name = name
@@ -66,4 +98,20 @@ func (e Executor) Execute(call runtime.ToolCall) (runtime.ToolExecution, error) 
 	}
 
 	return execution, nil
+}
+
+func markRefused(err error) error {
+	if err == nil || runtime.IsRefused(err) {
+		return err
+	}
+
+	return refusedError{err: err}
+}
+
+func markTemporary(err error) error {
+	if err == nil || runtime.IsTemporary(err) {
+		return err
+	}
+
+	return temporaryError{err: err}
 }

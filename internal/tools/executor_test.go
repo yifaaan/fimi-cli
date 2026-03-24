@@ -94,6 +94,9 @@ func TestExecutorExecuteReturnsErrorForDisallowedTool(t *testing.T) {
 	if !errors.Is(err, ErrToolCallNotAllowed) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolCallNotAllowed)
 	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
 }
 
 func TestExecutorExecuteReturnsErrorForMissingToolName(t *testing.T) {
@@ -102,6 +105,9 @@ func TestExecutorExecuteReturnsErrorForMissingToolName(t *testing.T) {
 	_, err := executor.Execute(runtime.ToolCall{Name: "   "})
 	if !errors.Is(err, ErrToolCallNameRequired) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolCallNameRequired)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
 	}
 }
 
@@ -122,4 +128,45 @@ func TestExecutorExecuteWrapsHandlerError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, wantErr)
 	}
+}
+
+func TestExecutorExecutePreservesTemporaryClassification(t *testing.T) {
+	wantErr := temporaryHandlerError{err: errors.New("runner unavailable")}
+	executor := NewExecutor([]Definition{
+		{
+			Name: ToolBash,
+			Kind: KindCommand,
+		},
+	}, map[string]HandlerFunc{
+		ToolBash: func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+			return runtime.ToolExecution{}, wantErr
+		},
+	})
+
+	_, err := executor.Execute(runtime.ToolCall{Name: ToolBash})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, wantErr)
+	}
+	if !runtime.IsTemporary(err) {
+		t.Fatalf("runtime.IsTemporary(error) = false, want true")
+	}
+	if runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = true, want false")
+	}
+}
+
+type temporaryHandlerError struct {
+	err error
+}
+
+func (e temporaryHandlerError) Error() string {
+	return e.err.Error()
+}
+
+func (e temporaryHandlerError) Unwrap() error {
+	return e.err
+}
+
+func (temporaryHandlerError) Temporary() bool {
+	return true
 }

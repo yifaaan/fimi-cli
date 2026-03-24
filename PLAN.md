@@ -21,6 +21,13 @@ Current teaching unit:
 - [x] add explicit unfinished step state
 - [x] let runtime loop represent "continue" without using errors
 - [x] keep real tool execution deferred until the runtime tool boundary exists
+- [x] route `max_retries_per_step` from app config into runtime
+- [x] retry transient step-construction failures before history append
+- [x] classify pre-execution tool guardrail failures as refusal
+- [x] classify command timeout / runner failure as temporary execution failure
+- [x] stop the run on temporary tool execution failure and preserve failing call context
+- [x] record tool execution failures as structured failed runtime steps
+- [ ] decide whether later phases should surface temporary tool failures as model-visible tool results
 
 ### Already Implemented In Go
 

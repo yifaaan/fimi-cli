@@ -2,11 +2,13 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"fimi-cli/internal/llm"
+	"fimi-cli/internal/runtime"
 )
 
 func TestClientReply(t *testing.T) {
@@ -115,6 +117,7 @@ func TestClientReplyWithSystemPrompt(t *testing.T) {
 
 func TestClientReplyAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
 		resp := chatResponse{
 			Error: &chatError{
 				Type:    "invalid_api_key",
@@ -142,6 +145,62 @@ func TestClientReplyAPIError(t *testing.T) {
 	if !containsString(err.Error(), "invalid_api_key") {
 		t.Errorf("error should contain 'invalid_api_key', got: %v", err)
 	}
+	if runtime.IsRetryable(err) {
+		t.Fatalf("runtime.IsRetryable(error) = true, want false")
+	}
+}
+
+func TestClientReplyMarksRetryableAPIStatusErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		resp := chatResponse{
+			Error: &chatError{
+				Type:    "rate_limit",
+				Message: "too many requests",
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	_, err := client.Reply(llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !runtime.IsRetryable(err) {
+		t.Fatalf("runtime.IsRetryable(error) = false, want true")
+	}
+}
+
+func TestClientReplyMarksRetryableTransportErrors(t *testing.T) {
+	client := NewClient(Config{
+		BaseURL: "https://example.invalid",
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+	client.http = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("dial tcp: connection refused")
+		}),
+	}
+
+	_, err := client.Reply(llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !runtime.IsRetryable(err) {
+		t.Fatalf("runtime.IsRetryable(error) = false, want true")
+	}
 }
 
 func containsString(s, substr string) bool {
@@ -155,4 +214,10 @@ func containsSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

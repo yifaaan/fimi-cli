@@ -10,6 +10,7 @@ import (
 
 const DefaultReplyHistoryTurnLimit = 4
 const DefaultMaxStepsPerRun = 100
+const DefaultMaxRetriesPerStep = 3
 
 var ErrUnknownStepKind = errors.New("unknown runtime step kind")
 var ErrUnknownStepStatus = errors.New("unknown runtime step status")
@@ -18,6 +19,7 @@ var ErrUnknownStepStatus = errors.New("unknown runtime step status")
 type Config struct {
 	ReplyHistoryTurnLimit int
 	MaxStepsPerRun        int
+	MaxRetriesPerStep     int
 }
 
 // DefaultConfig 返回 runtime 的默认参数。
@@ -25,6 +27,7 @@ func DefaultConfig() Config {
 	return Config{
 		ReplyHistoryTurnLimit: DefaultReplyHistoryTurnLimit,
 		MaxStepsPerRun:        DefaultMaxStepsPerRun,
+		MaxRetriesPerStep:     DefaultMaxRetriesPerStep,
 	}
 }
 
@@ -67,11 +70,12 @@ const (
 	StepKindToolCalls StepKind = "tool_calls"
 )
 
-// StepStatus 表示当前 step 是否已经完成，还是需要 runtime 继续推进。
+// StepStatus 表示当前 step 的推进结果：已完成、失败，或需要 runtime 继续推进。
 type StepStatus string
 
 const (
 	StepStatusFinished   StepStatus = "finished"
+	StepStatusFailed     StepStatus = "failed"
 	StepStatusIncomplete StepStatus = "incomplete"
 )
 
@@ -92,6 +96,21 @@ type ToolExecution struct {
 	ExitCode int
 }
 
+// ToolExecutionError 表示某个 tool call 在 runtime 推进阶段执行失败。
+// 它保留失败的 call，方便上层判断是哪个工具中断了本次 run。
+type ToolExecutionError struct {
+	Call ToolCall
+	Err  error
+}
+
+func (e ToolExecutionError) Error() string {
+	return fmt.Sprintf("execute tool call %q: %v", e.Call.Name, e.Err)
+}
+
+func (e ToolExecutionError) Unwrap() error {
+	return e.Err
+}
+
 // ToolExecutor 定义 runtime 消费工具调用的最小边界。
 // runtime 只关心“调用有没有被处理”，不关心具体 bash/file/web 细节。
 type ToolExecutor interface {
@@ -106,6 +125,7 @@ type StepResult struct {
 	AppendedRecords []contextstore.TextRecord
 	ToolCalls       []ToolCall
 	ToolExecutions  []ToolExecution
+	ToolFailure     *ToolExecutionError
 }
 
 // Engine 负责为 runtime 生成 assistant 回复文本。
@@ -143,6 +163,9 @@ func NewWithToolExecutor(engine Engine, toolExecutor ToolExecutor, cfg Config) R
 	if cfg.MaxStepsPerRun <= 0 {
 		cfg.MaxStepsPerRun = DefaultMaxStepsPerRun
 	}
+	if cfg.MaxRetriesPerStep <= 0 {
+		cfg.MaxRetriesPerStep = DefaultMaxRetriesPerStep
+	}
 
 	return Runner{
 		engine:       engine,
@@ -175,7 +198,7 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 	var err error
 	for stepNo := 1; stepNo <= r.config.MaxStepsPerRun; stepNo++ {
 		var stepResult StepResult
-		stepResult, err = runStep(ctx, input, prompt)
+		stepResult, err = r.runStepWithRetry(ctx, input, prompt, runStep)
 		if err != nil {
 			result.Status = RunStatusFailed
 			return result, err
@@ -194,6 +217,75 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 
 	result.Status = RunStatusMaxSteps
 	return result, nil
+}
+
+// IsRetryable 判断某个错误是否允许 runtime 重新尝试当前 step。
+// 这里约定：只要错误链里存在实现 Retryable() bool 的值，并返回 true，就视为可重试。
+func IsRetryable(err error) bool {
+	type retryable interface {
+		Retryable() bool
+	}
+
+	var target retryable
+	if !errors.As(err, &target) {
+		return false
+	}
+
+	return target.Retryable()
+}
+
+// IsRefused 判断某个错误是否表示“请求被系统拒绝执行”。
+// 这类错误通常发生在真正副作用发生之前，例如越界路径或无效参数。
+func IsRefused(err error) bool {
+	type refused interface {
+		Refused() bool
+	}
+
+	var target refused
+	if !errors.As(err, &target) {
+		return false
+	}
+
+	return target.Refused()
+}
+
+// IsTemporary 判断某个错误是否表示“执行环境暂时失败”。
+// temporary 只描述错误性质，不等价于 runtime 现在就应该自动重试。
+func IsTemporary(err error) bool {
+	type temporary interface {
+		Temporary() bool
+	}
+
+	var target temporary
+	if !errors.As(err, &target) {
+		return false
+	}
+
+	return target.Temporary()
+}
+
+func (r Runner) runStepWithRetry(
+	ctx contextstore.Context,
+	input Input,
+	prompt string,
+	runStep func(ctx contextstore.Context, input Input, prompt string) (StepResult, error),
+) (StepResult, error) {
+	var lastErr error
+	// 这里沿用 Python 参考实现的语义：
+	// MaxRetriesPerStep 表示当前 step 的最大尝试次数，而不是“额外重试次数”。
+	for attempt := 1; attempt <= r.config.MaxRetriesPerStep; attempt++ {
+		stepResult, err := runStep(ctx, input, prompt)
+		if err == nil {
+			return stepResult, nil
+		}
+		if !IsRetryable(err) {
+			return StepResult{}, err
+		}
+
+		lastErr = err
+	}
+
+	return StepResult{}, lastErr
 }
 
 func (r Runner) runStep(
@@ -246,6 +338,14 @@ func (r Runner) advanceRun(
 
 		toolExecutions, err := r.executeToolCalls(stepResult.ToolCalls)
 		if err != nil {
+			var toolErr ToolExecutionError
+			if errors.As(err, &toolErr) {
+				stepResult.Status = StepStatusFailed
+				stepResult.ToolFailure = &toolErr
+				result.Steps = append(result.Steps, stepResult)
+				return result, false, err
+			}
+
 			return Result{}, false, err
 		}
 		stepResult.ToolExecutions = toolExecutions
@@ -270,7 +370,12 @@ func (r Runner) executeToolCalls(calls []ToolCall) ([]ToolExecution, error) {
 	for _, call := range calls {
 		execution, err := r.toolExecutor.Execute(call)
 		if err != nil {
-			return nil, fmt.Errorf("execute tool call %q: %w", call.Name, err)
+			// 当前阶段先把工具执行失败视为本次 run 的终止条件。
+			// 后续如果要把失败反馈给模型，再在这里调整为结构化 step 产物。
+			return nil, ToolExecutionError{
+				Call: call,
+				Err:  err,
+			}
 		}
 
 		toolExecutions = append(toolExecutions, execution)

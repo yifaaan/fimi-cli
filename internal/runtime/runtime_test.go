@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -53,6 +54,9 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	}
 	if len(step.ToolExecutions) != 0 {
 		t.Fatalf("len(Steps[0].ToolExecutions) = %d, want 0", len(step.ToolExecutions))
+	}
+	if step.ToolFailure != nil {
+		t.Fatalf("Steps[0].ToolFailure = %#v, want nil", step.ToolFailure)
 	}
 
 	records, err := ctx.ReadAll()
@@ -271,12 +275,16 @@ func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
 	if len(result.Steps[0].ToolExecutions) != 1 {
 		t.Fatalf("len(result.Steps[0].ToolExecutions) = %d, want %d", len(result.Steps[0].ToolExecutions), 1)
 	}
+	if result.Steps[0].ToolFailure != nil {
+		t.Fatalf("result.Steps[0].ToolFailure = %#v, want nil", result.Steps[0].ToolFailure)
+	}
 }
 
 func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
 	runner := New(staticEngine{}, Config{
 		ReplyHistoryTurnLimit: 1,
 		MaxStepsPerRun:        0,
+		MaxRetriesPerStep:     0,
 	})
 
 	if runner.config.ReplyHistoryTurnLimit != 1 {
@@ -284,6 +292,9 @@ func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
 	}
 	if runner.config.MaxStepsPerRun != DefaultMaxStepsPerRun {
 		t.Fatalf("runner.config.MaxStepsPerRun = %d, want %d", runner.config.MaxStepsPerRun, DefaultMaxStepsPerRun)
+	}
+	if runner.config.MaxRetriesPerStep != DefaultMaxRetriesPerStep {
+		t.Fatalf("runner.config.MaxRetriesPerStep = %d, want %d", runner.config.MaxRetriesPerStep, DefaultMaxRetriesPerStep)
 	}
 }
 
@@ -307,7 +318,7 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 	initial := Result{}
 	step := StepResult{
 		Status: StepStatusFinished,
-		Kind: StepKindFinished,
+		Kind:   StepKindFinished,
 		AppendedRecords: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("hello"),
 			contextstore.NewAssistantTextRecord("world"),
@@ -333,7 +344,7 @@ func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
 	}
 	step := StepResult{
 		Status: StepStatusIncomplete,
-		Kind: StepKindToolCalls,
+		Kind:   StepKindToolCalls,
 		ToolCalls: []ToolCall{
 			{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
 		},
@@ -361,6 +372,53 @@ func TestRunnerAdvanceRunContinuesOnToolCallStep(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Steps, []StepResult{expectedStep}) {
 		t.Fatalf("advanceRun().Steps = %#v, want %#v", got.Steps, []StepResult{expectedStep})
+	}
+}
+
+func TestRunnerAdvanceRunAppendsFailedToolStepBeforeReturningError(t *testing.T) {
+	wantErr := temporaryStepError{err: errors.New("bash timed out")}
+	runner := Runner{
+		toolExecutor: failingToolExecutor{err: wantErr},
+	}
+	step := StepResult{
+		Status: StepStatusIncomplete,
+		Kind:   StepKindToolCalls,
+		ToolCalls: []ToolCall{
+			{Name: "bash", Arguments: `{"command":"pwd"}`},
+		},
+	}
+
+	got, finished, err := runner.advanceRun(Result{}, step)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("advanceRun() error = %v, want wrapped %v", err, wantErr)
+	}
+	if finished {
+		t.Fatalf("advanceRun() finished = true, want false")
+	}
+	if len(got.Steps) != 1 {
+		t.Fatalf("len(got.Steps) = %d, want %d", len(got.Steps), 1)
+	}
+	gotStep := got.Steps[0]
+	if gotStep.Status != StepStatusFailed {
+		t.Fatalf("got.Steps[0].Status = %q, want %q", gotStep.Status, StepStatusFailed)
+	}
+	if gotStep.Kind != StepKindToolCalls {
+		t.Fatalf("got.Steps[0].Kind = %q, want %q", gotStep.Kind, StepKindToolCalls)
+	}
+	if !reflect.DeepEqual(gotStep.ToolCalls, step.ToolCalls) {
+		t.Fatalf("got.Steps[0].ToolCalls = %#v, want %#v", gotStep.ToolCalls, step.ToolCalls)
+	}
+	if len(gotStep.ToolExecutions) != 0 {
+		t.Fatalf("len(got.Steps[0].ToolExecutions) = %d, want %d", len(gotStep.ToolExecutions), 0)
+	}
+	if gotStep.ToolFailure == nil {
+		t.Fatalf("got.Steps[0].ToolFailure = nil, want non-nil")
+	}
+	if gotStep.ToolFailure.Call != (ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`}) {
+		t.Fatalf("got.Steps[0].ToolFailure.Call = %#v, want %#v", gotStep.ToolFailure.Call, ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`})
+	}
+	if !IsTemporary(gotStep.ToolFailure) {
+		t.Fatalf("IsTemporary(got.Steps[0].ToolFailure) = false, want true")
 	}
 }
 
@@ -430,6 +488,158 @@ func TestRunnerRunReturnsToolExecutorError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
 	}
+	var toolErr ToolExecutionError
+	if !errors.As(err, &toolErr) {
+		t.Fatalf("Run() error = %v, want ToolExecutionError", err)
+	}
+	if toolErr.Call != (ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`}) {
+		t.Fatalf("toolErr.Call = %#v, want %#v", toolErr.Call, ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`})
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want %d", len(result.Steps), 1)
+	}
+	if result.Steps[0].Status != StepStatusFailed {
+		t.Fatalf("result.Steps[0].Status = %q, want %q", result.Steps[0].Status, StepStatusFailed)
+	}
+	if result.Steps[0].ToolFailure == nil {
+		t.Fatalf("result.Steps[0].ToolFailure = nil, want non-nil")
+	}
+}
+
+func TestRunnerRunStopsImmediatelyOnTemporaryToolExecutionError(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := NewWithToolExecutor(staticEngine{}, failingToolExecutor{
+		err: temporaryStepError{err: errors.New("bash timed out")},
+	}, Config{
+		MaxStepsPerRun: 3,
+	})
+
+	stepCalls := 0
+	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+		stepCalls++
+		return StepResult{
+			Status: StepStatusIncomplete,
+			Kind:   StepKindToolCalls,
+			ToolCalls: []ToolCall{
+				{Name: "bash", Arguments: `{"command":"pwd"}`},
+			},
+		}, nil
+	}
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want non-nil")
+	}
+	if !IsTemporary(err) {
+		t.Fatalf("IsTemporary(error) = false, want true")
+	}
+	var toolErr ToolExecutionError
+	if !errors.As(err, &toolErr) {
+		t.Fatalf("Run() error = %v, want ToolExecutionError", err)
+	}
+	if toolErr.Call != (ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`}) {
+		t.Fatalf("toolErr.Call = %#v, want %#v", toolErr.Call, ToolCall{Name: "bash", Arguments: `{"command":"pwd"}`})
+	}
+	if stepCalls != 1 {
+		t.Fatalf("runStep calls = %d, want %d", stepCalls, 1)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want %d", len(result.Steps), 1)
+	}
+	step := result.Steps[0]
+	if step.Status != StepStatusFailed {
+		t.Fatalf("result.Steps[0].Status = %q, want %q", step.Status, StepStatusFailed)
+	}
+	if step.ToolFailure == nil {
+		t.Fatalf("result.Steps[0].ToolFailure = nil, want non-nil")
+	}
+	if !IsTemporary(step.ToolFailure) {
+		t.Fatalf("IsTemporary(result.Steps[0].ToolFailure) = false, want true")
+	}
+}
+
+func TestRunnerRunRetriesRetryableStepError(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{}, Config{
+		MaxRetriesPerStep: 3,
+	})
+
+	attempts := 0
+	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+		attempts++
+		if attempts < 3 {
+			return StepResult{}, retryableStepError{err: errors.New("temporary llm outage")}
+		}
+
+		return StepResult{
+			Status: StepStatusFinished,
+			Kind:   StepKindFinished,
+		}, nil
+	}
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("runStep attempts = %d, want %d", attempts, 3)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+}
+
+func TestRunnerRunStopsAtConfiguredRetryAttemptLimit(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	wantErr := retryableStepError{err: errors.New("temporary llm outage")}
+	runner := New(staticEngine{}, Config{
+		MaxRetriesPerStep: 2,
+	})
+
+	attempts := 0
+	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+		attempts++
+		return StepResult{}, wantErr
+	}
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if attempts != 2 {
+		t.Fatalf("runStep attempts = %d, want %d", attempts, 2)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+}
+
+func TestRunnerRunDoesNotRetryNonRetryableStepError(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	wantErr := errors.New("bad request")
+	runner := New(staticEngine{}, Config{
+		MaxRetriesPerStep: 3,
+	})
+
+	attempts := 0
+	runner.runStepFn = func(ctx contextstore.Context, input Input, prompt string) (StepResult, error) {
+		attempts++
+		return StepResult{}, wantErr
+	}
+
+	result, err := runner.Run(ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("runStep attempts = %d, want %d", attempts, 1)
+	}
 	if result.Status != RunStatusFailed {
 		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
 	}
@@ -450,10 +660,54 @@ func TestRunnerAdvanceRunRejectsUnknownStepKind(t *testing.T) {
 	runner := Runner{}
 	_, _, err := runner.advanceRun(Result{}, StepResult{
 		Status: StepStatusFinished,
-		Kind: StepKind("bad-kind"),
+		Kind:   StepKind("bad-kind"),
 	})
 	if !errors.Is(err, ErrUnknownStepKind) {
 		t.Fatalf("advanceRun() error = %v, want wrapped %v", err, ErrUnknownStepKind)
+	}
+}
+
+func TestIsRefusedReturnsTrueForRefusedError(t *testing.T) {
+	err := refusedStepError{err: errors.New("path escapes workspace")}
+
+	if !IsRefused(err) {
+		t.Fatalf("IsRefused(error) = false, want true")
+	}
+}
+
+func TestIsRefusedReturnsTrueForWrappedRefusedError(t *testing.T) {
+	err := fmt.Errorf("execute tool: %w", refusedStepError{err: errors.New("path escapes workspace")})
+
+	if !IsRefused(err) {
+		t.Fatalf("IsRefused(error) = false, want true")
+	}
+}
+
+func TestIsRefusedReturnsFalseForOrdinaryError(t *testing.T) {
+	if IsRefused(errors.New("ordinary failure")) {
+		t.Fatalf("IsRefused(error) = true, want false")
+	}
+}
+
+func TestIsTemporaryReturnsTrueForTemporaryError(t *testing.T) {
+	err := temporaryStepError{err: errors.New("bash timed out")}
+
+	if !IsTemporary(err) {
+		t.Fatalf("IsTemporary(error) = false, want true")
+	}
+}
+
+func TestIsTemporaryReturnsTrueForWrappedTemporaryError(t *testing.T) {
+	err := fmt.Errorf("execute tool: %w", temporaryStepError{err: errors.New("bash timed out")})
+
+	if !IsTemporary(err) {
+		t.Fatalf("IsTemporary(error) = false, want true")
+	}
+}
+
+func TestIsTemporaryReturnsFalseForOrdinaryError(t *testing.T) {
+	if IsTemporary(errors.New("ordinary failure")) {
+		t.Fatalf("IsTemporary(error) = true, want false")
 	}
 }
 
@@ -504,4 +758,52 @@ type failingToolExecutor struct {
 
 func (e failingToolExecutor) Execute(call ToolCall) (ToolExecution, error) {
 	return ToolExecution{}, e.err
+}
+
+type retryableStepError struct {
+	err error
+}
+
+func (e retryableStepError) Error() string {
+	return e.err.Error()
+}
+
+func (e retryableStepError) Unwrap() error {
+	return e.err
+}
+
+func (retryableStepError) Retryable() bool {
+	return true
+}
+
+type refusedStepError struct {
+	err error
+}
+
+func (e refusedStepError) Error() string {
+	return e.err.Error()
+}
+
+func (e refusedStepError) Unwrap() error {
+	return e.err
+}
+
+func (refusedStepError) Refused() bool {
+	return true
+}
+
+type temporaryStepError struct {
+	err error
+}
+
+func (e temporaryStepError) Error() string {
+	return e.err.Error()
+}
+
+func (e temporaryStepError) Unwrap() error {
+	return e.err
+}
+
+func (temporaryStepError) Temporary() bool {
+	return true
 }

@@ -54,6 +54,9 @@ func TestNewBuiltinExecutorReadFileRejectsPathOutsideWorkspace(t *testing.T) {
 	if !errors.Is(err, ErrToolPathOutsideWorkspace) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
 	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
 }
 
 func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
@@ -138,6 +141,12 @@ func TestNewBashHandlerWithTimeoutCancelsLongRunningCommand(t *testing.T) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("handler() error = %v, want tool-level timeout error instead of raw context error", err)
+	}
+	if runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = true, want false")
+	}
+	if !runtime.IsTemporary(err) {
+		t.Fatalf("runtime.IsTemporary(error) = false, want true")
 	}
 	if time.Since(start) >= 500*time.Millisecond {
 		t.Fatalf("handler() duration = %v, want less than %v", time.Since(start), 500*time.Millisecond)
@@ -241,6 +250,9 @@ func TestNewBuiltinExecutorGrepRejectsPathOutsideWorkspace(t *testing.T) {
 	if !errors.Is(err, ErrToolPathOutsideWorkspace) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
 	}
+	if runtime.IsTemporary(err) {
+		t.Fatalf("runtime.IsTemporary(error) = true, want false")
+	}
 }
 
 func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
@@ -257,6 +269,34 @@ func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
 	})
 	if !errors.Is(err, ErrToolPatternRequired) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPatternRequired)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
+}
+
+func TestNewBuiltinExecutorGrepRejectsInvalidRegexPattern(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(notes.txt) error = %v", err)
+	}
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolGrep,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolGrep,
+		Arguments: `{"pattern":"(","path":"notes.txt"}`,
+	})
+	if !errors.Is(err, ErrToolArgumentsInvalid) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolArgumentsInvalid)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
 	}
 }
 
@@ -399,6 +439,12 @@ func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetMissing(t *testing.T
 	})
 	if !errors.Is(err, ErrToolReplaceTargetMissing) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolReplaceTargetMissing)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
+	if runtime.IsTemporary(err) {
+		t.Fatalf("runtime.IsTemporary(error) = true, want false")
 	}
 }
 
