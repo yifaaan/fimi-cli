@@ -19,9 +19,6 @@ func buildLLMClientFromConfig(cfg config.Config) (llm.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if modelCfg.Provider == config.DefaultProviderName {
-		return llm.NewPlaceholderClient(), nil
-	}
 
 	providerName, providerCfg, err := resolveConfiguredProvider(cfg, modelCfg)
 	if err != nil {
@@ -38,6 +35,8 @@ func buildLLMClientForProvider(
 	modelCfg config.ModelConfig,
 ) (llm.Client, error) {
 	switch providerCfg.Type {
+	case config.ProviderTypePlaceholder:
+		return llm.NewPlaceholderClient(), nil
 	case config.ProviderTypeQWEN:
 		return buildQwenClient(providerName, providerCfg, modelCfg)
 	default:
@@ -63,6 +62,12 @@ func resolveConfiguredProvider(
 	cfg config.Config,
 	modelCfg config.ModelConfig,
 ) (string, config.ProviderConfig, error) {
+	if modelCfg.Provider == config.DefaultProviderName {
+		return config.DefaultProviderName, config.ProviderConfig{
+			Type: config.ProviderTypePlaceholder,
+		}, nil
+	}
+
 	providerCfg, ok := cfg.Providers[modelCfg.Provider]
 	if !ok {
 		return "", config.ProviderConfig{}, fmt.Errorf("provider %q not found in config.providers", modelCfg.Provider)

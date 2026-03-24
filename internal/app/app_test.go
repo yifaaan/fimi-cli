@@ -527,6 +527,29 @@ func TestBuildLLMClientForProviderReturnsErrorForUnsupportedType(t *testing.T) {
 	}
 }
 
+func TestBuildLLMClientForProviderUsesPlaceholderBuilder(t *testing.T) {
+	client, err := buildLLMClientForProvider(
+		config.DefaultProviderName,
+		config.ProviderConfig{Type: config.ProviderTypePlaceholder},
+		config.ModelConfig{Model: "unused"},
+	)
+	if err != nil {
+		t.Fatalf("buildLLMClientForProvider() error = %v", err)
+	}
+
+	reply, err := client.Reply(llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("client.Reply() error = %v", err)
+	}
+	if reply.Text != "assistant placeholder reply: hello" {
+		t.Fatalf("client.Reply().Text = %q, want %q", reply.Text, "assistant placeholder reply: hello")
+	}
+}
+
 func TestBuildLLMClientForProviderUsesQWENBuilder(t *testing.T) {
 	_, err := buildLLMClientForProvider(
 		"aliyun-prod",
