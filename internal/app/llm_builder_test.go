@@ -9,6 +9,174 @@ import (
 	"fimi-cli/internal/runtime"
 )
 
+func TestResolveConfiguredModel(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     config.Config
+		want    config.ModelConfig
+		wantErr string
+	}{
+		{
+			name: "configured model found",
+			cfg: config.Config{
+				DefaultModel: "qwen-workhorse",
+				Models: map[string]config.ModelConfig{
+					"qwen-workhorse": {
+						Provider: "aliyun-prod",
+						Model:    "qwen-plus",
+					},
+				},
+			},
+			want: config.ModelConfig{
+				Provider: "aliyun-prod",
+				Model:    "qwen-plus",
+			},
+		},
+		{
+			name: "empty model falls back to alias",
+			cfg: config.Config{
+				DefaultModel: "qwen-workhorse",
+				Models: map[string]config.ModelConfig{
+					"qwen-workhorse": {
+						Provider: "aliyun-prod",
+					},
+				},
+			},
+			want: config.ModelConfig{
+				Provider: "aliyun-prod",
+				Model:    "qwen-workhorse",
+			},
+		},
+		{
+			name: "missing default model",
+			cfg: config.Config{
+				DefaultModel: "missing",
+				Models: map[string]config.ModelConfig{
+					"other": {
+						Provider: config.ProviderTypePlaceholder,
+					},
+				},
+			},
+			wantErr: `default model "missing" not found in config.models`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveConfiguredModel(tt.cfg)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("resolveConfiguredModel() error = nil, want %q", tt.wantErr)
+				}
+				if err.Error() != tt.wantErr {
+					t.Fatalf("resolveConfiguredModel() error = %q, want %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveConfiguredModel() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveConfiguredModel() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveConfiguredProvider(t *testing.T) {
+	tests := []struct {
+		name             string
+		cfg              config.Config
+		modelCfg         config.ModelConfig
+		wantProviderName string
+		wantProviderCfg  config.ProviderConfig
+		wantErr          string
+	}{
+		{
+			name: "placeholder provider is synthesized",
+			cfg:  config.Config{},
+			modelCfg: config.ModelConfig{
+				Provider: config.DefaultProviderName,
+				Model:    "unused",
+			},
+			wantProviderName: config.DefaultProviderName,
+			wantProviderCfg: config.ProviderConfig{
+				Type: config.ProviderTypePlaceholder,
+			},
+		},
+		{
+			name: "external provider resolved",
+			cfg: config.Config{
+				Providers: map[string]config.ProviderConfig{
+					"aliyun-prod": {
+						Type:    config.ProviderTypeQWEN,
+						BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+						APIKey:  "sk-test-key",
+					},
+				},
+			},
+			modelCfg: config.ModelConfig{
+				Provider: "aliyun-prod",
+				Model:    "qwen-plus",
+			},
+			wantProviderName: "aliyun-prod",
+			wantProviderCfg: config.ProviderConfig{
+				Type:    config.ProviderTypeQWEN,
+				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+				APIKey:  "sk-test-key",
+			},
+		},
+		{
+			name: "missing provider entry",
+			cfg:  config.Config{},
+			modelCfg: config.ModelConfig{
+				Provider: "missing-provider",
+				Model:    "qwen-plus",
+			},
+			wantErr: `provider "missing-provider" not found in config.providers`,
+		},
+		{
+			name: "provider type required",
+			cfg: config.Config{
+				Providers: map[string]config.ProviderConfig{
+					"aliyun-prod": {
+						BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+					},
+				},
+			},
+			modelCfg: config.ModelConfig{
+				Provider: "aliyun-prod",
+				Model:    "qwen-plus",
+			},
+			wantErr: "providers.aliyun-prod.type is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, gotCfg, err := resolveConfiguredProvider(tt.cfg, tt.modelCfg)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("resolveConfiguredProvider() error = nil, want %q", tt.wantErr)
+				}
+				if err.Error() != tt.wantErr {
+					t.Fatalf("resolveConfiguredProvider() error = %q, want %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveConfiguredProvider() error = %v", err)
+			}
+			if gotName != tt.wantProviderName {
+				t.Fatalf("resolveConfiguredProvider() providerName = %q, want %q", gotName, tt.wantProviderName)
+			}
+			if gotCfg != tt.wantProviderCfg {
+				t.Fatalf("resolveConfiguredProvider() providerCfg = %#v, want %#v", gotCfg, tt.wantProviderCfg)
+			}
+		})
+	}
+}
+
 func TestBuildEngineUsesPlaceholderByDefault(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: config.DefaultModelName,
