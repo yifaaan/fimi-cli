@@ -107,3 +107,119 @@ func TestNewBuiltinExecutorBashReturnsErrorOnNonZeroExit(t *testing.T) {
 		t.Fatalf("Execute() error = %q, want contains %q", err.Error(), "run bash command")
 	}
 }
+
+func TestNewBuiltinExecutorGlobMatchesWorkspacePaths(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, "internal", "tools"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "internal", "tools", "builtin.go"), []byte("package tools\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(builtin.go) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "internal", "tools", "executor.go"), []byte("package tools\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(executor.go) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) error = %v", err)
+	}
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolGlob,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	got, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolGlob,
+		Arguments: `{"pattern":"internal/**/*.go"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Output != "internal/tools/builtin.go\ninternal/tools/executor.go" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "internal/tools/builtin.go\ninternal/tools/executor.go")
+	}
+}
+
+func TestNewBuiltinExecutorGlobRejectsPatternOutsideWorkspace(t *testing.T) {
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolGlob,
+			Kind: KindFile,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolGlob,
+		Arguments: `{"pattern":"../*.go"}`,
+	})
+	if !errors.Is(err, ErrToolPatternOutsideWorkspace) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPatternOutsideWorkspace)
+	}
+}
+
+func TestNewBuiltinExecutorGrepSearchesDirectoryRecursively(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, "internal", "tools"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "internal", "tools", "builtin.go"), []byte("type ToolExecution struct{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(builtin.go) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "internal", "tools", "executor.go"), []byte("type Executor struct{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(executor.go) error = %v", err)
+	}
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolGrep,
+			Kind: KindFile,
+		},
+	}, workDir)
+
+	got, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolGrep,
+		Arguments: `{"pattern":"ToolExecution","path":"internal"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Output != "internal/tools/builtin.go:1:type ToolExecution struct{}" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "internal/tools/builtin.go:1:type ToolExecution struct{}")
+	}
+}
+
+func TestNewBuiltinExecutorGrepRejectsPathOutsideWorkspace(t *testing.T) {
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolGrep,
+			Kind: KindFile,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolGrep,
+		Arguments: `{"pattern":"ToolExecution","path":"../secret"}`,
+	})
+	if !errors.Is(err, ErrToolPathOutsideWorkspace) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
+	}
+}
+
+func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolGrep,
+			Kind: KindFile,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(runtime.ToolCall{
+		Name:      ToolGrep,
+		Arguments: `{"pattern":"   "}`,
+	})
+	if !errors.Is(err, ErrToolPatternRequired) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPatternRequired)
+	}
+}

@@ -185,8 +185,8 @@ Goal: reach the first meaningfully autonomous version.
 
 - [x] `bash` tool handler
 - [x] `read_file` tool handler
-- [ ] `internal/tools/file/glob`
-- [ ] `internal/tools/file/grep`
+- [x] `glob` tool handler
+- [x] `grep` tool handler
 - [ ] `internal/tools/file/write`
 - [ ] `internal/tools/file/replace`
 

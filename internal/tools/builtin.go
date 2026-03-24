@@ -1,12 +1,17 @@
 package tools
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"fimi-cli/internal/runtime"
@@ -15,10 +20,21 @@ import (
 var ErrToolArgumentsInvalid = errors.New("tool arguments are invalid")
 var ErrToolCommandRequired = errors.New("tool command is required")
 var ErrToolPathRequired = errors.New("tool path is required")
+var ErrToolPatternRequired = errors.New("tool pattern is required")
 var ErrToolPathOutsideWorkspace = errors.New("tool path escapes workspace")
+var ErrToolPatternOutsideWorkspace = errors.New("tool pattern escapes workspace")
 
 type bashArguments struct {
 	Command string `json:"command"`
+}
+
+type globArguments struct {
+	Pattern string `json:"pattern"`
+}
+
+type grepArguments struct {
+	Pattern string `json:"pattern"`
+	Path    string `json:"path"`
 }
 
 type readFileArguments struct {
@@ -34,6 +50,8 @@ func NewBuiltinExecutor(definitions []Definition, workDir string) Executor {
 func builtinHandlers(workDir string) map[string]HandlerFunc {
 	return map[string]HandlerFunc{
 		ToolBash:     newBashHandler(workDir),
+		ToolGlob:     newGlobHandler(workDir),
+		ToolGrep:     newGrepHandler(workDir),
 		ToolReadFile: newReadFileHandler(workDir),
 	}
 }
@@ -86,6 +104,68 @@ func newReadFileHandler(workDir string) HandlerFunc {
 	}
 }
 
+func newGlobHandler(workDir string) HandlerFunc {
+	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeGlobArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		rootAbs, err := resolveWorkspaceRoot(workDir)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		pattern, err := normalizeWorkspacePattern(args.Pattern)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		matches, err := findGlobMatches(rootAbs, pattern)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: strings.Join(matches, "\n"),
+		}, nil
+	}
+}
+
+func newGrepHandler(workDir string) HandlerFunc {
+	return func(call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeGrepArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		rootAbs, err := resolveWorkspaceRoot(workDir)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		targetAbs, err := resolveWorkspacePath(rootAbs, args.Path)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		expression, err := regexp.Compile(args.Pattern)
+		if err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("%w: compile grep pattern: %v", ErrToolArgumentsInvalid, err)
+		}
+
+		matches, err := findGrepMatches(rootAbs, targetAbs, expression)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: strings.Join(matches, "\n"),
+		}, nil
+	}
+}
+
 func decodeBashArguments(raw string) (bashArguments, error) {
 	var args bashArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
@@ -93,6 +173,33 @@ func decodeBashArguments(raw string) (bashArguments, error) {
 	}
 	if strings.TrimSpace(args.Command) == "" {
 		return bashArguments{}, ErrToolCommandRequired
+	}
+
+	return args, nil
+}
+
+func decodeGlobArguments(raw string) (globArguments, error) {
+	var args globArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return globArguments{}, fmt.Errorf("%w: decode glob arguments: %v", ErrToolArgumentsInvalid, err)
+	}
+	if strings.TrimSpace(args.Pattern) == "" {
+		return globArguments{}, ErrToolPatternRequired
+	}
+
+	return args, nil
+}
+
+func decodeGrepArguments(raw string) (grepArguments, error) {
+	var args grepArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return grepArguments{}, fmt.Errorf("%w: decode grep arguments: %v", ErrToolArgumentsInvalid, err)
+	}
+	if strings.TrimSpace(args.Pattern) == "" {
+		return grepArguments{}, ErrToolPatternRequired
+	}
+	if strings.TrimSpace(args.Path) == "" {
+		args.Path = "."
 	}
 
 	return args, nil
@@ -110,7 +217,7 @@ func decodeReadFileArguments(raw string) (readFileArguments, error) {
 	return args, nil
 }
 
-func resolveWorkspacePath(workDir string, target string) (string, error) {
+func resolveWorkspaceRoot(workDir string) (string, error) {
 	root := workDir
 	if strings.TrimSpace(root) == "" {
 		root = "."
@@ -119,6 +226,15 @@ func resolveWorkspacePath(workDir string, target string) (string, error) {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace root: %w", err)
+	}
+
+	return rootAbs, nil
+}
+
+func resolveWorkspacePath(workDir string, target string) (string, error) {
+	rootAbs, err := resolveWorkspaceRoot(workDir)
+	if err != nil {
+		return "", err
 	}
 
 	targetPath := target
@@ -140,4 +256,169 @@ func resolveWorkspacePath(workDir string, target string) (string, error) {
 	}
 
 	return targetAbs, nil
+}
+
+func normalizeWorkspacePattern(raw string) (string, error) {
+	pattern := filepath.ToSlash(filepath.Clean(strings.TrimSpace(raw)))
+	if pattern == "." {
+		return pattern, nil
+	}
+	if path.IsAbs(pattern) || pattern == ".." || strings.HasPrefix(pattern, "../") {
+		return "", fmt.Errorf("%w: %s", ErrToolPatternOutsideWorkspace, raw)
+	}
+
+	return pattern, nil
+}
+
+func findGlobMatches(rootAbs string, pattern string) ([]string, error) {
+	matches := make([]string, 0)
+	err := filepath.WalkDir(rootAbs, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(rootAbs, current)
+		if err != nil {
+			return fmt.Errorf("relativize path %q: %w", current, err)
+		}
+		if rel == "." {
+			return nil
+		}
+
+		rel = filepath.ToSlash(rel)
+		ok, err := matchWorkspacePattern(pattern, rel)
+		if err != nil {
+			return fmt.Errorf("%w: match glob pattern %q: %v", ErrToolArgumentsInvalid, pattern, err)
+		}
+		if ok {
+			matches = append(matches, rel)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk workspace for glob: %w", err)
+	}
+
+	return matches, nil
+}
+
+func matchWorkspacePattern(pattern string, target string) (bool, error) {
+	if pattern == "." {
+		return target == ".", nil
+	}
+
+	patternSegments := splitSlashPath(pattern)
+	targetSegments := splitSlashPath(target)
+
+	return matchWorkspacePatternSegments(patternSegments, targetSegments)
+}
+
+func matchWorkspacePatternSegments(pattern []string, target []string) (bool, error) {
+	if len(pattern) == 0 {
+		return len(target) == 0, nil
+	}
+	if pattern[0] == "**" {
+		for i := 0; i <= len(target); i++ {
+			ok, err := matchWorkspacePatternSegments(pattern[1:], target[i:])
+			if err != nil {
+				return false, err
+			}
+			if ok {
+				return true, nil
+			}
+		}
+
+		return false, nil
+	}
+	if len(target) == 0 {
+		return false, nil
+	}
+
+	ok, err := path.Match(pattern[0], target[0])
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+
+	return matchWorkspacePatternSegments(pattern[1:], target[1:])
+}
+
+func splitSlashPath(raw string) []string {
+	if raw == "" || raw == "." {
+		return nil
+	}
+
+	return strings.Split(raw, "/")
+}
+
+func findGrepMatches(rootAbs string, targetAbs string, expression *regexp.Regexp) ([]string, error) {
+	info, err := os.Stat(targetAbs)
+	if err != nil {
+		return nil, fmt.Errorf("stat grep path %q: %w", targetAbs, err)
+	}
+
+	if !info.IsDir() {
+		return grepFile(rootAbs, targetAbs, expression)
+	}
+
+	matches := make([]string, 0)
+	err = filepath.WalkDir(targetAbs, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+
+		fileMatches, err := grepFile(rootAbs, current, expression)
+		if err != nil {
+			return err
+		}
+		matches = append(matches, fileMatches...)
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk workspace for grep: %w", err)
+	}
+
+	return matches, nil
+}
+
+func grepFile(rootAbs string, filePath string, expression *regexp.Regexp) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open grep file %q: %w", filePath, err)
+	}
+	defer file.Close()
+
+	rel, err := filepath.Rel(rootAbs, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("relativize grep file %q: %w", filePath, err)
+	}
+	rel = filepath.ToSlash(rel)
+
+	matches := make([]string, 0)
+	scanner := bufio.NewScanner(file)
+	// 允许较长源码行，避免默认 64K 上限过早打断搜索。
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := scanner.Text()
+		if !expression.MatchString(line) {
+			continue
+		}
+
+		matches = append(matches, rel+":"+strconv.Itoa(lineNumber)+":"+line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan grep file %q: %w", filePath, err)
+	}
+
+	return matches, nil
 }
