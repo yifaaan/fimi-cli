@@ -11,6 +11,9 @@ import (
 const DefaultReplyHistoryTurnLimit = 4
 const DefaultMaxStepsPerRun = 100
 
+var ErrToolCallsNotSupported = errors.New("runtime tool calls are not supported yet")
+var ErrUnknownStepKind = errors.New("unknown runtime step kind")
+
 // Config 定义 runtime 自己关心的最小运行参数。
 type Config struct {
 	ReplyHistoryTurnLimit int
@@ -119,10 +122,11 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 			return Result{}, err
 		}
 
-		result.Steps = append(result.Steps, stepResult)
-		result.AppendedRecords = append(result.AppendedRecords, stepResult.AppendedRecords...)
-
-		if stepResult.Kind == StepKindFinished {
+		result, finished, err := r.advanceRun(result, stepResult)
+		if err != nil {
+			return Result{}, err
+		}
+		if finished {
 			return result, nil
 		}
 	}
@@ -164,6 +168,27 @@ func (r Runner) runStep(
 		Kind:            StepKindFinished,
 		AppendedRecords: records,
 	}, nil
+}
+
+func (r Runner) advanceRun(
+	result Result,
+	stepResult StepResult,
+) (Result, bool, error) {
+	switch stepResult.Kind {
+	case StepKindFinished:
+		result.Steps = append(result.Steps, stepResult)
+		result.AppendedRecords = append(result.AppendedRecords, stepResult.AppendedRecords...)
+
+		return result, true, nil
+	case StepKindToolCalls:
+		if len(stepResult.ToolCalls) == 0 {
+			return Result{}, false, fmt.Errorf("step kind %q requires at least one tool call", stepResult.Kind)
+		}
+
+		return Result{}, false, fmt.Errorf("%w", ErrToolCallsNotSupported)
+	default:
+		return Result{}, false, fmt.Errorf("%w: %q", ErrUnknownStepKind, stepResult.Kind)
+	}
 }
 
 type missingEngine struct{}

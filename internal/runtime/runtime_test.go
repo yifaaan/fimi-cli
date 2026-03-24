@@ -244,6 +244,58 @@ func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
 	}
 }
 
+func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
+	runner := Runner{}
+	initial := Result{}
+	step := StepResult{
+		Kind: StepKindFinished,
+		AppendedRecords: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("hello"),
+			contextstore.NewAssistantTextRecord("world"),
+		},
+	}
+
+	got, finished, err := runner.advanceRun(initial, step)
+	if err != nil {
+		t.Fatalf("advanceRun() error = %v", err)
+	}
+	if !finished {
+		t.Fatalf("advanceRun() finished = false, want true")
+	}
+	if !reflect.DeepEqual(got.Steps, []StepResult{step}) {
+		t.Fatalf("advanceRun().Steps = %#v, want %#v", got.Steps, []StepResult{step})
+	}
+	if !reflect.DeepEqual(got.AppendedRecords, step.AppendedRecords) {
+		t.Fatalf("advanceRun().AppendedRecords = %#v, want %#v", got.AppendedRecords, step.AppendedRecords)
+	}
+}
+
+func TestRunnerAdvanceRunReturnsUnsupportedToolCallError(t *testing.T) {
+	runner := Runner{}
+	_, finished, err := runner.advanceRun(Result{}, StepResult{
+		Kind: StepKindToolCalls,
+		ToolCalls: []ToolCall{
+			{Name: "ReadFile", Arguments: `{"path":"main.go"}`},
+		},
+	})
+	if !errors.Is(err, ErrToolCallsNotSupported) {
+		t.Fatalf("advanceRun() error = %v, want wrapped %v", err, ErrToolCallsNotSupported)
+	}
+	if finished {
+		t.Fatalf("advanceRun() finished = true, want false")
+	}
+}
+
+func TestRunnerAdvanceRunRejectsUnknownStepKind(t *testing.T) {
+	runner := Runner{}
+	_, _, err := runner.advanceRun(Result{}, StepResult{
+		Kind: StepKind("bad-kind"),
+	})
+	if !errors.Is(err, ErrUnknownStepKind) {
+		t.Fatalf("advanceRun() error = %v, want wrapped %v", err, ErrUnknownStepKind)
+	}
+}
+
 type staticEngine struct {
 	reply string
 	err   error
