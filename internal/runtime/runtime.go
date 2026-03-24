@@ -9,16 +9,19 @@ import (
 )
 
 const DefaultReplyHistoryTurnLimit = 4
+const DefaultMaxStepsPerRun = 100
 
 // Config 定义 runtime 自己关心的最小运行参数。
 type Config struct {
 	ReplyHistoryTurnLimit int
+	MaxStepsPerRun        int
 }
 
 // DefaultConfig 返回 runtime 的默认参数。
 func DefaultConfig() Config {
 	return Config{
 		ReplyHistoryTurnLimit: DefaultReplyHistoryTurnLimit,
+		MaxStepsPerRun:        DefaultMaxStepsPerRun,
 	}
 }
 
@@ -86,7 +89,10 @@ func New(engine Engine, cfg Config) Runner {
 		engine = missingEngine{}
 	}
 	if cfg.ReplyHistoryTurnLimit <= 0 {
-		cfg = DefaultConfig()
+		cfg.ReplyHistoryTurnLimit = DefaultReplyHistoryTurnLimit
+	}
+	if cfg.MaxStepsPerRun <= 0 {
+		cfg.MaxStepsPerRun = DefaultMaxStepsPerRun
 	}
 
 	return Runner{
@@ -103,9 +109,35 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 		return Result{}, nil
 	}
 
+	result := Result{
+		Steps:           make([]StepResult, 0, 1),
+		AppendedRecords: make([]contextstore.TextRecord, 0, 2),
+	}
+	for stepNo := 1; stepNo <= r.config.MaxStepsPerRun; stepNo++ {
+		stepResult, err := r.runStep(ctx, input, prompt)
+		if err != nil {
+			return Result{}, err
+		}
+
+		result.Steps = append(result.Steps, stepResult)
+		result.AppendedRecords = append(result.AppendedRecords, stepResult.AppendedRecords...)
+
+		if stepResult.Kind == StepKindFinished {
+			return result, nil
+		}
+	}
+
+	return Result{}, fmt.Errorf("runtime exited without a finished step after %d steps", r.config.MaxStepsPerRun)
+}
+
+func (r Runner) runStep(
+	ctx contextstore.Context,
+	input Input,
+	prompt string,
+) (StepResult, error) {
 	history, err := ctx.ReadRecentTurns(r.config.ReplyHistoryTurnLimit)
 	if err != nil {
-		return Result{}, fmt.Errorf("read runtime history: %w", err)
+		return StepResult{}, fmt.Errorf("read runtime history: %w", err)
 	}
 
 	assistantReply, err := r.engine.Reply(ReplyInput{
@@ -115,27 +147,21 @@ func (r Runner) Run(ctx contextstore.Context, input Input) (Result, error) {
 		History:      history,
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("build assistant reply: %w", err)
+		return StepResult{}, fmt.Errorf("build assistant reply: %w", err)
 	}
 
 	records := []contextstore.TextRecord{
 		contextstore.NewUserTextRecord(prompt),
 		contextstore.NewAssistantTextRecord(assistantReply),
 	}
-
 	for _, record := range records {
 		if err := ctx.Append(record); err != nil {
-			return Result{}, fmt.Errorf("append runtime record: %w", err)
+			return StepResult{}, fmt.Errorf("append runtime record: %w", err)
 		}
 	}
 
-	return Result{
-		Steps: []StepResult{
-			{
-				Kind:            StepKindFinished,
-				AppendedRecords: records,
-			},
-		},
+	return StepResult{
+		Kind:            StepKindFinished,
 		AppendedRecords: records,
 	}, nil
 }

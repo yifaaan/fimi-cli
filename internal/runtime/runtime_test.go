@@ -230,6 +230,20 @@ func TestRunnerRunUsesConfiguredTurnLimit(t *testing.T) {
 	}
 }
 
+func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
+	runner := New(staticEngine{}, Config{
+		ReplyHistoryTurnLimit: 1,
+		MaxStepsPerRun:        0,
+	})
+
+	if runner.config.ReplyHistoryTurnLimit != 1 {
+		t.Fatalf("runner.config.ReplyHistoryTurnLimit = %d, want %d", runner.config.ReplyHistoryTurnLimit, 1)
+	}
+	if runner.config.MaxStepsPerRun != DefaultMaxStepsPerRun {
+		t.Fatalf("runner.config.MaxStepsPerRun = %d, want %d", runner.config.MaxStepsPerRun, DefaultMaxStepsPerRun)
+	}
+}
+
 type staticEngine struct {
 	reply string
 	err   error

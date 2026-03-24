@@ -242,6 +242,7 @@ func buildLLMConfig(cfg config.Config) llm.Config {
 func buildRuntimeConfig(cfg config.Config) runtime.Config {
 	return runtime.Config{
 		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
+		MaxStepsPerRun:        cfg.LoopControl.MaxStepsPerRun,
 	}
 }
 
