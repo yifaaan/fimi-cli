@@ -83,9 +83,10 @@ type ToolCall struct {
 }
 
 // ToolExecution 表示 runtime 已经把某个工具调用交给执行器消费。
-// 当前阶段只保留原始调用，真实输出等后续工具协议稳定后再补。
+// 当前先保留最小文本输出，后续再补更完整的 tool result 协议。
 type ToolExecution struct {
 	Call ToolCall
+	Output string
 }
 
 // ToolExecutor 定义 runtime 消费工具调用的最小边界。

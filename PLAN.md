@@ -183,8 +183,8 @@ Classification:
 
 Goal: reach the first meaningfully autonomous version.
 
-- [ ] `internal/tools/bash`
-- [ ] `internal/tools/file/read`
+- [x] `bash` tool handler
+- [x] `read_file` tool handler
 - [ ] `internal/tools/file/glob`
 - [ ] `internal/tools/file/grep`
 - [ ] `internal/tools/file/write`

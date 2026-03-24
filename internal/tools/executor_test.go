@@ -55,6 +55,7 @@ func TestExecutorExecuteUsesRegisteredHandler(t *testing.T) {
 					Name:      call.Name,
 					Arguments: "handled",
 				},
+				Output: definition.Description,
 			}, nil
 		},
 	})
@@ -75,6 +76,9 @@ func TestExecutorExecuteUsesRegisteredHandler(t *testing.T) {
 	}
 	if got.Call.Arguments != "handled" {
 		t.Fatalf("Execute().Call.Arguments = %q, want %q", got.Call.Arguments, "handled")
+	}
+	if got.Output != "Run a shell command inside the workspace." {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "Run a shell command inside the workspace.")
 	}
 }
 

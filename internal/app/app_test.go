@@ -1183,7 +1183,7 @@ func TestDependenciesBuildRunnerForAgentRunsWithResolvedAgentTools(t *testing.T)
 				Kind: tools.KindFile,
 			},
 		},
-	})
+	}, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildRunnerForAgent() error = %v", err)
 	}
