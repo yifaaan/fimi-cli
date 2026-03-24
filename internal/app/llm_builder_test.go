@@ -1,7 +1,10 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"fimi-cli/internal/config"
@@ -340,6 +343,74 @@ func TestBuildLLMClientForProviderUsesQWENBuilder(t *testing.T) {
 	want := "qwen api_key is required; set providers.aliyun-prod.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)"
 	if err.Error() != want {
 		t.Fatalf("buildLLMClientForProvider() error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestBuildQwenClientIncludesProviderNameInAPIKeyError(t *testing.T) {
+	_, err := buildQwenClient(
+		"aliyun-prod",
+		config.ProviderConfig{
+			Type:    config.ProviderTypeQWEN,
+			BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		},
+		config.ModelConfig{
+			Model: "qwen-plus",
+		},
+	)
+	if err == nil {
+		t.Fatalf("buildQwenClient() error = nil, want non-nil")
+	}
+	want := "qwen api_key is required; set providers.aliyun-prod.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)"
+	if err.Error() != want {
+		t.Fatalf("buildQwenClient() error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestBuildQwenClientPassesConfiguredModel(t *testing.T) {
+	var receivedModel string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := make(map[string]any)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		model, ok := body["model"].(string)
+		if !ok {
+			t.Fatalf("request model type = %T, want string", body["model"])
+		}
+		receivedModel = model
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client, err := buildQwenClient(
+		"aliyun-prod",
+		config.ProviderConfig{
+			Type:    config.ProviderTypeQWEN,
+			APIKey:  "sk-test-key",
+			BaseURL: server.URL,
+		},
+		config.ModelConfig{
+			Model: "qwen-plus",
+		},
+	)
+	if err != nil {
+		t.Fatalf("buildQwenClient() error = %v", err)
+	}
+
+	_, err = client.Reply(llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("client.Reply() error = %v", err)
+	}
+
+	if receivedModel != "qwen-plus" {
+		t.Fatalf("request model = %q, want %q", receivedModel, "qwen-plus")
 	}
 }
 
