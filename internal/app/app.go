@@ -403,16 +403,26 @@ func printHelp() {
 // helpText 返回当前 CLI 入口支持的最小帮助文本。
 func helpText() string {
 	lines := make([]string, 0, 16)
-	lines = append(lines, helpSectionLines("Usage", helpUsageLines())...)
-	lines = append(lines, "")
-	lines = append(lines, helpSectionLines("Flags", helpFlagLines())...)
-	lines = append(lines, "")
-	lines = append(lines, helpSectionLines("Prompt Rules", helpPromptRuleLines())...)
-	lines = append(lines, "")
-	lines = append(lines, helpSectionLines("Examples", helpExampleLines())...)
-	lines = append(lines, "")
+	for _, section := range helpSections() {
+		lines = append(lines, helpSectionLines(section.title, section.lines)...)
+		lines = append(lines, "")
+	}
 
 	return strings.Join(lines, "\n")
+}
+
+type helpSection struct {
+	title string
+	lines []string
+}
+
+func helpSections() []helpSection {
+	return []helpSection{
+		{title: "Usage", lines: helpUsageLines()},
+		{title: "Flags", lines: helpFlagLines()},
+		{title: "Prompt Rules", lines: helpPromptRuleLines()},
+		{title: "Examples", lines: helpExampleLines()},
+	}
 }
 
 func helpSectionLines(title string, lines []string) []string {
