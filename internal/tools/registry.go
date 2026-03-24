@@ -26,6 +26,7 @@ const (
 	ToolGrep        = "grep"
 	ToolWriteFile   = "write_file"
 	ToolReplaceFile = "replace_file"
+	ToolPatchFile   = "patch_file"
 )
 
 // Definition 表示 runtime 未来会消费的单个工具声明。
@@ -88,6 +89,11 @@ func BuiltinRegistry() Registry {
 			Name:        ToolReplaceFile,
 			Kind:        KindFile,
 			Description: "Replace text in an existing workspace file.",
+		},
+		Definition{
+			Name:        ToolPatchFile,
+			Kind:        KindFile,
+			Description: "Apply a unified diff patch to an existing workspace file.",
 		},
 	)
 	if err != nil {

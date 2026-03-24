@@ -32,6 +32,8 @@ var ErrToolReplaceTargetMissing = errors.New("tool replace target not found")
 var ErrToolReplaceTargetNotUnique = errors.New("tool replace target is not unique")
 var ErrToolPathOutsideWorkspace = errors.New("tool path escapes workspace")
 var ErrToolPatternOutsideWorkspace = errors.New("tool pattern escapes workspace")
+var ErrToolPatchDiffRequired = errors.New("tool patch diff is required")
+var ErrToolPatchFailed = errors.New("failed to apply patch")
 
 type bashArguments struct {
 	Command string `json:"command"`
@@ -61,6 +63,11 @@ type replaceFileArguments struct {
 	New  string `json:"new"`
 }
 
+type patchFileArguments struct {
+	Path string `json:"path"`
+	Diff string `json:"diff"`
+}
+
 // NewBuiltinExecutor 返回带内建 handler 的最小工具执行器。
 // 当前先接通最小可用的一组本地工具能力。
 // shaper 用于对工具输出进行塑形，防止超大输出消耗模型上下文。
@@ -81,6 +88,7 @@ func builtinHandlers(workDir string, shaper OutputShaper) map[string]HandlerFunc
 		ToolReadFile:    newReadFileHandler(workDir, shaper),
 		ToolWriteFile:   newWriteFileHandler(workDir),
 		ToolReplaceFile: newReplaceFileHandler(workDir),
+		ToolPatchFile:   newPatchFileHandler(workDir),
 	}
 }
 
@@ -355,6 +363,61 @@ func newReplaceFileHandler(workDir string) HandlerFunc {
 	}
 }
 
+func newPatchFileHandler(workDir string) HandlerFunc {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodePatchFileArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		rootAbs, err := resolveWorkspaceRoot(workDir)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		targetAbs, err := resolveWorkspacePath(rootAbs, args.Path)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		targetRel, err := relativeWorkspacePath(rootAbs, targetAbs)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		// 检查文件存在
+		info, err := os.Stat(targetAbs)
+		if err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("stat file %q for patch: %w", targetAbs, err)
+		}
+
+		// 读取原始内容
+		originalData, err := os.ReadFile(targetAbs)
+		if err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("read file %q for patch: %w", targetAbs, err)
+		}
+
+		// 解析并应用 patch
+		patchedContent, hunksApplied, err := applyUnifiedDiff(string(originalData), args.Diff)
+		if err != nil {
+			return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %v", ErrToolPatchFailed, err))
+		}
+
+		// 检查是否有实际变化
+		if patchedContent == string(originalData) {
+			return runtime.ToolExecution{}, markRefused(errors.New("no changes were made by the patch"))
+		}
+
+		// 写入修改后的内容
+		if err := os.WriteFile(targetAbs, []byte(patchedContent), info.Mode().Perm()); err != nil {
+			return runtime.ToolExecution{}, fmt.Errorf("write patched file %q: %w", targetAbs, err)
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: fmt.Sprintf("applied %d hunk(s) to %s", hunksApplied, targetRel),
+		}, nil
+	}
+}
+
 func decodeBashArguments(raw string) (bashArguments, error) {
 	var args bashArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
@@ -428,6 +491,21 @@ func decodeReplaceFileArguments(raw string) (replaceFileArguments, error) {
 	}
 	if args.Old == "" {
 		return replaceFileArguments{}, markRefused(ErrToolReplaceOldRequired)
+	}
+
+	return args, nil
+}
+
+func decodePatchFileArguments(raw string) (patchFileArguments, error) {
+	var args patchFileArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return patchFileArguments{}, markRefused(fmt.Errorf("%w: decode patch_file arguments: %v", ErrToolArgumentsInvalid, err))
+	}
+	if strings.TrimSpace(args.Path) == "" {
+		return patchFileArguments{}, markRefused(ErrToolPathRequired)
+	}
+	if strings.TrimSpace(args.Diff) == "" {
+		return patchFileArguments{}, markRefused(ErrToolPatchDiffRequired)
 	}
 
 	return args, nil
@@ -633,6 +711,192 @@ func findGrepMatches(rootAbs string, targetAbs string, expression *regexp.Regexp
 	}
 
 	return matches, nil
+}
+
+// applyUnifiedDiff 将 unified diff 应用到原始内容上。
+// 返回修改后的内容、应用的 hunk 数量、以及可能的错误。
+func applyUnifiedDiff(original string, diff string) (string, int, error) {
+	// 解析 diff 为 hunk 列表
+	hunks, err := parseUnifiedDiff(diff)
+	if err != nil {
+		return "", 0, err
+	}
+
+	if len(hunks) == 0 {
+		return "", 0, errors.New("no valid hunks found in diff")
+	}
+
+	// 将原始内容按行分割（保留换行符信息）
+	lines := splitLinesKeepEnds(original)
+
+	// 从后向前应用 hunk，避免行号偏移问题
+	for i := len(hunks) - 1; i >= 0; i-- {
+		hunk := hunks[i]
+		lines, err = applyHunk(lines, hunk)
+		if err != nil {
+			return "", 0, fmt.Errorf("apply hunk %d: %w", i+1, err)
+		}
+	}
+
+	result := strings.Join(lines, "")
+	return result, len(hunks), nil
+}
+
+// unifiedHunk 表示一个 unified diff hunk
+type unifiedHunk struct {
+	oldStart int      // 旧文件起始行号（1-based）
+	oldCount int      // 旧文件行数
+	newStart int      // 新文件起始行号（1-based）
+	newCount int      // 新文件行数
+	lines    []string // hunk 中的所有行（包含前缀字符）
+}
+
+// parseUnifiedDiff 解析 unified diff 格式的字符串
+func parseUnifiedDiff(diff string) ([]unifiedHunk, error) {
+	diffLines := strings.Split(diff, "\n")
+
+	var hunks []unifiedHunk
+	var currentHunk *unifiedHunk
+
+	inHunk := false
+
+	for _, line := range diffLines {
+		// 跳过文件头
+		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+
+		// 检测 hunk 头
+		if strings.HasPrefix(line, "@@") {
+			// 保存之前的 hunk
+			if currentHunk != nil {
+				hunks = append(hunks, *currentHunk)
+			}
+
+			// 解析 hunk 头：@@ -oldStart,oldCount +newStart,newCount @@
+			hunk, err := parseHunkHeader(line)
+			if err != nil {
+				return nil, err
+			}
+			currentHunk = &hunk
+			inHunk = true
+			continue
+		}
+
+		// 收集 hunk 内容
+		if inHunk && currentHunk != nil {
+			// 只收集有意义的行（以空格、-、+ 开头的行）
+			if len(line) > 0 {
+				prefix := line[0]
+				if prefix == ' ' || prefix == '-' || prefix == '+' {
+					currentHunk.lines = append(currentHunk.lines, line)
+				}
+			}
+		}
+	}
+
+	// 保存最后一个 hunk
+	if currentHunk != nil {
+		hunks = append(hunks, *currentHunk)
+	}
+
+	return hunks, nil
+}
+
+// parseHunkHeader 解析 hunk 头：@@ -oldStart,oldCount +newStart,newCount @@
+func parseHunkHeader(line string) (unifiedHunk, error) {
+	// 格式：@@ -start,count +start,count @@ optional text
+	re := regexp.MustCompile(`@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@`)
+	matches := re.FindStringSubmatch(line)
+	if matches == nil {
+		return unifiedHunk{}, errors.New("invalid hunk header format")
+	}
+
+	oldStart, _ := strconv.Atoi(matches[1])
+	oldCount := 1
+	if matches[2] != "" {
+		oldCount, _ = strconv.Atoi(matches[2])
+	}
+
+	newStart, _ := strconv.Atoi(matches[3])
+	newCount := 1
+	if matches[4] != "" {
+		newCount, _ = strconv.Atoi(matches[4])
+	}
+
+	return unifiedHunk{
+		oldStart: oldStart,
+		oldCount: oldCount,
+		newStart: newStart,
+		newCount: newCount,
+		lines:    make([]string, 0),
+	}, nil
+}
+
+// applyHunk 将单个 hunk 应用到行列表
+func applyHunk(lines []string, hunk unifiedHunk) ([]string, error) {
+	// 转换为 0-based 索引
+	startIdx := hunk.oldStart - 1
+
+	// 验证起始位置
+	if startIdx < 0 || startIdx > len(lines) {
+		return nil, fmt.Errorf("invalid old start line %d (file has %d lines)", hunk.oldStart, len(lines))
+	}
+
+	// 验证上下文行匹配
+	contextIdx := startIdx
+	for _, hunkLine := range hunk.lines {
+		prefix := hunkLine[0]
+		content := hunkLine[1:]
+
+		if prefix == ' ' || prefix == '-' {
+			// 验证上下文和删除行是否匹配
+			if contextIdx >= len(lines) {
+				return nil, fmt.Errorf("unexpected end of file at line %d", contextIdx+1)
+			}
+
+			// 比较：diff 中可能没有换行符，但文件行保留原始换行符
+			// 需要两边都去掉换行符后再比较
+			expected := strings.TrimRight(content, "\r\n")
+			actual := strings.TrimRight(lines[contextIdx], "\r\n")
+			if expected != actual {
+				return nil, fmt.Errorf("line %d mismatch: expected %q, got %q", contextIdx+1, expected, actual)
+			}
+			contextIdx++
+		}
+	}
+
+	// 构建新的行列表
+	result := make([]string, 0, len(lines))
+	result = append(result, lines[:startIdx]...) // 前面的行保持不变
+
+	// 处理 hunk 内容
+	for _, hunkLine := range hunk.lines {
+		prefix := hunkLine[0]
+		content := hunkLine[1:]
+
+		switch prefix {
+		case ' ':
+			// 上下文行：保留原行（包括换行符）
+			result = append(result, lines[startIdx])
+			startIdx++
+		case '-':
+			// 删除行：跳过原行
+			startIdx++
+		case '+':
+			// 添加行：插入新行
+			// 如果内容没有换行符，添加一个
+			if !strings.HasSuffix(content, "\n") && !strings.HasSuffix(content, "\r") {
+				content += "\n"
+			}
+			result = append(result, content)
+		}
+	}
+
+	// 添加剩余的行
+	result = append(result, lines[startIdx:]...)
+
+	return result, nil
 }
 
 func grepFile(rootAbs string, filePath string, expression *regexp.Regexp) ([]string, error) {

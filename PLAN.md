@@ -65,10 +65,11 @@ Next priority items:
   - 失败分类：`formatToolFailureContent()` 包含 `failure_kind: temporary/refused/error`
   - 模型可见：失败也写入 history，后续 session 模型能看到
 - [x] Tool registry and tool execution layer（已具雏形，`internal/tools/executor.go` + `BuiltinRegistry`）
-- [ ] Tool output shaping：`message/brief` 元信息、长度/行数/字节上限、截断提示（Python `ToolResultBuilder`）
+- [x] Tool output shaping：`message/brief` 元信息、长度/行数/字节上限、截断提示（Python `ToolResultBuilder`）
+  - **已实现**：`OutputShaper` + 集成到 bash/read_file/glob/grep handlers
 - [ ] Core tools parity:
   - [x] bash/read_file/glob/grep/write_file/replace_file（最小版）
-  - [ ] patch_file
+  - [x] patch_file
   - [ ] web/search + web/fetch
   - [ ] think/todo/task（子 agent / 任务派发）
 - [ ] Task/subagent delegation（runtime + tool 层协议未完成）
