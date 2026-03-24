@@ -2,333 +2,308 @@
 
 ## Purpose
 
-This file tracks the Go rewrite against the real target in `temp/`.
+This file tracks the migration gap between the current Go rewrite and the Python reference in `temp/`.
 
-The old plan stopped at the "bootstrap the skeleton" stage. That is no longer accurate:
+The old plan stopped at "build the initial CLI skeleton". That is now outdated. The Go codebase already has a working entry chain, config loading, session selection, JSONL history storage, a minimal LLM engine boundary, and a single-turn runtime. The plan now needs to answer a different question:
 
-- `cmd/fimi`
-- `internal/app`
-- `internal/config`
-- `internal/session`
-- `internal/contextstore`
-- `internal/llm`
-- `internal/runtime`
+`What is still missing before fimi-cli reaches the real kimi-cli target?`
 
-already form a working vertical slice.
+## Current Status Snapshot
 
-From now on, the plan should answer two questions clearly:
+### Already Implemented In Go
 
-1. What is already implemented in Go?
-2. What is still missing to reach `temp/src/kimi_cli` parity?
+- [x] `cmd/fimi -> internal/app.Run` entry chain
+- [x] CLI argument parsing with `--help`, `--new-session`, `--model`, and `--`
+- [x] Config loading, defaults, validation, model/provider mapping
+- [x] Session discovery and forced new session creation
+- [x] JSONL history persistence with bootstrap and recent-turn reads
+- [x] Minimal runtime: one prompt in, one assistant reply out
+- [x] LLM request/message construction boundary
+- [x] Placeholder client and QWEN/OpenAI-compatible provider groundwork
+- [x] Basic module-level tests across `app`, `config`, `contextstore`, `llm`, `runtime`, `session`
 
-## Current Status
-
-### Done
-
-- [x] Thin executable entrypoint: `cmd/fimi/main.go`
-- [x] Application wiring entry: `internal/app.Run`
-- [x] CLI parsing for:
-  - `--help` / `-h`
-  - `--new-session`
-  - `--model <alias>`
-  - `--` terminator
-- [x] CLI help text with structured sections and examples
-- [x] Config loading, defaults, and validation in `internal/config`
-- [x] Logical model alias -> provider/model resolution
-- [x] Session selection and forced new session in `internal/session`
-- [x] JSONL history persistence in `internal/contextstore`
-- [x] History bootstrap and recent-turn window reads
-- [x] LLM message construction in `internal/llm`
-- [x] Placeholder client for local tests
-- [x] QWEN adapter through OpenAI-compatible transport
-- [x] Single-run runtime path:
-  - read history
-  - call engine once
-  - append user record
-  - append assistant record
-- [x] Solid unit-test coverage for the current vertical slice
-
-### Partially Done
-
-- [~] `config.LoopControl` exists, but runtime does not yet execute a true step loop
-- [~] OpenAI-compatible client exists, but app-level provider selection is still focused on `placeholder` and `qwen`
-- [~] Context persistence exists, but checkpoint / revert / usage metadata parity with `temp` is still missing
-
-### Not Started Yet
+### Still Missing Versus `temp/kimi-cli`
 
 - [ ] Agent spec loading from YAML
-- [ ] System prompt templating with builtin args
-- [ ] Tool runtime boundary and tool registry
-- [ ] Multi-step agent loop
-- [ ] Structured tool call / tool result model
-- [ ] Runtime event bus
-- [ ] Interactive shell UI
-- [ ] Print / stream-json UI
-- [ ] ACP server mode
-- [ ] Subagent delegation
-- [ ] MCP tool integration
-- [ ] Web tools and service config parity
-- [ ] Checkpoint rollback flow
-- [ ] Usage/token accounting persistence parity
-
-## Current Vs Target
-
-### Current Go Shape
-
-```text
-CLI
-  -> internal/app
-      -> config
-      -> session
-      -> contextstore
-      -> runtime (single turn)
-          -> llm.Engine
-              -> provider adapter
-```
-
-### Target Shape From `temp`
-
-```text
-CLI / UI / ACP
-  -> app composition
-      -> config
-      -> session metadata
-      -> agent spec loader
-      -> context restore/checkpoints
-      -> runtime loop
-           -> llm step
-           -> tools
-           -> events
-           -> retry / max-step / finish
-      -> shell / print / acp adapters
-```
-
-## Gap Analysis Against `temp`
-
-| Target Area in `temp` | Python Reference | Go Rewrite Today | Gap |
-| --- | --- | --- | --- |
-| CLI modes | `shell`, `print`, `acp` | single CLI path | missing multiple frontends |
-| Agent composition | `agent.py` loads YAML, prompts, tools, MCP | no `internal/agentspec` yet | missing agent assembly layer |
-| Runtime loop | `soul/kimisoul.py` supports multi-step execution, retries, interruptions | `internal/runtime` is single-turn only | largest core-logic gap |
-| Context model | `soul/context.py` stores checkpoints and usage and supports revert | JSONL text history only | missing rollback and richer metadata |
-| Tool system | bash, file, web, todo, think, task, MCP | no `internal/tools/*` | missing main agent capability surface |
-| Event stream | `soul/event.py` feeds UI | no runtime event boundary | missing UI/runtime seam |
-| UI layer | shell / print / ACP | no `internal/ui/*` | missing operator experience and automation surface |
-| Subagents | `tools/task` + subagent specs | no delegation path | missing parallel/distributed task handling |
-| Services / web | search + fetch + service config | no web/service layer | missing online research capability |
-
-## Migration Strategy
-
-The main rule for the next phase is:
-
-- do not jump straight into all tools
-- first upgrade the runtime boundary so tools can plug into a stable loop
-
-That keeps core logic separate from adapters, matching both `AGENTS.md` and the Python reference.
-
-### Phase 1: Upgrade Runtime From Single Turn To Real Step Loop
-
-Goal:
-
-- turn `internal/runtime` from "one request, one reply" into "loop until finished / max-steps / error"
-
-Deliverables:
-
-- [ ] introduce step-level runtime state and completion semantics
-- [ ] consume `config.LoopControl`
-- [ ] add retry policy at runtime boundary
-- [ ] define minimal event interface for step begin / step finish / interruption
-- [ ] keep current history append path working while loop stays text-only
-
-Exit criteria:
-
-- runtime can execute more than one model step
-- runtime can stop because of completion or max-steps
-- runtime has a stable seam for future tool integration
-
-### Phase 2: Add Structured Action Model
-
-Goal:
-
-- stop treating model output as only free-form assistant text
-
-Deliverables:
-
-- [ ] define runtime-facing action/result types
-- [ ] extend `internal/llm` so engine can return either final text or tool-call intent
-- [ ] keep provider adapters behind `internal/llm`
-- [ ] add tests for action decoding and loop transitions
-
-Exit criteria:
-
-- runtime can distinguish:
-  - final assistant answer
-  - tool invocation request
-  - loop continuation
-
-### Phase 3: Introduce Tool Runtime Boundary
-
-Goal:
-
-- create the stable adapter seam that Python keeps in `tools/*`
-
-Deliverables:
-
-- [ ] add `internal/tools` base interfaces
-- [ ] add tool registry / lookup
-- [ ] add tool input/output envelope
-- [ ] wire runtime to execute requested tools and append observations back into context
-
-Exit criteria:
-
-- runtime does not know concrete tool implementations
-- tools can be added as adapters without changing loop core
-
-### Phase 4: Implement Local Core Tools First
-
-Goal:
-
-- cover the highest-value local coding workflow before web/MCP/subagents
-
-Priority order:
-
-- [ ] bash
-- [ ] read file
-- [ ] glob
-- [ ] grep
-- [ ] write file
-- [ ] string replace / patch-like edit
-
-Why this order:
-
-- it unlocks local repo reasoning and code modification first
-- it matches the minimum useful coding-agent path before advanced integrations
-
-Exit criteria:
-
-- the agent can inspect and modify a local repository through tools, not just chat
-
-### Phase 5: Add Agent Spec And Prompt Composition
-
-Goal:
-
-- move agent identity and toolset selection out of hardcoded app wiring
-
-Deliverables:
-
-- [ ] create `internal/agentspec`
-- [ ] load YAML agent definitions
-- [ ] support prompt file loading
-- [ ] support builtin prompt args such as work dir and `AGENTS.md`
-- [ ] connect selected tools to the loaded agent spec
-
-Exit criteria:
-
-- app wiring chooses an agent spec
-- runtime receives system prompt and toolset from composition layer
-
-### Phase 6: Add Runtime Events And First UI Adapter
-
-Goal:
-
-- make agent execution observable before building every UI mode
-
-Deliverables:
-
-- [ ] define event stream boundary
-- [ ] emit step begin / content / tool / status events
-- [ ] implement first terminal-oriented UI adapter
-
-Recommended order:
-
-1. print-style event consumer
-2. shell UI
-3. ACP mode
-
-Reason:
-
-- print mode is the simplest way to prove the event contract
-- shell UI should be built after the event model is stable
-
-### Phase 7: Add Advanced Parity Features
-
-Goal:
-
-- close the highest-value gaps with `temp` after the core loop and tool seam are stable
-
-Deliverables:
-
-- [ ] checkpoint markers in context history
-- [ ] revert / rollback flow
-- [ ] token usage persistence
-- [ ] subagent tool
+- [ ] System prompt template expansion and agent inheritance
+- [ ] Multi-step runtime loop with max-step and retry control
+- [ ] Structured tool-call protocol between model and runtime
+- [ ] Tool registry and tool execution layer
+- [ ] Core tools: bash, file read/write/edit, grep, glob, web
+- [ ] Task/subagent delegation
+- [ ] Checkpoint, revert, and token-usage persistence
+- [ ] Runtime event bus for UI/streaming
+- [ ] UI modes: shell, print, ACP
 - [ ] MCP integration
-- [ ] web search / fetch tools
-- [ ] richer service config
+- [ ] Richer session metadata and explicit continue semantics
+- [ ] Service config beyond model providers
 
-## Recommended Teaching Order
+## Gap Summary
 
-The next teaching units should stay small, but they should follow dependency order.
+The current Go rewrite is no longer "empty", but it is still mostly the outer shell and infrastructure layer.
 
-### Immediate Next Units
+What is already in place:
 
-1. `internal/runtime`: introduce a loop result model that can represent `continue`, `finish`, and `max steps reached`
-2. `internal/runtime`: start consuming `config.LoopControl`
-3. `internal/runtime`: define a minimal event sink interface
-4. `internal/llm` + `internal/runtime`: add structured action output instead of text-only reply
-5. `internal/tools`: introduce the first generic tool interface
+- application entry and dependency wiring
+- local persistence primitives
+- model/provider configuration
+- one-shot prompt execution
 
-### Important Constraint
+What is still missing:
 
-Do not start with:
+- agent composition
+- multi-step autonomous execution
+- tool runtime
+- user-facing UI modes
 
-- shell UI
+In short:
+
+```text
+Current Go
+  = CLI shell + config + session + history + one-turn runtime
+
+Target from temp
+  = composition root + agent spec + multi-step loop + tools + events + UI + subagents + MCP
+```
+
+## Reference Mapping
+
+| Python Reference | Go Rewrite Target | Status |
+| --- | --- | --- |
+| `temp/src/kimi_cli/__init__.py` | `cmd/fimi` + `internal/app` | partially done |
+| `temp/src/kimi_cli/config.py` | `internal/config` | mostly done for model/provider basics |
+| `temp/src/kimi_cli/metadata.py` | `internal/session` | partially done |
+| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + app wiring | not started |
+| `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | only minimal single-turn subset done |
+| `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | basic history done, checkpoint/revert missing |
+| `temp/src/kimi_cli/soul/event.py` | `internal/runtime/events` | not started |
+| `temp/src/kimi_cli/soul/message.py` | `internal/runtime/messages` | not started |
+| `temp/src/kimi_cli/tools/*` | `internal/tools/*` | not started |
+| `temp/src/kimi_cli/ui/*` | `internal/ui/*` | not started |
+
+## Recommended Build Order
+
+The missing work should not be implemented in the same order as the Python files appear on disk.
+
+The safest order for the Go rewrite is:
+
+1. finish the core runtime contracts
+2. add tool execution boundaries
+3. add a minimal tool-backed agent loop
+4. enrich persistence with checkpoint/revert
+5. add event streaming
+6. add alternative UIs and advanced integrations
+
+This order keeps the system runnable at each stage and avoids building shell/ACP frontends before there is a stable runtime to drive them.
+
+## Phased Roadmap
+
+### Phase 0: Completed Foundation
+
+- [x] `internal/app`
+- [x] `internal/config`
+- [x] `internal/session`
+- [x] `internal/contextstore` basic JSONL history
+- [x] `internal/llm` minimal request/reply abstraction
+- [x] `internal/runtime` single-turn execution
+
+This phase gave us a working CLI prototype and stable package seams.
+
+### Phase 1: Agent Composition Layer
+
+Goal: introduce the missing layer between `app` and `runtime` that knows how to load an agent definition.
+
+- [ ] Create `internal/agentspec`
+- [ ] Parse agent YAML from disk
+- [ ] Support agent name, system prompt path, tool list
+- [ ] Load system prompt text from file
+- [ ] Resolve agent file path from CLI/app defaults
+- [ ] Keep tool loading explicit in Go instead of Python-style reflection
+
+Why now:
+
+- `temp` relies on `agent.py` as the composition seam
+- without this layer, runtime will either hardcode prompts/tools or app will become too large
+
+### Phase 2: Runtime Loop Kernel
+
+Goal: upgrade `internal/runtime` from "single-turn runner" to "multi-step agent loop".
+
+- [ ] Add step result model: assistant output, tool calls, finish state
+- [ ] Consume `config.LoopControl` inside runtime
+- [ ] Implement max-step loop
+- [ ] Implement retry boundaries for retryable model/tool failures
+- [ ] Add clear run result states: finished, interrupted, failed, max-steps
+
+Why before tools:
+
+- tools need a runtime contract to plug into
+- otherwise tool code will force ad hoc control flow into runtime
+
+### Phase 3: Tool Runtime Boundary
+
+Goal: define how runtime sees tools, without tying runtime to bash/file/web specifics.
+
+- [ ] Create `internal/tools`
+- [ ] Define tool interface, schema, call, and result types
+- [ ] Create tool registry used by app/agentspec
+- [ ] Define runtime <-> tools adapter boundary
+- [ ] Add message conversion for tool calls and tool results
+
+Classification:
+
+- `internal/runtime`: core agent logic, stable
+- `internal/tools/*`: adapter/integration logic, replaceable
+
+### Phase 4: Minimum Useful Tool Set
+
+Goal: reach the first meaningfully autonomous version.
+
+- [ ] `internal/tools/bash`
+- [ ] `internal/tools/file/read`
+- [ ] `internal/tools/file/glob`
+- [ ] `internal/tools/file/grep`
+- [ ] `internal/tools/file/write`
+- [ ] `internal/tools/file/replace`
+
+Guardrails required in the same phase:
+
+- [ ] work-dir confinement
+- [ ] command timeout / cancellation boundary
+- [ ] clear stdout/stderr/result shaping
+- [ ] refusal path for unsupported or dangerous operations
+
+Why this phase is the first major milestone:
+
+- after it, the agent can inspect and modify a local repo instead of only chatting about it
+
+### Phase 5: Richer Context Store
+
+Goal: close the biggest persistence gap with `temp/soul/context.py`.
+
+- [ ] persist token usage records
+- [ ] persist checkpoints
+- [ ] implement revert-to-checkpoint
+- [ ] keep append-only rotation strategy for rollback history
+- [ ] expose snapshot helpers needed by runtime and UI
+
+Why after a basic tool loop exists:
+
+- checkpoint/revert is most valuable when multi-step execution can actually go wrong
+
+### Phase 6: Event Stream And Print UI
+
+Goal: make runtime observable before building the full interactive shell.
+
+- [ ] create `internal/runtime/events`
+- [ ] emit step begin / text part / tool call / tool result / status events
+- [ ] create a minimal `internal/ui/printui`
+- [ ] support plain text output first
+- [ ] then add stream-json output for automation
+
+Why print UI before shell UI:
+
+- it exercises the runtime/event contract with less presentation complexity
+
+### Phase 7: Shell UI
+
+Goal: add the main interactive interface only after runtime events are stable.
+
+- [ ] create `internal/ui/shell`
+- [ ] interactive prompt loop
+- [ ] render step/tool progress
+- [ ] add minimal meta commands only after the shell loop is stable
+
+Keep out of this phase unless required:
+
 - ACP
 - MCP
 - subagents
 
-before the runtime loop and tool boundary exist.
+### Phase 8: Agent Parity Features
 
-Those are adapter-heavy features. Building them before stabilizing the core will create churn.
+Goal: close the larger capability gaps with the Python reference.
 
-## Module Classification
+- [ ] subagent/task tool
+- [ ] MCP tool adapter
+- [ ] web/search/fetch tools
+- [ ] richer service config
+- [ ] session metadata for explicit continue semantics
+- [ ] optional agent inheritance and subagent declarations
 
-### Core Agent Logic
+These are important, but they should sit on top of a stable local-agent core.
 
-- `internal/runtime`
-- future runtime event boundary
-- future structured action model
-- future tool execution orchestration
+### Phase 9: Transport Parity
 
-These should be treated as relatively stable.
+Goal: support machine-facing execution modes after the local CLI is solid.
 
-### Replaceable Adapters
+- [ ] ACP server mode
+- [ ] richer print mode input/output formats
+- [ ] cancellation and interruption plumbing across transport boundaries
 
-- `internal/llm/*`
-- future `internal/tools/*`
-- future `internal/ui/*`
-- future MCP integration
+## Immediate Next Teaching Units
 
-These should remain behind explicit interfaces.
+The next several implementation steps should stay close to the runtime core:
 
-### Supporting Infrastructure
+1. Add a structured runtime step output type that can represent either plain assistant completion or pending tool calls.
+2. Introduce a tiny loop in `internal/runtime` that consumes `MaxStepsPerRun`, even if the first version still only supports "finish immediately".
+3. Define the first tool interface in `internal/tools` and wire a no-op or fake registry through app/runtime.
+4. Add one read-only tool first, preferably file read or bash echo-style execution, before implementing write-capable tools.
 
-- `internal/app`
-- `internal/config`
-- `internal/session`
-- `internal/contextstore`
-- future `internal/agentspec`
+## Local Architecture Diagram
 
-These wire the system together but should not absorb loop-specific behavior.
+```text
+cmd/fimi
+  |
+  v
+internal/app
+  |
+  +-- internal/config
+  +-- internal/session
+  +-- internal/contextstore
+  +-- internal/llm
+  +-- internal/runtime
+  |
+  +-- future: internal/agentspec
+  +-- future: internal/tools/*
+  +-- future: internal/ui/*
+```
 
-## Definition Of "On Track"
+## Target Architecture Diagram
 
-The rewrite is on track if, in order:
+```text
+CLI / UI / Transport
+  |
+  v
+internal/app
+  |
+  +-- internal/agentspec        adapter/integration, replaceable
+  +-- internal/config           infrastructure
+  +-- internal/session          infrastructure
+  +-- internal/ui/*             adapter/integration, replaceable
+  |
+  v
+internal/runtime                core agent logic, stable
+  |
+  +-- internal/runtime/events   core boundary, stable
+  +-- internal/runtime/messages core support, stable
+  +-- internal/contextstore     core logic + persistence
+  +-- internal/llm              adapter boundary, replaceable
+  +-- internal/tools/*          adapter/integration, replaceable
+```
 
-1. Go runtime becomes multi-step before tools proliferate
-2. tools are introduced behind a registry/interface boundary
-3. agent spec chooses prompts and tools instead of hardcoded app logic
-4. UI modes consume runtime events instead of poking into runtime internals
-5. advanced features like MCP and subagents come last
+## Design Notes
 
-If we keep that order, the Go rewrite should converge toward `temp` without a major architecture reset.
+Good migration discipline:
+
+- keep runtime unaware of shell rendering
+- keep tools behind explicit interfaces
+- keep provider-specific HTTP code out of runtime
+- keep history persistence append-first and testable
+
+Bad migration shortcuts to avoid:
+
+- turning `internal/app` into a giant god package
+- hardcoding tools directly inside runtime branches
+- implementing shell UI before runtime events exist
+- adding subagents before the main agent loop is stable
