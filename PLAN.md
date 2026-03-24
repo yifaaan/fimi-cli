@@ -171,7 +171,7 @@ Goal: define how runtime sees tools, without tying runtime to bash/file/web spec
 - [ ] Create `internal/tools`
 - [ ] Define tool interface, schema, call, and result types
 - [ ] Create tool registry used by app/agentspec
-- [ ] Define runtime <-> tools adapter boundary
+- [x] Define runtime <-> tools adapter boundary
 - [ ] Add message conversion for tool calls and tool results
 
 Classification:

@@ -19,6 +19,13 @@ import (
 func testLoadedAgent(prompt string) loadedAgent {
 	return loadedAgent{
 		SystemPrompt: prompt,
+		Tools: []tools.Definition{
+			{
+				Name:        tools.ToolReadFile,
+				Kind:        tools.KindFile,
+				Description: "Read a file from the workspace.",
+			},
+		},
 	}
 }
 
@@ -1151,6 +1158,52 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 	}
 	if gotCfg.Models["custom-model"].Provider != config.ProviderTypePlaceholder {
 		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, config.ProviderTypePlaceholder)
+	}
+}
+
+func TestDependenciesBuildRunnerForAgentRunsWithResolvedAgentTools(t *testing.T) {
+	deps := dependencies{
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			return llm.NewPlaceholderClient(), nil
+		},
+	}
+	cfg := config.Config{
+		DefaultModel: "custom-model",
+		Models: map[string]config.ModelConfig{
+			"custom-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "custom-model",
+			},
+		},
+	}
+	runner, err := deps.buildRunnerForAgent(cfg, loadedAgent{
+		Tools: []tools.Definition{
+			{
+				Name: tools.ToolReadFile,
+				Kind: tools.KindFile,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRunnerForAgent() error = %v", err)
+	}
+
+	result, err := runner.Run(
+		contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		runtime.Input{
+			Prompt:       "hello",
+			Model:        "custom-model",
+			SystemPrompt: "You are the configured agent.",
+		},
+	)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != runtime.RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, runtime.RunStatusFinished)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want %d", len(result.Steps), 1)
 	}
 }
 

@@ -144,7 +144,7 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 
-	runner, err := d.buildRunner(cfg)
+	runner, err := d.buildRunnerForAgent(cfg, agent)
 	if err != nil {
 		return err
 	}
@@ -309,6 +309,11 @@ func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
 
 // buildRunner 负责装配一次 runtime 执行所需的核心依赖。
 func (d dependencies) buildRunner(cfg config.Config) (runtimeRunner, error) {
+	return d.buildRunnerForAgent(cfg, loadedAgent{})
+}
+
+// buildRunnerForAgent 负责把当前 agent 的工具能力一起装配进 runtime。
+func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent) (runtimeRunner, error) {
 	if d.buildRuntimeRunner != nil {
 		return d.buildRuntimeRunner(cfg)
 	}
@@ -318,7 +323,9 @@ func (d dependencies) buildRunner(cfg config.Config) (runtimeRunner, error) {
 		return nil, err
 	}
 
-	return runtime.New(engine, buildRuntimeConfig(cfg)), nil
+	toolExecutor := tools.NewExecutor(agent.Tools, nil)
+
+	return runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg)), nil
 }
 
 func buildEngine(cfg config.Config) (llm.Engine, error) {
