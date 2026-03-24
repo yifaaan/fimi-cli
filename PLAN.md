@@ -194,7 +194,7 @@ Guardrails required in the same phase:
 
 - [ ] work-dir confinement
 - [ ] command timeout / cancellation boundary
-- [ ] clear stdout/stderr/result shaping
+- [x] clear stdout/stderr/result shaping
 - [ ] refusal path for unsupported or dangerous operations
 
 Why this phase is the first major milestone:

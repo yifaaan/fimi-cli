@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,17 +97,25 @@ func newBashHandlerWithTimeout(workDir string, timeout time.Duration) HandlerFun
 			cmd.Dir = workDir
 		}
 
-		output, err := cmd.CombinedOutput()
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		err = cmd.Run()
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return runtime.ToolExecution{}, fmt.Errorf("%w: %s", ErrToolCommandTimedOut, args.Command)
 		}
-		if err != nil {
+		if err != nil && !isExitError(err) {
 			return runtime.ToolExecution{}, fmt.Errorf("run bash command: %w", err)
 		}
 
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: string(output),
+			Call:     call,
+			Output:   stdout.String(),
+			Stdout:   stdout.String(),
+			Stderr:   stderr.String(),
+			ExitCode: exitCodeFromError(err),
 		}, nil
 	}
 }
@@ -408,6 +417,28 @@ func relativeWorkspacePath(rootAbs string, targetAbs string) (string, error) {
 	}
 
 	return filepath.ToSlash(rel), nil
+}
+
+func isExitError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
+}
+
+func exitCodeFromError(err error) int {
+	if err == nil {
+		return 0
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+
+	return -1
 }
 
 func normalizeWorkspacePattern(raw string) (string, error) {

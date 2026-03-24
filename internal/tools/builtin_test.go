@@ -72,25 +72,34 @@ func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
 
 	got, err := executor.Execute(runtime.ToolCall{
 		Name:      ToolBash,
-		Arguments: `{"command":"printf '%s' \"$PWD\" && printf '\n' && ls marker.txt"}`,
+		Arguments: `{"command":"printf '%s' \"$PWD\" && printf '\n' && ls marker.txt && printf 'warn' >&2"}`,
 	})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(got.Output), "\n")
+	lines := strings.Split(strings.TrimSpace(got.Stdout), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("len(output lines) = %d, want %d, output=%q", len(lines), 2, got.Output)
+		t.Fatalf("len(stdout lines) = %d, want %d, stdout=%q", len(lines), 2, got.Stdout)
 	}
 	if lines[0] != workDir {
-		t.Fatalf("output workDir line = %q, want %q", lines[0], workDir)
+		t.Fatalf("stdout workDir line = %q, want %q", lines[0], workDir)
 	}
 	if lines[1] != "marker.txt" {
-		t.Fatalf("output file line = %q, want %q", lines[1], "marker.txt")
+		t.Fatalf("stdout file line = %q, want %q", lines[1], "marker.txt")
+	}
+	if got.Output != got.Stdout {
+		t.Fatalf("Execute().Output = %q, want same as Stdout %q", got.Output, got.Stdout)
+	}
+	if got.Stderr != "warn" {
+		t.Fatalf("Execute().Stderr = %q, want %q", got.Stderr, "warn")
+	}
+	if got.ExitCode != 0 {
+		t.Fatalf("Execute().ExitCode = %d, want %d", got.ExitCode, 0)
 	}
 }
 
-func TestNewBuiltinExecutorBashReturnsErrorOnNonZeroExit(t *testing.T) {
+func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 	executor := NewBuiltinExecutor([]Definition{
 		{
 			Name: ToolBash,
@@ -98,15 +107,21 @@ func TestNewBuiltinExecutorBashReturnsErrorOnNonZeroExit(t *testing.T) {
 		},
 	}, t.TempDir())
 
-	_, err := executor.Execute(runtime.ToolCall{
+	got, err := executor.Execute(runtime.ToolCall{
 		Name:      ToolBash,
-		Arguments: `{"command":"exit 7"}`,
+		Arguments: `{"command":"printf 'ok'; printf 'fail' >&2; exit 7"}`,
 	})
-	if err == nil {
-		t.Fatalf("Execute() error = nil, want non-nil")
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "run bash command") {
-		t.Fatalf("Execute() error = %q, want contains %q", err.Error(), "run bash command")
+	if got.Stdout != "ok" {
+		t.Fatalf("Execute().Stdout = %q, want %q", got.Stdout, "ok")
+	}
+	if got.Stderr != "fail" {
+		t.Fatalf("Execute().Stderr = %q, want %q", got.Stderr, "fail")
+	}
+	if got.ExitCode != 7 {
+		t.Fatalf("Execute().ExitCode = %d, want %d", got.ExitCode, 7)
 	}
 }
 
