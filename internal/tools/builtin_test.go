@@ -94,9 +94,6 @@ func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
 	if lines[1] != "marker.txt" {
 		t.Fatalf("stdout file line = %q, want %q", lines[1], "marker.txt")
 	}
-	if got.Output != got.Stdout {
-		t.Fatalf("Execute().Output = %q, want same as Stdout %q", got.Output, got.Stdout)
-	}
 	if got.Stderr != "warn" {
 		t.Fatalf("Execute().Stderr = %q, want %q", got.Stderr, "warn")
 	}
@@ -134,7 +131,8 @@ func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 
 func TestNewBashHandlerWithTimeoutCancelsLongRunningCommand(t *testing.T) {
 	ctx := context.Background()
-	handler := newBashHandlerWithTimeout(t.TempDir(), 20*time.Millisecond)
+	shaper := NewOutputShaperWithLimits(1000, 500) // 使用宽松的限制便于测试
+	handler := newBashHandlerWithTimeout(t.TempDir(), shaper, 20*time.Millisecond)
 
 	start := time.Now()
 	_, err := handler(ctx, runtime.ToolCall{

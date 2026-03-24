@@ -63,26 +63,32 @@ type replaceFileArguments struct {
 
 // NewBuiltinExecutor 返回带内建 handler 的最小工具执行器。
 // 当前先接通最小可用的一组本地工具能力。
+// shaper 用于对工具输出进行塑形，防止超大输出消耗模型上下文。
 func NewBuiltinExecutor(definitions []Definition, workDir string) Executor {
-	return NewExecutor(definitions, builtinHandlers(workDir))
+	return NewBuiltinExecutorWithShaper(definitions, workDir, NewOutputShaper())
 }
 
-func builtinHandlers(workDir string) map[string]HandlerFunc {
+// NewBuiltinExecutorWithShaper 创建带自定义塑形器的执行器。
+func NewBuiltinExecutorWithShaper(definitions []Definition, workDir string, shaper OutputShaper) Executor {
+	return NewExecutor(definitions, builtinHandlers(workDir, shaper))
+}
+
+func builtinHandlers(workDir string, shaper OutputShaper) map[string]HandlerFunc {
 	return map[string]HandlerFunc{
-		ToolBash:        newBashHandler(workDir),
-		ToolGlob:        newGlobHandler(workDir),
-		ToolGrep:        newGrepHandler(workDir),
-		ToolReadFile:    newReadFileHandler(workDir),
+		ToolBash:        newBashHandler(workDir, shaper),
+		ToolGlob:        newGlobHandler(workDir, shaper),
+		ToolGrep:        newGrepHandler(workDir, shaper),
+		ToolReadFile:    newReadFileHandler(workDir, shaper),
 		ToolWriteFile:   newWriteFileHandler(workDir),
 		ToolReplaceFile: newReplaceFileHandler(workDir),
 	}
 }
 
-func newBashHandler(workDir string) HandlerFunc {
-	return newBashHandlerWithTimeout(workDir, DefaultBashCommandTimeout)
+func newBashHandler(workDir string, shaper OutputShaper) HandlerFunc {
+	return newBashHandlerWithTimeout(workDir, shaper, DefaultBashCommandTimeout)
 }
 
-func newBashHandlerWithTimeout(workDir string, timeout time.Duration) HandlerFunc {
+func newBashHandlerWithTimeout(workDir string, shaper OutputShaper, timeout time.Duration) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeBashArguments(call.Arguments)
 		if err != nil {
@@ -111,17 +117,44 @@ func newBashHandlerWithTimeout(workDir string, timeout time.Duration) HandlerFun
 			return runtime.ToolExecution{}, markTemporary(fmt.Errorf("run bash command: %w", err))
 		}
 
+		// 对 stdout 进行塑形
+		rawStdout := stdout.String()
+		shapedStdout := shaper.Shape(rawStdout)
+
+		// 对 stderr 进行塑形（使用相同的限制）
+		rawStderr := stderr.String()
+		shapedStderr := shaper.Shape(rawStderr)
+
+		// 构建最终输出：stdout + stderr + 截断提示
+		var outputParts []string
+		outputParts = append(outputParts, shapedStdout.Output)
+		if shapedStderr.Output != "" {
+			outputParts = append(outputParts, "STDERR:", shapedStderr.Output)
+		}
+
+		// 添加截断提示
+		var truncationMsgs []string
+		if shapedStdout.Message != "" {
+			truncationMsgs = append(truncationMsgs, "stdout: "+shapedStdout.Message)
+		}
+		if shapedStderr.Message != "" {
+			truncationMsgs = append(truncationMsgs, "stderr: "+shapedStderr.Message)
+		}
+		if len(truncationMsgs) > 0 {
+			outputParts = append(outputParts, "\n["+strings.Join(truncationMsgs, "; ")+"]")
+		}
+
 		return runtime.ToolExecution{
 			Call:     call,
-			Output:   stdout.String(),
-			Stdout:   stdout.String(),
-			Stderr:   stderr.String(),
+			Output:   strings.Join(outputParts, "\n"),
+			Stdout:   shapedStdout.Output,
+			Stderr:   shapedStderr.Output,
 			ExitCode: exitCodeFromError(err),
 		}, nil
 	}
 }
 
-func newReadFileHandler(workDir string) HandlerFunc {
+func newReadFileHandler(workDir string, shaper OutputShaper) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeReadFileArguments(call.Arguments)
 		if err != nil {
@@ -138,14 +171,24 @@ func newReadFileHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, fmt.Errorf("read file %q: %w", path, err)
 		}
 
+		// 对文件内容进行塑形
+		rawContent := string(data)
+		shaped := shaper.Shape(rawContent)
+
+		// 构建最终输出
+		output := shaped.Output
+		if shaped.Message != "" {
+			output += "\n\n[" + shaped.Message + "]"
+		}
+
 		return runtime.ToolExecution{
 			Call:   call,
-			Output: string(data),
+			Output: output,
 		}, nil
 	}
 }
 
-func newGlobHandler(workDir string) HandlerFunc {
+func newGlobHandler(workDir string, shaper OutputShaper) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeGlobArguments(call.Arguments)
 		if err != nil {
@@ -167,14 +210,24 @@ func newGlobHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
+		// 对匹配结果进行塑形
+		rawOutput := strings.Join(matches, "\n")
+		shaped := shaper.Shape(rawOutput)
+
+		// 构建最终输出
+		output := shaped.Output
+		if shaped.Message != "" {
+			output += "\n\n[" + shaped.Message + "]"
+		}
+
 		return runtime.ToolExecution{
 			Call:   call,
-			Output: strings.Join(matches, "\n"),
+			Output: output,
 		}, nil
 	}
 }
 
-func newGrepHandler(workDir string) HandlerFunc {
+func newGrepHandler(workDir string, shaper OutputShaper) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeGrepArguments(call.Arguments)
 		if err != nil {
@@ -200,9 +253,19 @@ func newGrepHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
+		// 对匹配结果进行塑形
+		rawOutput := strings.Join(matches, "\n")
+		shaped := shaper.Shape(rawOutput)
+
+		// 构建最终输出
+		output := shaped.Output
+		if shaped.Message != "" {
+			output += "\n\n[" + shaped.Message + "]"
+		}
+
 		return runtime.ToolExecution{
 			Call:   call,
-			Output: strings.Join(matches, "\n"),
+			Output: output,
 		}, nil
 	}
 }
