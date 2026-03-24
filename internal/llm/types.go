@@ -37,6 +37,14 @@ type Request struct {
 type Response struct {
 	Text      string
 	ToolCalls []ToolCall
+	Usage     Usage // token 使用量
+}
+
+// Usage 表示 LLM 调用的 token 使用量。
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 // HasToolCalls 返回消息里是否包含 assistant 发起的工具调用。

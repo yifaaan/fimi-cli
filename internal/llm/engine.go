@@ -66,6 +66,11 @@ func (e Engine) Reply(ctx context.Context, input runtime.ReplyInput) (runtime.As
 	return runtime.AssistantReply{
 		Text:      response.Text,
 		ToolCalls: buildRuntimeToolCalls(response.ToolCalls),
+		Usage: runtime.Usage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+			TotalTokens:  response.Usage.TotalTokens,
+		},
 	}, nil
 }
 

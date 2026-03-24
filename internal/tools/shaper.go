@@ -12,7 +12,6 @@ const (
 )
 
 // OutputShaper 负责对工具输出进行塑形和截断。
-// 它实现了与 Python ToolResultBuilder 相同的语义：
 // 1. 先按行截断（如果单行超过 maxLineLength）
 // 2. 再按总字符数截断（如果总输出超过 maxChars）
 type OutputShaper struct {

@@ -54,6 +54,14 @@ type ReplyInput struct {
 type AssistantReply struct {
 	Text      string
 	ToolCalls []ToolCall
+	Usage     Usage // token 使用量
+}
+
+// Usage 表示单次 LLM 调用的 token 使用量。
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 // Result 表示单次 runtime 追加到 history 的记录。
@@ -139,6 +147,7 @@ type StepResult struct {
 	ToolCalls       []ToolCall
 	ToolExecutions  []ToolExecution
 	ToolFailure     *ToolExecutionError
+	Usage           Usage // 本次 step 的 token 使用量
 }
 
 // BuildToolStepRecords 构造工具调用步骤需要追加到 history 的记录。
@@ -391,12 +400,20 @@ func (r Runner) runStep(
 		return StepResult{}, fmt.Errorf("build assistant reply: %w", err)
 	}
 
+	// 持久化 token 使用量
+	if assistantReply.Usage.TotalTokens > 0 {
+		if err := store.AppendUsage(assistantReply.Usage.TotalTokens); err != nil {
+			return StepResult{}, fmt.Errorf("append usage record: %w", err)
+		}
+	}
+
 	if len(assistantReply.ToolCalls) > 0 {
 		return StepResult{
 			Status:        StepStatusIncomplete,
 			Kind:          StepKindToolCalls,
 			AssistantText: assistantReply.Text,
 			ToolCalls:     assistantReply.ToolCalls,
+			Usage:         assistantReply.Usage,
 		}, nil
 	}
 
@@ -414,6 +431,7 @@ func (r Runner) runStep(
 		Kind:            StepKindFinished,
 		AssistantText:   assistantReply.Text,
 		AppendedRecords: records,
+		Usage:           assistantReply.Usage,
 	}, nil
 }
 

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"testing"
 
 	"fimi-cli/internal/contextstore"
@@ -63,7 +64,7 @@ func TestPlaceholderClientReplyUsesEmptyPromptWithoutUserMessage(t *testing.T) {
 func TestNewPlaceholderEngine(t *testing.T) {
 	engine := NewPlaceholderEngine(Config{})
 
-	reply, err := engine.Reply(runtime.ReplyInput{
+	reply, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("hello"),
 		},

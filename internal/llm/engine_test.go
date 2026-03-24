@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -17,7 +18,7 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	}
 	engine := NewEngine(client, Config{})
 
-	reply, err := engine.Reply(runtime.ReplyInput{
+	reply, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		Model:        "kimi-k2-turbo-preview",
 		SystemPrompt: "You are fimi, a coding agent.",
 		History: []contextstore.TextRecord{
@@ -82,7 +83,7 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 		err: wantErr,
 	}, Config{})
 
-	_, err := engine.Reply(runtime.ReplyInput{
+	_, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("hello"),
 		},
@@ -95,7 +96,7 @@ func TestEngineReplyWrapsClientError(t *testing.T) {
 func TestNewEngineWithoutClientFails(t *testing.T) {
 	engine := NewEngine(nil, Config{})
 
-	_, err := engine.Reply(runtime.ReplyInput{
+	_, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("hello"),
 		},
@@ -116,8 +117,8 @@ func TestEngineReplyBuildsUserOnlyMessageWhenSystemPromptEmpty(t *testing.T) {
 	}
 	engine := NewEngine(client, Config{})
 
-	_, err := engine.Reply(runtime.ReplyInput{
-		Model:  "kimi-k2-turbo-preview",
+	_, err := engine.Reply(context.Background(), runtime.ReplyInput{
+		Model: "kimi-k2-turbo-preview",
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("previous"),
 			contextstore.NewAssistantTextRecord("previous reply"),
@@ -164,7 +165,7 @@ func TestEngineReplyUsesConfiguredTurnLimit(t *testing.T) {
 		HistoryTurnLimit: 1,
 	})
 
-	_, err := engine.Reply(runtime.ReplyInput{
+	_, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		History: []contextstore.TextRecord{
 			// 历史记录：2 个完整 turn
 			contextstore.NewUserTextRecord("first"),
@@ -204,7 +205,7 @@ func TestEngineReplyMapsToolCallsToRuntimeReply(t *testing.T) {
 	}
 	engine := NewEngine(client, Config{})
 
-	reply, err := engine.Reply(runtime.ReplyInput{
+	reply, err := engine.Reply(context.Background(), runtime.ReplyInput{
 		History: []contextstore.TextRecord{
 			contextstore.NewUserTextRecord("inspect main.go"),
 		},
