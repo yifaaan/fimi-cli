@@ -204,11 +204,32 @@ func TestParseRunInput(t *testing.T) {
 			},
 		},
 		{
+			name: "help long flag",
+			args: []string{"--help"},
+			want: runInput{
+				showHelp: true,
+			},
+		},
+		{
+			name: "help short flag",
+			args: []string{"-h"},
+			want: runInput{
+				showHelp: true,
+			},
+		},
+		{
 			name: "flag terminator keeps literal flag in prompt",
 			args: []string{"--new-session", "--", "--new-session", "fix"},
 			want: runInput{
 				prompt:          "--new-session fix",
 				forceNewSession: true,
+			},
+		},
+		{
+			name: "flag terminator keeps literal help flag in prompt",
+			args: []string{"--", "--help", "fix"},
+			want: runInput{
+				prompt: "--help fix",
 			},
 		},
 		{
@@ -370,6 +391,57 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(records, wantRecords) {
 		t.Fatalf("history records = %#v, want %#v", records, wantRecords)
+	}
+}
+
+func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
+	var loadConfigCalled bool
+	var resolveWorkDirCalled bool
+	var openSessionCalled bool
+	var buildRunnerCalled bool
+	var helpCalled bool
+
+	deps := dependencies{
+		loadConfig: func() (config.Config, error) {
+			loadConfigCalled = true
+			return config.Config{}, nil
+		},
+		resolveWorkDir: func() (string, error) {
+			resolveWorkDirCalled = true
+			return "", nil
+		},
+		openSession: func(workDir string) (session.Session, bool, error) {
+			openSessionCalled = true
+			return session.Session{}, false, nil
+		},
+		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+			buildRunnerCalled = true
+			return &stubRunner{}, nil
+		},
+		printHelp: func() {
+			helpCalled = true
+		},
+	}
+
+	err := deps.run([]string{"--help"})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if !helpCalled {
+		t.Fatalf("printHelp() called = false, want true")
+	}
+	if loadConfigCalled {
+		t.Fatalf("loadConfig() called = true, want false")
+	}
+	if resolveWorkDirCalled {
+		t.Fatalf("resolveWorkDir() called = true, want false")
+	}
+	if openSessionCalled {
+		t.Fatalf("openSession() called = true, want false")
+	}
+	if buildRunnerCalled {
+		t.Fatalf("buildRuntimeRunner() called = true, want false")
 	}
 }
 

@@ -26,6 +26,7 @@ type sessionOpener func(workDir string) (session.Session, bool, error)
 type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
+type helpPrinter func()
 type startupStatePrinter func(
 	sess session.Session,
 	ctx contextstore.Context,
@@ -49,6 +50,7 @@ type dependencies struct {
 	createSession      sessionCreator
 	buildLLMClient     llmClientBuilder
 	buildRuntimeRunner runtimeRunnerBuilder
+	printHelp          helpPrinter
 	printStartupState  startupStatePrinter
 }
 
@@ -71,6 +73,14 @@ func (d dependencies) run(args []string) error {
 	input, err := parseRunInput(args)
 	if err != nil {
 		return err
+	}
+	if input.showHelp {
+		help := d.printHelp
+		if help == nil {
+			help = printHelp
+		}
+		help()
+		return nil
 	}
 
 	loadConfig := d.loadConfig
@@ -135,6 +145,7 @@ type runInput struct {
 	prompt          string
 	forceNewSession bool
 	modelAlias      string
+	showHelp        bool
 }
 
 // parseRunInput 把 CLI 参数折叠成应用层输入。
@@ -155,6 +166,10 @@ func parseRunInput(args []string) (runInput, error) {
 
 		if parseFlags && arg == "--new-session" {
 			input.forceNewSession = true
+			continue
+		}
+		if parseFlags && (arg == "--help" || arg == "-h") {
+			input.showHelp = true
 			continue
 		}
 		if parseFlags && arg == "--model" {
@@ -184,6 +199,7 @@ func parseRunInput(args []string) (runInput, error) {
 		prompt:          input.prompt,
 		forceNewSession: input.forceNewSession,
 		modelAlias:      input.modelAlias,
+		showHelp:        input.showHelp,
 	}, nil
 }
 
@@ -210,6 +226,7 @@ func defaultDependencies() dependencies {
 		openSession:       session.OpenLatestOrCreate,
 		createSession:     session.New,
 		buildLLMClient:    buildLLMClientFromConfig,
+		printHelp:         printHelp,
 		printStartupState: printStartupState,
 	}
 }
@@ -376,4 +393,15 @@ func printStartupState(
 		fmt.Printf("last history role: %s\n", state.lastRecord.Role)
 		fmt.Printf("last history content: %s\n", state.lastRecord.Content)
 	}
+}
+
+// printHelp 输出当前 CLI 入口支持的最小帮助信息。
+func printHelp() {
+	fmt.Println("Usage:")
+	fmt.Println("  fimi [--new-session] [--model <alias>] [--help] [prompt...]")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  --new-session    Start a fresh session for this run")
+	fmt.Println("  --model <alias>  Override the configured model for this run")
+	fmt.Println("  -h, --help       Show this help message")
 }
