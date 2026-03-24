@@ -74,6 +74,10 @@ Next priority items:
   - [ ] think/todo/task（子 agent / 任务派发）
 - [ ] Task/subagent delegation（runtime + tool 层协议未完成）
 - [ ] Checkpoint/revert 与 token-usage 持久化（Python `Context` 的 `_checkpoint` / `_usage` 语义）
+  - [x] Token usage 持久化（`_usage` 记录）
+  - [x] Checkpoint 创建（`_checkpoint` 记录）
+  - [x] Revert 到指定 checkpoint
+  - [x] History 文件轮转备份
 - [ ] Runtime event bus for UI/streaming（StepBegin/StatusUpdate/Interrupted + message parts 流式输出）
 - [ ] UI modes: shell, print, ACP
 - [ ] MCP integration

@@ -14,6 +14,8 @@ const (
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
 	RoleTool      = "tool"
+	RoleUsage     = "_usage"      // token 使用量记录
+	RoleCheckpoint = "_checkpoint" // 检查点记录
 )
 
 // TextRecord 是当前最小可持久化的历史记录模型。
@@ -21,10 +23,22 @@ const (
 // ToolCallID 只在 role=tool 时有意义，用于关联工具调用结果。
 // ToolCallsJSON 只在 role=assistant 时有意义，存储序列化后的工具调用列表。
 type TextRecord struct {
-	Role         string `json:"role"`
-	Content      string `json:"content"`
-	ToolCallID   string `json:"tool_call_id,omitempty"`
+	Role          string `json:"role"`
+	Content       string `json:"content"`
+	ToolCallID    string `json:"tool_call_id,omitempty"`
 	ToolCallsJSON string `json:"tool_calls,omitempty"`
+}
+
+// UsageRecord 记录 token 使用量。
+type UsageRecord struct {
+	Role       string `json:"role"`
+	TokenCount int    `json:"token_count"`
+}
+
+// CheckpointRecord 记录检查点。
+type CheckpointRecord struct {
+	Role string `json:"role"`
+	ID   int    `json:"id"`
 }
 
 // Snapshot 表示某个 history 文件当前的读取结果摘要。
@@ -232,6 +246,12 @@ func (c Context) readRecords(limit int) ([]TextRecord, error) {
 		if err := json.Unmarshal(line, &record); err != nil {
 			return nil, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
 		}
+
+		// 跳过元数据记录（_usage, _checkpoint）
+		if record.Role == RoleUsage || record.Role == RoleCheckpoint {
+			continue
+		}
+
 		if limit == readAllRecords {
 			records = append(records, record)
 			continue
@@ -341,4 +361,249 @@ func (c Context) Snapshot() (Snapshot, error) {
 	snapshot.HasLastRecord = true
 
 	return snapshot, nil
+}
+
+// AppendUsage 追加 token 使用量记录。
+func (c Context) AppendUsage(tokenCount int) error {
+	record := UsageRecord{
+		Role:       RoleUsage,
+		TokenCount: tokenCount,
+	}
+
+	line, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal usage record: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(c.historyFile), 0o755); err != nil {
+		return fmt.Errorf("create history dir: %w", err)
+	}
+
+	f, err := os.OpenFile(c.historyFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open history file %q: %w", c.historyFile, err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("append usage record: %w", err)
+	}
+
+	return nil
+}
+
+// AppendCheckpoint 追加检查点记录，返回检查点 ID。
+func (c Context) AppendCheckpoint() (int, error) {
+	// 计算下一个检查点 ID
+	nextID, err := c.nextCheckpointID()
+	if err != nil {
+		return 0, fmt.Errorf("get next checkpoint id: %w", err)
+	}
+
+	record := CheckpointRecord{
+		Role: RoleCheckpoint,
+		ID:   nextID,
+	}
+
+	line, err := json.Marshal(record)
+	if err != nil {
+		return 0, fmt.Errorf("marshal checkpoint record: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(c.historyFile), 0o755); err != nil {
+		return 0, fmt.Errorf("create history dir: %w", err)
+	}
+
+	f, err := os.OpenFile(c.historyFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 0, fmt.Errorf("open history file %q: %w", c.historyFile, err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		return 0, fmt.Errorf("append checkpoint record: %w", err)
+	}
+
+	return nextID, nil
+}
+
+// nextCheckpointID 返回下一个检查点 ID。
+func (c Context) nextCheckpointID() (int, error) {
+	f, err := os.Open(c.historyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open history file: %w", err)
+	}
+	defer f.Close()
+
+	maxID := -1
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// 尝试解析为 checkpoint 记录
+		var record CheckpointRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Role == RoleCheckpoint && record.ID > maxID {
+			maxID = record.ID
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("scan history file: %w", err)
+	}
+
+	return maxID + 1, nil
+}
+
+// ReadUsage 读取最后的 token 使用量。
+func (c Context) ReadUsage() (int, error) {
+	f, err := os.Open(c.historyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open history file: %w", err)
+	}
+	defer f.Close()
+
+	var lastUsage int
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var record UsageRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Role == RoleUsage {
+			lastUsage = record.TokenCount
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("scan history file: %w", err)
+	}
+
+	return lastUsage, nil
+}
+
+// CheckpointCount 返回当前已有的检查点数量。
+func (c Context) CheckpointCount() (int, error) {
+	nextID, err := c.nextCheckpointID()
+	if err != nil {
+		return 0, err
+	}
+	return nextID, nil
+}
+
+// RevertToCheckpoint 回滚到指定检查点。
+// 该方法会：
+// 1. 将当前 history 文件重命名为备份文件
+// 2. 从备份文件读取到指定检查点为止的内容，写入新 history 文件
+// 3. 返回回滚后恢复的历史记录数量
+func (c Context) RevertToCheckpoint(checkpointID int) (int, error) {
+	// 验证检查点存在
+	count, err := c.CheckpointCount()
+	if err != nil {
+		return 0, fmt.Errorf("get checkpoint count: %w", err)
+	}
+	if checkpointID >= count {
+		return 0, fmt.Errorf("checkpoint %d does not exist (max: %d)", checkpointID, count-1)
+	}
+
+	// 查找可用的备份文件名
+	rotatedPath, err := c.findRotationPath()
+	if err != nil {
+		return 0, fmt.Errorf("find rotation path: %w", err)
+	}
+
+	// 重命名当前文件为备份文件
+	if err := os.Rename(c.historyFile, rotatedPath); err != nil {
+		return 0, fmt.Errorf("rotate history file: %w", err)
+	}
+
+	// 从备份文件读取到指定检查点，写入新文件
+	recordCount, err := c.rebuildUntilCheckpoint(rotatedPath, checkpointID)
+	if err != nil {
+		return 0, fmt.Errorf("rebuild history: %w", err)
+	}
+
+	return recordCount, nil
+}
+
+// findRotationPath 找到下一个可用的备份文件名。
+func (c Context) findRotationPath() (string, error) {
+	base := c.historyFile
+	for i := 1; i <= 1000; i++ {
+		candidate := fmt.Sprintf("%s.%d", base, i)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no available rotation path found")
+}
+
+// rebuildUntilCheckpoint 从备份文件重建 history，直到指定检查点。
+func (c Context) rebuildUntilCheckpoint(rotatedPath string, targetCheckpointID int) (int, error) {
+	oldFile, err := os.Open(rotatedPath)
+	if err != nil {
+		return 0, fmt.Errorf("open rotated file: %w", err)
+	}
+	defer oldFile.Close()
+
+	newFile, err := os.Create(c.historyFile)
+	if err != nil {
+		return 0, fmt.Errorf("create new history file: %w", err)
+	}
+	defer newFile.Close()
+
+	recordCount := 0
+	scanner := bufio.NewScanner(oldFile)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// 解析行以判断是否为目标检查点
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err != nil {
+			continue
+		}
+
+		// 如果遇到目标检查点，停止复制
+		if role, ok := raw["role"].(string); ok && role == RoleCheckpoint {
+			id, _ := raw["id"].(float64)
+			if int(id) == targetCheckpointID {
+				break
+			}
+		}
+
+		// 写入新文件
+		if _, err := newFile.Write(append(line, '\n')); err != nil {
+			return 0, fmt.Errorf("write to new history: %w", err)
+		}
+
+		// 统计非元数据记录
+		if role, ok := raw["role"].(string); ok && role != RoleUsage && role != RoleCheckpoint {
+			recordCount++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("scan rotated file: %w", err)
+	}
+
+	return recordCount, nil
 }
