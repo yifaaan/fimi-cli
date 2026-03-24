@@ -29,6 +29,7 @@ agent:
 		want := Spec{
 			Name:             "Test Agent",
 			SystemPromptPath: promptFile,
+			SystemPromptArgs: nil,
 			Tools: []string{
 				"tool.read",
 				"tool.write",
@@ -36,6 +37,33 @@ agent:
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("LoadFile() = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("loads system prompt args", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE: " reviewer "
+    SCOPE: " app "
+  tools:
+    - tool.read
+`, "You are a ${ROLE} for ${SCOPE}.\n")
+
+		got, err := LoadFile(agentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		want := map[string]string{
+			"ROLE":  "reviewer",
+			"SCOPE": "app",
+		}
+		if !reflect.DeepEqual(got.SystemPromptArgs, want) {
+			t.Fatalf("LoadFile().SystemPromptArgs = %#v, want %#v", got.SystemPromptArgs, want)
 		}
 	})
 
@@ -92,7 +120,8 @@ agent:
 }
 
 func TestLoadSystemPrompt(t *testing.T) {
-	agentFile, _ := writeAgentFixture(t, `
+	t.Run("reads prompt without substitutions", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
 version: 1
 agent:
   name: Test Agent
@@ -101,18 +130,69 @@ agent:
     - tool.read
 `, "\n  You are a test agent.  \n")
 
-	spec, err := LoadFile(agentFile)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
+		spec, err := LoadFile(agentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
 
-	got, err := LoadSystemPrompt(spec)
-	if err != nil {
-		t.Fatalf("LoadSystemPrompt() error = %v", err)
-	}
-	if got != "You are a test agent." {
-		t.Fatalf("LoadSystemPrompt() = %q, want %q", got, "You are a test agent.")
-	}
+		got, err := LoadSystemPrompt(spec)
+		if err != nil {
+			t.Fatalf("LoadSystemPrompt() error = %v", err)
+		}
+		if got != "You are a test agent." {
+			t.Fatalf("LoadSystemPrompt() = %q, want %q", got, "You are a test agent.")
+		}
+	})
+
+	t.Run("substitutes explicit prompt args", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE: reviewer
+    SCOPE: app
+  tools:
+    - tool.read
+`, "\nYou are a ${ROLE} for ${SCOPE}.\n")
+
+		spec, err := LoadFile(agentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		got, err := LoadSystemPrompt(spec)
+		if err != nil {
+			t.Fatalf("LoadSystemPrompt() error = %v", err)
+		}
+		if got != "You are a reviewer for app." {
+			t.Fatalf("LoadSystemPrompt() = %q, want %q", got, "You are a reviewer for app.")
+		}
+	})
+
+	t.Run("returns error when prompt arg is missing", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE: reviewer
+  tools:
+    - tool.read
+`, "\nYou are a ${ROLE} for ${SCOPE}.\n")
+
+		spec, err := LoadFile(agentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		_, err = LoadSystemPrompt(spec)
+		if !errors.Is(err, ErrSystemPromptArgMissing) {
+			t.Fatalf("LoadSystemPrompt() error = %v, want wrapped %v", err, ErrSystemPromptArgMissing)
+		}
+	})
 }
 
 func writeAgentFixture(t *testing.T, agentYAML string, systemPrompt string) (string, string) {

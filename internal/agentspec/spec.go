@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -13,13 +14,17 @@ import (
 const DefaultVersion = 1
 
 var ErrUnsupportedVersion = errors.New("unsupported agent spec version")
+var ErrSystemPromptArgMissing = errors.New("system prompt argument is missing")
+
+var systemPromptArgPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // Spec 表示 Go 运行时当前最小需要的 agent 定义。
 // 这里先只保留 runtime 下一步会直接消费的字段。
 type Spec struct {
-	Name             string   `yaml:"name"`
-	SystemPromptPath string   `yaml:"system_prompt_path"`
-	Tools            []string `yaml:"tools"`
+	Name             string            `yaml:"name"`
+	SystemPromptPath string            `yaml:"system_prompt_path"`
+	SystemPromptArgs map[string]string `yaml:"system_prompt_args"`
+	Tools            []string          `yaml:"tools"`
 }
 
 type fileEnvelope struct {
@@ -63,15 +68,43 @@ func LoadSystemPrompt(spec Spec) (string, error) {
 		return "", fmt.Errorf("read system prompt file %q: %w", spec.SystemPromptPath, err)
 	}
 
-	return strings.TrimSpace(string(data)), nil
+	prompt, err := substituteSystemPromptArgs(strings.TrimSpace(string(data)), spec.SystemPromptArgs)
+	if err != nil {
+		return "", fmt.Errorf("substitute system prompt file %q: %w", spec.SystemPromptPath, err)
+	}
+
+	return prompt, nil
 }
 
 func normalizeSpec(spec Spec) Spec {
 	spec.Name = strings.TrimSpace(spec.Name)
 	spec.SystemPromptPath = strings.TrimSpace(spec.SystemPromptPath)
+	spec.SystemPromptArgs = normalizeSystemPromptArgs(spec.SystemPromptArgs)
 	spec.Tools = normalizeTools(spec.Tools)
 
 	return spec
+}
+
+func normalizeSystemPromptArgs(args map[string]string) map[string]string {
+	if len(args) == 0 {
+		return nil
+	}
+
+	normalized := make(map[string]string, len(args))
+	for key, value := range args {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+
+		normalized[key] = strings.TrimSpace(value)
+	}
+
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	return normalized
 }
 
 func normalizeTools(tools []string) []string {
@@ -111,4 +144,35 @@ func validateSpec(spec Spec) error {
 	}
 
 	return nil
+}
+
+func substituteSystemPromptArgs(prompt string, args map[string]string) (string, error) {
+	matches := systemPromptArgPattern.FindAllStringSubmatchIndex(prompt, -1)
+	if len(matches) == 0 {
+		return prompt, nil
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(prompt))
+
+	last := 0
+	for _, match := range matches {
+		start := match[0]
+		end := match[1]
+		nameStart := match[2]
+		nameEnd := match[3]
+		name := prompt[nameStart:nameEnd]
+
+		value, ok := args[name]
+		if !ok {
+			return "", fmt.Errorf("%w: %s", ErrSystemPromptArgMissing, name)
+		}
+
+		builder.WriteString(prompt[last:start])
+		builder.WriteString(value)
+		last = end
+	}
+	builder.WriteString(prompt[last:])
+
+	return builder.String(), nil
 }

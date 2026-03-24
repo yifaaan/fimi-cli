@@ -18,8 +18,8 @@ Active phase: Phase 1, Agent Composition Layer
 
 Current teaching unit:
 
-- add system prompt template expansion
 - add agent inheritance / extension
+- keep builtin prompt variables deferred until app/runtime can supply them
 - keep real tool execution deferred until the runtime tool boundary exists
 
 ### Already Implemented In Go
@@ -37,7 +37,8 @@ Current teaching unit:
 ### Still Missing Versus `temp/kimi-cli`
 
 - [x] Agent spec loading from YAML
-- [ ] System prompt template expansion and agent inheritance
+- [x] System prompt template expansion
+- [ ] Agent inheritance / extension
 - [ ] Multi-step runtime loop with max-step and retry control
 - [ ] Structured tool-call protocol between model and runtime
 - [ ] Tool registry and tool execution layer
@@ -130,6 +131,7 @@ Goal: introduce the missing layer between `app` and `runtime` that knows how to 
 - [x] Create `internal/agentspec`
 - [x] Parse agent YAML from disk
 - [x] Support agent name, system prompt path, tool list
+- [x] Support `system_prompt_args` substitution
 - [x] Load system prompt text from file
 - [x] Resolve agent file path from CLI/app defaults
 - [x] Keep tool loading explicit in Go instead of Python-style reflection
