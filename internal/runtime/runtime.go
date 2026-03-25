@@ -149,6 +149,7 @@ type StepResult struct {
 	ToolExecutions  []ToolExecution
 	ToolFailure     *ToolExecutionError
 	Usage           Usage // 本次 step 的 token 使用量
+	TextStreamed    bool  // 文本是否已通过流式发送（用于避免重复打印）
 }
 
 // BuildToolStepRecords 构造工具调用步骤需要追加到 history 的记录。
@@ -449,11 +450,13 @@ func (r Runner) runStep(
 	}
 
 	var assistantReply AssistantReply
+	var textStreamed bool
 
 	// 检查 engine 是否支持流式，以及是否有 eventSink
 	// 这是 Go 的"能力检测"模式：通过类型断言检查可选能力
 	if streamingEngine, ok := r.engine.(StreamingEngine); ok && r.eventSink != nil {
 		assistantReply, err = streamingEngine.ReplyStream(ctx, replyInput, r.eventSink)
+		textStreamed = true
 	} else {
 		assistantReply, err = r.engine.Reply(ctx, replyInput)
 	}
@@ -476,6 +479,7 @@ func (r Runner) runStep(
 			AssistantText: assistantReply.Text,
 			ToolCalls:     assistantReply.ToolCalls,
 			Usage:         assistantReply.Usage,
+			TextStreamed:  textStreamed,
 		}, nil
 	}
 
@@ -494,6 +498,7 @@ func (r Runner) runStep(
 		AssistantText:   assistantReply.Text,
 		AppendedRecords: records,
 		Usage:           assistantReply.Usage,
+		TextStreamed:    textStreamed,
 	}, nil
 }
 
@@ -581,7 +586,7 @@ func (r Runner) emitStepEvents(
 	store contextstore.Context,
 	stepResult StepResult,
 ) error {
-	if strings.TrimSpace(stepResult.AssistantText) != "" {
+	if !stepResult.TextStreamed && strings.TrimSpace(stepResult.AssistantText) != "" {
 		if err := r.emitEvent(ctx, runtimeevents.TextPart{Text: stepResult.AssistantText}); err != nil {
 			return err
 		}
