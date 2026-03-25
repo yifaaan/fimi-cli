@@ -38,13 +38,58 @@ func TestVisualizeTextPrintsEventsInOrder(t *testing.T) {
 
 	want := strings.Join([]string{
 		"[step 1]",
-		"hello",
+		"hello", // TextPart 后面跟着 ToolCall，所以会补换行
 		`[tool call] read_file {"path":"main.go"}`,
 		"[tool result] read_file package main",
 		"[status] context used 25%",
 		"[interrupted]",
 		"",
 	}, "\n")
+	if out.String() != want {
+		t.Fatalf("printed output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestVisualizeTextStreamsMultipleTextPartsOnSameLine(t *testing.T) {
+	var out bytes.Buffer
+	visualize := VisualizeText(&out)
+
+	events := make(chan runtimeevents.Event, 5)
+	events <- runtimeevents.StepBegin{Number: 1}
+	events <- runtimeevents.TextPart{Text: "hel"}
+	events <- runtimeevents.TextPart{Text: "lo "}
+	events <- runtimeevents.TextPart{Text: "world"}
+	events <- runtimeevents.StepBegin{Number: 2} // 触发补换行
+	close(events)
+
+	err := visualize(context.Background(), events)
+	if err != nil {
+		t.Fatalf("visualize() error = %v", err)
+	}
+
+	// 期望：多个 TextPart 拼接在同一行，遇到 StepBegin 才补换行
+	want := "[step 1]\nhello world\n[step 2]\n"
+	if out.String() != want {
+		t.Fatalf("printed output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestVisualizeTextAddsNewlineAtEndWhenEndsWithTextPart(t *testing.T) {
+	var out bytes.Buffer
+	visualize := VisualizeText(&out)
+
+	events := make(chan runtimeevents.Event, 2)
+	events <- runtimeevents.StepBegin{Number: 1}
+	events <- runtimeevents.TextPart{Text: "final answer"}
+	close(events)
+
+	err := visualize(context.Background(), events)
+	if err != nil {
+		t.Fatalf("visualize() error = %v", err)
+	}
+
+	// 期望：流结束时如果最后一个事件是 TextPart，补换行
+	want := "[step 1]\nfinal answer\n"
 	if out.String() != want {
 		t.Fatalf("printed output = %q, want %q", out.String(), want)
 	}
