@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"fimi-cli/internal/runtime"
 	"fimi-cli/internal/session"
 	"fimi-cli/internal/tools"
+	"fimi-cli/internal/ui"
+	"fimi-cli/internal/ui/printui"
 )
 
 func testLoadedAgent(prompt string) loadedAgent {
@@ -1368,6 +1371,65 @@ func TestDependenciesBuildRunnerForAgentRunsWithResolvedAgentTools(t *testing.T)
 	}
 }
 
+func TestDependenciesRunRuntimeStreamsPrintUIForEventfulRunner(t *testing.T) {
+	var out bytes.Buffer
+	deps := dependencies{
+		buildVisualizer: func() ui.VisualizeFunc {
+			return printui.VisualizeText(&out)
+		},
+	}
+	runner := runtime.New(fakeRuntimeEngine{
+		reply: runtime.AssistantReply{Text: "assistant reply"},
+	}, runtime.Config{})
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+
+	result, err := deps.runRuntime(context.Background(), runner, store, runtime.Input{
+		Prompt:       "hello",
+		Model:        "test-model",
+		SystemPrompt: "You are the configured agent.",
+	})
+	if err != nil {
+		t.Fatalf("runRuntime() error = %v", err)
+	}
+	if result.Status != runtime.RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, runtime.RunStatusFinished)
+	}
+
+	want := "[step 1]\nassistant reply\n"
+	if out.String() != want {
+		t.Fatalf("print ui output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestDependenciesRunRuntimeKeepsLegacyRunnerCompatible(t *testing.T) {
+	var out bytes.Buffer
+	deps := dependencies{
+		buildVisualizer: func() ui.VisualizeFunc {
+			return printui.VisualizeText(&out)
+		},
+	}
+	runner := &stubRunner{
+		result: runtime.Result{
+			Status: runtime.RunStatusFinished,
+		},
+	}
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+
+	result, err := deps.runRuntime(context.Background(), runner, store, runtime.Input{
+		Prompt: "hello",
+		Model:  "test-model",
+	})
+	if err != nil {
+		t.Fatalf("runRuntime() error = %v", err)
+	}
+	if result.Status != runtime.RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, runtime.RunStatusFinished)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("print ui output = %q, want empty output for legacy runner", out.String())
+	}
+}
+
 func TestBuildRunnerReturnsErrorForUnsupportedMode(t *testing.T) {
 	_, err := buildRunner(config.Config{
 		DefaultModel: "broken",
@@ -1414,4 +1476,13 @@ func (r *stubRunner) Run(_ context.Context, store contextstore.Context, input ru
 	}
 
 	return r.result, nil
+}
+
+type fakeRuntimeEngine struct {
+	reply runtime.AssistantReply
+	err   error
+}
+
+func (e fakeRuntimeEngine) Reply(ctx context.Context, input runtime.ReplyInput) (runtime.AssistantReply, error) {
+	return e.reply, e.err
 }

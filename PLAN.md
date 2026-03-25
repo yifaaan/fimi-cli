@@ -23,6 +23,7 @@ Completed in this session:
 - [x] stop inferring the active session from history file mtime
 - [x] return a clear user-facing error when `--continue` has no previous session
 - [x] define `internal/runtime/events` and wire a no-op event sink into runtime
+- [x] route the default app runtime path through the event coordinator + print UI
 - [x] add explicit unfinished step state
 - [x] let runtime loop represent "continue" without using errors
 - [x] keep real tool execution deferred until the runtime tool boundary exists
@@ -298,8 +299,8 @@ Goal: make runtime observable before building the full interactive shell.
 - [ ] widen the runtime/LLM seam enough to emit step begin / text parts / tool-call deltas / tool results / status / interruption
   - 当前已接入非流式事件：`step begin`、`text`、`tool_call`、`tool_result`、`status`、`interrupted`
   - `tool-call delta` 仍依赖后续 streaming LLM seam
-- [ ] create a minimal `internal/ui/printui`
-- [ ] support plain text output first
+- [x] create a minimal `internal/ui/printui`
+- [x] support plain text output first
 - [ ] defer `stream-json` until the event boundary is stable
 
 Why print UI before shell UI:

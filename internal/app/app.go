@@ -13,8 +13,11 @@ import (
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/runtime"
+	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
 	"fimi-cli/internal/tools"
+	"fimi-cli/internal/ui"
+	"fimi-cli/internal/ui/printui"
 )
 
 const (
@@ -34,6 +37,7 @@ type sessionContinuer func(workDir string) (session.Session, error)
 type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
+type runtimeVisualizerBuilder func() ui.VisualizeFunc
 type agentLoader func(workDir string, registry tools.Registry) (loadedAgent, error)
 type toolRegistryBuilder func() tools.Registry
 type helpPrinter func()
@@ -70,6 +74,7 @@ type dependencies struct {
 	createSession      sessionCreator
 	buildLLMClient     llmClientBuilder
 	buildRuntimeRunner runtimeRunnerBuilder
+	buildVisualizer    runtimeVisualizerBuilder
 	printHelp          helpPrinter
 	printStartupState  startupStatePrinter
 }
@@ -151,7 +156,7 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 
-	runResult, err := runner.Run(context.Background(), ctx, buildRuntimeInput(cfg, input, agent))
+	runResult, err := d.runRuntime(context.Background(), runner, ctx, buildRuntimeInput(cfg, input, agent))
 	if err != nil {
 		return fmt.Errorf("run runtime: %w", err)
 	}
@@ -264,6 +269,7 @@ func defaultDependencies() dependencies {
 		continueSession:   session.Continue,
 		createSession:     session.New,
 		buildLLMClient:    buildLLMClientFromConfig,
+		buildVisualizer:   defaultRuntimeVisualizer,
 		printHelp:         printHelp,
 		printStartupState: printStartupState,
 	}
@@ -346,6 +352,41 @@ func buildEngine(cfg config.Config) (llm.Engine, error) {
 
 func buildRunner(cfg config.Config) (runtimeRunner, error) {
 	return defaultDependencies().buildRunner(cfg)
+}
+
+type eventSinkCapableRunner interface {
+	WithEventSink(sink runtimeevents.Sink) runtime.Runner
+}
+
+func (d dependencies) runRuntime(
+	ctx context.Context,
+	runner runtimeRunner,
+	store contextstore.Context,
+	input runtime.Input,
+) (runtime.Result, error) {
+	buildVisualizer := d.buildVisualizer
+	if buildVisualizer == nil {
+		buildVisualizer = defaultRuntimeVisualizer
+	}
+
+	visualize := buildVisualizer()
+
+	return ui.Run(
+		ctx,
+		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
+			eventfulRunner, ok := runner.(eventSinkCapableRunner)
+			if !ok {
+				return runner.Run(ctx, store, input)
+			}
+
+			return eventfulRunner.WithEventSink(sink).Run(ctx, store, input)
+		},
+		visualize,
+	)
+}
+
+func defaultRuntimeVisualizer() ui.VisualizeFunc {
+	return printui.VisualizeText(os.Stdout)
 }
 
 // loadRunAgent 负责解析当前运行使用的默认 agent。
