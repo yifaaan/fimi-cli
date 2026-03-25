@@ -1,68 +1,102 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	tea "github.com/charmbracelet/bubbletea"
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
-	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
-func TestBindRuntimeEventsForwardsEventsToBubbleTea(t *testing.T) {
+func TestRunProcessesInitialPromptBeforeEnteringLoop(t *testing.T) {
 	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	runner := runtime.New(staticRuntimeEngine{
+	runner := runtime.New(fakeRuntimeEngine{
 		reply: runtime.AssistantReply{
-			Text: "streamed hello",
+			Text: "assistant reply",
 		},
 	}, runtime.Config{})
 
-	messages := make([]tea.Msg, 0, 4)
-	eventfulRunner := bindRuntimeEvents(runner, func(msg tea.Msg) {
-		messages = append(messages, msg)
-	})
-
-	_, err := eventfulRunner.Run(context.Background(), store, runtime.Input{
-		Prompt: "hello",
-		Model:  "test-model",
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := Run(context.Background(), Dependencies{
+		Runner:        runner,
+		Store:         store,
+		Input:         strings.NewReader("/exit\n"),
+		Output:        &out,
+		ErrOutput:     &errOut,
+		ModelName:     "test-model",
+		SystemPrompt:  "You are the configured agent.",
+		InitialPrompt: "fix tests",
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if !containsRuntimeEvent(messages, runtimeevents.StepBegin{Number: 1}) {
-		t.Fatalf("messages = %#v, want step begin event", messages)
+	if !strings.Contains(out.String(), "[step 1]\nassistant reply\n") {
+		t.Fatalf("shell output = %q, want assistant transcript", out.String())
 	}
-	if !containsRuntimeEvent(messages, runtimeevents.TextPart{Text: "streamed hello"}) {
-		t.Fatalf("messages = %#v, want text part event", messages)
+	if !strings.HasSuffix(out.String(), promptText) {
+		t.Fatalf("shell output = %q, want trailing prompt %q", out.String(), promptText)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("shell stderr = %q, want empty", errOut.String())
 	}
 }
 
-type staticRuntimeEngine struct {
+func TestRunHandlesMetaCommandsWithoutCallingRunner(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	runner := &countingRunner{}
+
+	err := Run(context.Background(), Dependencies{
+		Runner:    runner,
+		Store:     contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:     strings.NewReader("/help\n/clear\n/exit\n"),
+		Output:    &out,
+		ErrOutput: &errOut,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if runner.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0", runner.calls)
+	}
+	if !strings.Contains(out.String(), "Shell commands:\n") {
+		t.Fatalf("shell output = %q, want help text", out.String())
+	}
+	if !strings.Contains(out.String(), clearScreenANSI) {
+		t.Fatalf("shell output = %q, want clear screen sequence", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	}
+}
+
+type countingRunner struct {
+	calls int
+}
+
+func (r *countingRunner) Run(
+	_ context.Context,
+	_ contextstore.Context,
+	_ runtime.Input,
+) (runtime.Result, error) {
+	r.calls++
+	return runtime.Result{Status: runtime.RunStatusFinished}, nil
+}
+
+type fakeRuntimeEngine struct {
 	reply runtime.AssistantReply
 	err   error
 }
 
-func (e staticRuntimeEngine) Reply(
+func (e fakeRuntimeEngine) Reply(
 	ctx context.Context,
 	input runtime.ReplyInput,
 ) (runtime.AssistantReply, error) {
 	return e.reply, e.err
-}
-
-func containsRuntimeEvent(messages []tea.Msg, want runtimeevents.Event) bool {
-	for _, msg := range messages {
-		eventMsg, ok := msg.(runtimeEventMsg)
-		if !ok {
-			continue
-		}
-		if eventMsg.event == want {
-			return true
-		}
-	}
-
-	return false
 }

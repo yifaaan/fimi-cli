@@ -19,6 +19,7 @@ import (
 	"fimi-cli/internal/tools"
 	"fimi-cli/internal/ui"
 	"fimi-cli/internal/ui/printui"
+	"fimi-cli/internal/ui/shell"
 )
 
 func testLoadedAgent(prompt string) loadedAgent {
@@ -450,6 +451,21 @@ func TestParseRunInput(t *testing.T) {
 			},
 		},
 		{
+			name: "shell long flag",
+			args: []string{"--shell"},
+			want: runInput{
+				shellMode: true,
+			},
+		},
+		{
+			name: "shell short flag with prompt",
+			args: []string{"-i", "fix", "tests"},
+			want: runInput{
+				prompt:    "fix tests",
+				shellMode: true,
+			},
+		},
+		{
 			name: "flag terminator keeps literal flag in prompt",
 			args: []string{"--new-session", "--", "--new-session", "fix"},
 			want: runInput{
@@ -689,6 +705,87 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 	}
 	if buildRunnerCalled {
 		t.Fatalf("buildRuntimeRunner() called = true, want false")
+	}
+}
+
+func TestDependenciesRunDelegatesToShellMode(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	var gotDeps shell.Dependencies
+	var printedState bool
+
+	deps := dependencies{
+		loadConfig: func() (config.Config, error) {
+			return config.Config{
+				DefaultModel: "default-model",
+				Models: map[string]config.ModelConfig{
+					"default-model": {
+						Provider: config.ProviderTypePlaceholder,
+						Model:    "actual-model",
+					},
+				},
+			}, nil
+		},
+		resolveWorkDir: func() (string, error) {
+			return "/tmp/fimi-project", nil
+		},
+		loadAgent: testAgentLoader("You are the configured agent."),
+		createSession: func(workDir string) (session.Session, error) {
+			return session.Session{
+				ID:          "session-123",
+				WorkDir:     workDir,
+				HistoryFile: historyFile,
+			}, nil
+		},
+		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+			return &stubRunner{}, nil
+		},
+		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+			gotDeps = deps
+			return nil
+		},
+		printStartupState: func(
+			sess session.Session,
+			ctx contextstore.Context,
+			state startupState,
+			sessionReused bool,
+			model string,
+		) {
+			printedState = true
+		},
+	}
+
+	if err := deps.run([]string{"--shell", "fix", "tests"}); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if gotDeps.Runner == nil {
+		t.Fatalf("shell deps runner = nil, want non-nil")
+	}
+	if gotDeps.Store.Path() != historyFile {
+		t.Fatalf("shell deps store path = %q, want %q", gotDeps.Store.Path(), historyFile)
+	}
+	if gotDeps.ModelName != "actual-model" {
+		t.Fatalf("shell deps model = %q, want %q", gotDeps.ModelName, "actual-model")
+	}
+	if gotDeps.SystemPrompt != "You are the configured agent." {
+		t.Fatalf("shell deps system prompt = %q, want %q", gotDeps.SystemPrompt, "You are the configured agent.")
+	}
+	if gotDeps.InitialPrompt != "fix tests" {
+		t.Fatalf("shell deps initial prompt = %q, want %q", gotDeps.InitialPrompt, "fix tests")
+	}
+	if printedState {
+		t.Fatalf("printStartupState() called = true, want false in shell mode")
+	}
+
+	records, err := contextstore.New(historyFile).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	wantRecords := []contextstore.TextRecord{
+		contextstore.NewSystemTextRecord(initialRecordContent),
+	}
+	if !reflect.DeepEqual(records, wantRecords) {
+		t.Fatalf("history records = %#v, want %#v", records, wantRecords)
 	}
 }
 

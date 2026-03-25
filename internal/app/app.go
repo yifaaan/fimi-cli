@@ -39,6 +39,7 @@ type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
 type runtimeVisualizerBuilder func() ui.VisualizeFunc
+type shellUIRunner func(ctx context.Context, deps shell.Dependencies) error
 type agentLoader func(workDir string, registry tools.Registry) (loadedAgent, error)
 type toolRegistryBuilder func() tools.Registry
 type helpPrinter func()
@@ -76,6 +77,7 @@ type dependencies struct {
 	buildLLMClient     llmClientBuilder
 	buildRuntimeRunner runtimeRunnerBuilder
 	buildVisualizer    runtimeVisualizerBuilder
+	runShellUI         shellUIRunner
 	printHelp          helpPrinter
 	printStartupState  startupStatePrinter
 }
@@ -142,7 +144,7 @@ func (d dependencies) run(args []string) error {
 	}
 
 	if input.shellMode {
-		return d.runShell(cfg, agent, workDir)
+		return d.runShell(context.Background(), cfg, agent, workDir, input)
 	}
 
 	sess, sessionReused, err := d.openRunSession(workDir, input)
@@ -175,33 +177,6 @@ func (d dependencies) run(args []string) error {
 	printState(sess, ctx, state, sessionReused, resolveRuntimeModelName(cfg))
 
 	return nil
-}
-
-// runShell assembles dependencies for shell mode and delegates to shell.Run.
-func (d dependencies) runShell(cfg config.Config, agent loadedAgent, workDir string) error {
-	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
-	if err != nil {
-		return fmt.Errorf("build runner for shell: %w", err)
-	}
-
-	createSession := d.createSession
-	if createSession == nil {
-		createSession = session.New
-	}
-
-	sess, err := createSession(workDir)
-	if err != nil {
-		return fmt.Errorf("create session for shell: %w", err)
-	}
-
-	store := contextstore.New(sess.HistoryFile)
-
-	shellRunner, ok := runner.(runtime.Runner)
-	if !ok {
-		return fmt.Errorf("runner does not implement runtime.Runner")
-	}
-
-	return shell.Run(context.Background(), shellRunner, store, resolveRuntimeModelName(cfg), agent.SystemPrompt)
 }
 
 // runInput 表示当前 CLI 入口解析出的最小输入结果。
@@ -539,6 +514,45 @@ func (d dependencies) runRuntime(
 
 func defaultRuntimeVisualizer() ui.VisualizeFunc {
 	return printui.VisualizeText(os.Stdout)
+}
+
+func (d dependencies) runShell(
+	ctx context.Context,
+	cfg config.Config,
+	agent loadedAgent,
+	workDir string,
+	input runInput,
+) error {
+	sess, _, err := d.openRunSession(workDir, input)
+	if err != nil {
+		return err
+	}
+
+	store := contextstore.New(sess.HistoryFile)
+	if _, err := bootstrapStartupState(store); err != nil {
+		return err
+	}
+
+	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
+	if err != nil {
+		return err
+	}
+
+	runShellUI := d.runShellUI
+	if runShellUI == nil {
+		runShellUI = shell.Run
+	}
+
+	return runShellUI(ctx, shell.Dependencies{
+		Runner:        runner,
+		Store:         store,
+		Input:         os.Stdin,
+		Output:        os.Stdout,
+		ErrOutput:     os.Stderr,
+		ModelName:     resolveRuntimeModelName(cfg),
+		SystemPrompt:  agent.SystemPrompt,
+		InitialPrompt: input.prompt,
+	})
 }
 
 // loadRunAgent 负责解析当前运行使用的默认 agent。
