@@ -22,11 +22,18 @@ var systemPromptArgPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`
 // Spec 表示 Go 运行时当前最小需要的 agent 定义。
 // 这里先只保留 runtime 下一步会直接消费的字段。
 type Spec struct {
-	Extend           string            `yaml:"extend"`
-	Name             string            `yaml:"name"`
-	SystemPromptPath string            `yaml:"system_prompt_path"`
-	SystemPromptArgs map[string]string `yaml:"system_prompt_args"`
-	Tools            []string          `yaml:"tools"`
+	Extend           string                  `yaml:"extend"`
+	Name             string                  `yaml:"name"`
+	SystemPromptPath string                  `yaml:"system_prompt_path"`
+	SystemPromptArgs map[string]string       `yaml:"system_prompt_args"`
+	Tools            []string                `yaml:"tools"`
+	ExcludeTools     []string                `yaml:"exclude_tools"`
+	Subagents        map[string]SubagentSpec `yaml:"subagents"`
+}
+
+type SubagentSpec struct {
+	Path        string `yaml:"path"`
+	Description string `yaml:"description"`
 }
 
 type fileEnvelope struct {
@@ -66,6 +73,7 @@ func loadFile(path string, visited map[string]struct{}) (Spec, error) {
 
 	spec := normalizeSpec(envelope.Agent)
 	spec.SystemPromptPath = resolvePath(filepath.Dir(path), spec.SystemPromptPath)
+	spec.Subagents = resolveSubagentPaths(filepath.Dir(path), spec.Subagents)
 	if spec.Extend != "" {
 		basePath := resolvePath(filepath.Dir(path), spec.Extend)
 		baseSpec, err := loadFile(basePath, visited)
@@ -105,8 +113,35 @@ func normalizeSpec(spec Spec) Spec {
 	spec.SystemPromptPath = strings.TrimSpace(spec.SystemPromptPath)
 	spec.SystemPromptArgs = normalizeSystemPromptArgs(spec.SystemPromptArgs)
 	spec.Tools = normalizeTools(spec.Tools)
+	spec.ExcludeTools = normalizeTools(spec.ExcludeTools)
+	spec.Subagents = normalizeSubagents(spec.Subagents)
 
 	return spec
+}
+
+func normalizeSubagents(subagents map[string]SubagentSpec) map[string]SubagentSpec {
+	if len(subagents) == 0 {
+		return nil
+	}
+
+	normalized := make(map[string]SubagentSpec, len(subagents))
+	for name, spec := range subagents {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		normalized[name] = SubagentSpec{
+			Path:        strings.TrimSpace(spec.Path),
+			Description: strings.TrimSpace(spec.Description),
+		}
+	}
+
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	return normalized
 }
 
 func normalizeSystemPromptArgs(args map[string]string) map[string]string {
@@ -132,6 +167,10 @@ func normalizeSystemPromptArgs(args map[string]string) map[string]string {
 }
 
 func normalizeTools(tools []string) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+
 	normalized := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		tool = strings.TrimSpace(tool)
@@ -140,6 +179,10 @@ func normalizeTools(tools []string) []string {
 		}
 
 		normalized = append(normalized, tool)
+	}
+
+	if len(normalized) == 0 {
+		return nil
 	}
 
 	return normalized
@@ -166,6 +209,14 @@ func validateSpec(spec Spec) error {
 	if len(spec.Tools) == 0 {
 		return errors.New("agent.tools is required")
 	}
+	for name, subagent := range spec.Subagents {
+		if subagent.Path == "" {
+			return fmt.Errorf("agent.subagents.%s.path is required", name)
+		}
+		if subagent.Description == "" {
+			return fmt.Errorf("agent.subagents.%s.description is required", name)
+		}
+	}
 
 	return nil
 }
@@ -184,8 +235,28 @@ func mergeSpec(base Spec, override Spec) Spec {
 	if len(override.Tools) > 0 {
 		merged.Tools = override.Tools
 	}
+	if len(override.ExcludeTools) > 0 {
+		merged.ExcludeTools = override.ExcludeTools
+	}
+	if len(override.Subagents) > 0 {
+		merged.Subagents = override.Subagents
+	}
 
 	return merged
+}
+
+func resolveSubagentPaths(baseDir string, subagents map[string]SubagentSpec) map[string]SubagentSpec {
+	if len(subagents) == 0 {
+		return nil
+	}
+
+	resolved := make(map[string]SubagentSpec, len(subagents))
+	for name, subagent := range subagents {
+		subagent.Path = resolvePath(baseDir, subagent.Path)
+		resolved[name] = subagent
+	}
+
+	return resolved
 }
 
 func mergeStringMaps(base map[string]string, override map[string]string) map[string]string {

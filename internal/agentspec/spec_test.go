@@ -68,6 +68,60 @@ agent:
 		}
 	})
 
+	t.Run("loads exclude tools and subagents", func(t *testing.T) {
+		dir := t.TempDir()
+		agentFile := filepath.Join(dir, "agent.yaml")
+		promptFile := filepath.Join(dir, "system.md")
+		reviewerFile := filepath.Join(dir, "reviewer.yaml")
+
+		if err := os.WriteFile(agentFile, []byte(`
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  tools:
+    - bash
+    - read_file
+  exclude_tools:
+    - " bash "
+    - ""
+  subagents:
+    " reviewer ":
+      path: ./reviewer.yaml
+      description: " review code "
+    "":
+      path: ./ignored.yaml
+      description: ignored
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(agent.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(promptFile, []byte("You are a test agent.\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(system.md) error = %v", err)
+		}
+		if err := os.WriteFile(reviewerFile, []byte("placeholder\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(reviewer.yaml) error = %v", err)
+		}
+
+		got, err := LoadFile(agentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		if !reflect.DeepEqual(got.ExcludeTools, []string{"bash"}) {
+			t.Fatalf("LoadFile().ExcludeTools = %#v, want %#v", got.ExcludeTools, []string{"bash"})
+		}
+
+		wantSubagents := map[string]SubagentSpec{
+			"reviewer": {
+				Path:        reviewerFile,
+				Description: "review code",
+			},
+		}
+		if !reflect.DeepEqual(got.Subagents, wantSubagents) {
+			t.Fatalf("LoadFile().Subagents = %#v, want %#v", got.Subagents, wantSubagents)
+		}
+	})
+
 	t.Run("resolves relative extend and merges fields", func(t *testing.T) {
 		dir := t.TempDir()
 		baseAgentFile := filepath.Join(dir, "base.yaml")
@@ -114,6 +168,85 @@ agent:
 				"SCOPE": "app",
 			},
 			Tools: []string{"tool.read"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("LoadFile() = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("overrides exclude tools and subagents when extending", func(t *testing.T) {
+		dir := t.TempDir()
+		baseAgentFile := filepath.Join(dir, "base.yaml")
+		childAgentFile := filepath.Join(dir, "child.yaml")
+		promptFile := filepath.Join(dir, "system.md")
+		baseReviewerFile := filepath.Join(dir, "base-reviewer.yaml")
+		childCoderFile := filepath.Join(dir, "child-coder.yaml")
+
+		if err := os.WriteFile(baseAgentFile, []byte(`
+version: 1
+agent:
+  name: Base Agent
+  system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE: reviewer
+  tools:
+    - bash
+    - read_file
+  exclude_tools:
+    - bash
+  subagents:
+    reviewer:
+      path: ./base-reviewer.yaml
+      description: Review code
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(base.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(childAgentFile, []byte(`
+version: 1
+agent:
+  extend: ./base.yaml
+  system_prompt_args:
+    SCOPE: app
+  exclude_tools:
+    - read_file
+  subagents:
+    coder:
+      path: ./child-coder.yaml
+      description: Write code
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(child.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(promptFile, []byte("You are a ${ROLE} for ${SCOPE}.\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(system.md) error = %v", err)
+		}
+		if err := os.WriteFile(baseReviewerFile, []byte("placeholder\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(base-reviewer.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(childCoderFile, []byte("placeholder\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(child-coder.yaml) error = %v", err)
+		}
+
+		got, err := LoadFile(childAgentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		want := Spec{
+			Extend:           "",
+			Name:             "Base Agent",
+			SystemPromptPath: promptFile,
+			SystemPromptArgs: map[string]string{
+				"ROLE":  "reviewer",
+				"SCOPE": "app",
+			},
+			Tools:        []string{"bash", "read_file"},
+			ExcludeTools: []string{"read_file"},
+			Subagents: map[string]SubagentSpec{
+				"coder": {
+					Path:        childCoderFile,
+					Description: "Write code",
+				},
+			},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("LoadFile() = %#v, want %#v", got, want)
@@ -202,6 +335,52 @@ agent:
 		}
 		if err.Error() != `validate agent spec file "`+agentFile+`": agent.name is required` {
 			t.Fatalf("LoadFile() error = %q, want missing-name validation", err.Error())
+		}
+	})
+
+	t.Run("rejects subagent with empty path", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  tools:
+    - tool.read
+  subagents:
+    reviewer:
+      path: " "
+      description: Review code
+`, "You are a test agent.\n")
+
+		_, err := LoadFile(agentFile)
+		if err == nil {
+			t.Fatalf("LoadFile() error = nil, want non-nil")
+		}
+		if err.Error() != `validate agent spec file "`+agentFile+`": agent.subagents.reviewer.path is required` {
+			t.Fatalf("LoadFile() error = %q, want missing-subagent-path validation", err.Error())
+		}
+	})
+
+	t.Run("rejects subagent with empty description", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  tools:
+    - tool.read
+  subagents:
+    reviewer:
+      path: ./reviewer.yaml
+      description: " "
+`, "You are a test agent.\n")
+
+		_, err := LoadFile(agentFile)
+		if err == nil {
+			t.Fatalf("LoadFile() error = nil, want non-nil")
+		}
+		if err.Error() != `validate agent spec file "`+agentFile+`": agent.subagents.reviewer.description is required` {
+			t.Fatalf("LoadFile() error = %q, want missing-subagent-description validation", err.Error())
 		}
 	})
 }

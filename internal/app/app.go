@@ -31,6 +31,7 @@ const (
 var ErrUnknownCLIFlag = errors.New("unknown cli flag")
 var ErrCLIFlagValueRequired = errors.New("cli flag requires a value")
 var ErrConflictingSessionFlags = errors.New("conflicting session flags")
+var ErrSubagentNotDeclared = errors.New("subagent is not declared")
 
 type configLoader func() (config.Config, error)
 type workDirResolver func() (string, error)
@@ -569,11 +570,43 @@ func defaultAgentFile(workDir string) string {
 func loadAgentFromWorkDir(workDir string, registry tools.Registry) (loadedAgent, error) {
 	agentFile := defaultAgentFile(workDir)
 
-	spec, err := agentspec.LoadFile(agentFile)
+	agent, err := loadAgentFromFile(agentFile, registry)
 	if err != nil {
 		return loadedAgent{}, fmt.Errorf("load default agent file %q: %w", agentFile, err)
 	}
 
+	return agent, nil
+}
+
+func loadDeclaredSubagent(
+	root loadedAgent,
+	subagentName string,
+	registry tools.Registry,
+) (loadedAgent, error) {
+	subagentName = strings.TrimSpace(subagentName)
+	subagentSpec, ok := root.Spec.Subagents[subagentName]
+	if !ok {
+		return loadedAgent{}, fmt.Errorf("%w: %s", ErrSubagentNotDeclared, subagentName)
+	}
+
+	agent, err := loadAgentFromFile(subagentSpec.Path, registry)
+	if err != nil {
+		return loadedAgent{}, fmt.Errorf(
+			"load subagent %q for agent %q: %w",
+			subagentName,
+			root.Spec.Name,
+			err,
+		)
+	}
+
+	return agent, nil
+}
+
+func loadAgentFromFile(agentFile string, registry tools.Registry) (loadedAgent, error) {
+	spec, err := agentspec.LoadFile(agentFile)
+	if err != nil {
+		return loadedAgent{}, err
+	}
 	systemPrompt, err := agentspec.LoadSystemPrompt(spec)
 	if err != nil {
 		return loadedAgent{}, fmt.Errorf("load system prompt for agent %q: %w", spec.Name, err)
@@ -583,12 +616,34 @@ func loadAgentFromWorkDir(workDir string, registry tools.Registry) (loadedAgent,
 	if err != nil {
 		return loadedAgent{}, fmt.Errorf("resolve tools for agent %q: %w", spec.Name, err)
 	}
+	resolvedTools = filterExcludedTools(resolvedTools, spec.ExcludeTools)
 
 	return loadedAgent{
 		Spec:         spec,
 		SystemPrompt: systemPrompt,
 		Tools:        resolvedTools,
 	}, nil
+}
+
+func filterExcludedTools(resolved []tools.Definition, excluded []string) []tools.Definition {
+	if len(resolved) == 0 || len(excluded) == 0 {
+		return resolved
+	}
+
+	excludedSet := make(map[string]struct{}, len(excluded))
+	for _, name := range excluded {
+		excludedSet[name] = struct{}{}
+	}
+
+	filtered := make([]tools.Definition, 0, len(resolved))
+	for _, definition := range resolved {
+		if _, skip := excludedSet[definition.Name]; skip {
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+
+	return filtered
 }
 
 // openRunSession 根据当前应用输入决定 session 获取策略。

@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"testing"
 
+	"fimi-cli/internal/agentspec"
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/llm"
@@ -293,6 +294,69 @@ agent:
 	}
 }
 
+func TestLoadAgentFromWorkDirFiltersExcludedTools(t *testing.T) {
+	workDir := t.TempDir()
+	agentDir := filepath.Dir(defaultAgentFile(workDir))
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", agentDir, err)
+	}
+
+	if err := os.WriteFile(defaultAgentFile(workDir), []byte(`
+version: 1
+agent:
+  name: Test Agent
+  system_prompt_path: ./system.md
+  tools:
+    - bash
+    - read_file
+    - grep
+  exclude_tools:
+    - read_file
+    - missing_tool
+  subagents:
+    reviewer:
+      path: ./reviewer.yaml
+      description: Review code
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(agent.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "system.md"), []byte("You are the test agent.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(system.md) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "reviewer.yaml"), []byte("placeholder\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(reviewer.yaml) error = %v", err)
+	}
+
+	got, err := loadAgentFromWorkDir(workDir, tools.BuiltinRegistry())
+	if err != nil {
+		t.Fatalf("loadAgentFromWorkDir() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(got.Spec.ExcludeTools, []string{"read_file", "missing_tool"}) {
+		t.Fatalf("loadAgentFromWorkDir().Spec.ExcludeTools = %#v, want %#v", got.Spec.ExcludeTools, []string{"read_file", "missing_tool"})
+	}
+
+	wantSubagents := map[string]agentspec.SubagentSpec{
+		"reviewer": {
+			Path:        filepath.Join(agentDir, "reviewer.yaml"),
+			Description: "Review code",
+		},
+	}
+	if !reflect.DeepEqual(got.Spec.Subagents, wantSubagents) {
+		t.Fatalf("loadAgentFromWorkDir().Spec.Subagents = %#v, want %#v", got.Spec.Subagents, wantSubagents)
+	}
+
+	if len(got.Tools) != 2 {
+		t.Fatalf("len(loadAgentFromWorkDir().Tools) = %d, want %d", len(got.Tools), 2)
+	}
+	if got.Tools[0].Name != tools.ToolBash {
+		t.Fatalf("loadAgentFromWorkDir().Tools[0].Name = %q, want %q", got.Tools[0].Name, tools.ToolBash)
+	}
+	if got.Tools[1].Name != tools.ToolGrep {
+		t.Fatalf("loadAgentFromWorkDir().Tools[1].Name = %q, want %q", got.Tools[1].Name, tools.ToolGrep)
+	}
+}
+
 func TestLoadAgentFromWorkDirReturnsErrorForUnknownTool(t *testing.T) {
 	workDir := t.TempDir()
 	agentDir := filepath.Dir(defaultAgentFile(workDir))
@@ -320,6 +384,118 @@ agent:
 	}
 	if !errors.Is(err, tools.ErrToolNotRegistered) {
 		t.Fatalf("loadAgentFromWorkDir() error = %v, want wrapped %v", err, tools.ErrToolNotRegistered)
+	}
+}
+
+func TestLoadDeclaredSubagent(t *testing.T) {
+	dir := t.TempDir()
+	subagentFile := filepath.Join(dir, "reviewer.yaml")
+	if err := os.WriteFile(subagentFile, []byte(`
+version: 1
+agent:
+  name: Reviewer Agent
+  system_prompt_path: ./reviewer.md
+  tools:
+    - bash
+    - read_file
+    - grep
+  exclude_tools:
+    - bash
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(reviewer.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "reviewer.md"), []byte("  You are the reviewer agent. \n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(reviewer.md) error = %v", err)
+	}
+
+	root := loadedAgent{
+		Spec: agentspec.Spec{
+			Name: "Root Agent",
+			Subagents: map[string]agentspec.SubagentSpec{
+				"reviewer": {
+					Path:        subagentFile,
+					Description: "Review code",
+				},
+			},
+		},
+	}
+
+	got, err := loadDeclaredSubagent(root, "reviewer", tools.BuiltinRegistry())
+	if err != nil {
+		t.Fatalf("loadDeclaredSubagent() error = %v", err)
+	}
+	if got.Spec.Name != "Reviewer Agent" {
+		t.Fatalf("loadDeclaredSubagent().Spec.Name = %q, want %q", got.Spec.Name, "Reviewer Agent")
+	}
+	if got.SystemPrompt != "You are the reviewer agent." {
+		t.Fatalf("loadDeclaredSubagent().SystemPrompt = %q, want %q", got.SystemPrompt, "You are the reviewer agent.")
+	}
+	if !reflect.DeepEqual(got.Spec.ExcludeTools, []string{"bash"}) {
+		t.Fatalf("loadDeclaredSubagent().Spec.ExcludeTools = %#v, want %#v", got.Spec.ExcludeTools, []string{"bash"})
+	}
+	if len(got.Tools) != 2 {
+		t.Fatalf("len(loadDeclaredSubagent().Tools) = %d, want %d", len(got.Tools), 2)
+	}
+	if got.Tools[0].Name != tools.ToolReadFile {
+		t.Fatalf("loadDeclaredSubagent().Tools[0].Name = %q, want %q", got.Tools[0].Name, tools.ToolReadFile)
+	}
+	if got.Tools[1].Name != tools.ToolGrep {
+		t.Fatalf("loadDeclaredSubagent().Tools[1].Name = %q, want %q", got.Tools[1].Name, tools.ToolGrep)
+	}
+}
+
+func TestLoadDeclaredSubagentReturnsErrorForUnknownName(t *testing.T) {
+	root := loadedAgent{
+		Spec: agentspec.Spec{
+			Name:      "Root Agent",
+			Subagents: map[string]agentspec.SubagentSpec{},
+		},
+	}
+
+	_, err := loadDeclaredSubagent(root, "reviewer", tools.BuiltinRegistry())
+	if err == nil {
+		t.Fatalf("loadDeclaredSubagent() error = nil, want non-nil")
+	}
+	if !errors.Is(err, ErrSubagentNotDeclared) {
+		t.Fatalf("loadDeclaredSubagent() error = %v, want wrapped %v", err, ErrSubagentNotDeclared)
+	}
+}
+
+func TestLoadDeclaredSubagentReturnsErrorForUnknownTool(t *testing.T) {
+	dir := t.TempDir()
+	subagentFile := filepath.Join(dir, "reviewer.yaml")
+	if err := os.WriteFile(subagentFile, []byte(`
+version: 1
+agent:
+  name: Reviewer Agent
+  system_prompt_path: ./reviewer.md
+  tools:
+    - missing_tool
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(reviewer.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "reviewer.md"), []byte("You are the reviewer agent.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(reviewer.md) error = %v", err)
+	}
+
+	root := loadedAgent{
+		Spec: agentspec.Spec{
+			Name: "Root Agent",
+			Subagents: map[string]agentspec.SubagentSpec{
+				"reviewer": {
+					Path:        subagentFile,
+					Description: "Review code",
+				},
+			},
+		},
+	}
+
+	_, err := loadDeclaredSubagent(root, "reviewer", tools.BuiltinRegistry())
+	if err == nil {
+		t.Fatalf("loadDeclaredSubagent() error = nil, want non-nil")
+	}
+	if !errors.Is(err, tools.ErrToolNotRegistered) {
+		t.Fatalf("loadDeclaredSubagent() error = %v, want wrapped %v", err, tools.ErrToolNotRegistered)
 	}
 }
 
