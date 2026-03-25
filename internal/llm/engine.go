@@ -7,6 +7,7 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
+	"fimi-cli/internal/runtime/events"
 )
 
 const DefaultHistoryTurnLimit = 2
@@ -61,6 +62,58 @@ func (e Engine) Reply(ctx context.Context, input runtime.ReplyInput) (runtime.As
 	response, err := e.client.Reply(request)
 	if err != nil {
 		return runtime.AssistantReply{}, fmt.Errorf("llm client reply: %w", err)
+	}
+
+	return runtime.AssistantReply{
+		Text:      response.Text,
+		ToolCalls: buildRuntimeToolCalls(response.ToolCalls),
+		Usage: runtime.Usage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+			TotalTokens:  response.Usage.TotalTokens,
+		},
+	}, nil
+}
+
+// ReplyStream 调用底层 llm client 的流式接口，实时发送事件到 sink。
+// 如果底层 client 不支持流式，会自动降级到非流式 Reply。
+// 这是一个"能力检测"模式：通过类型断言检查 client 是否实现 StreamingClient。
+func (e Engine) ReplyStream(
+	ctx context.Context,
+	input runtime.ReplyInput,
+	sink events.Sink,
+) (runtime.AssistantReply, error) {
+	// 检查 client 是否支持流式
+	streamingClient, ok := e.client.(StreamingClient)
+	if !ok {
+		// 不支持流式，降级到非流式
+		return e.Reply(ctx, input)
+	}
+
+	request := Request{
+		Model:        input.Model,
+		SystemPrompt: input.SystemPrompt,
+		Messages:     buildMessages(input.SystemPrompt, input.History, e.historyTurnLimit),
+	}
+
+	// 适配 events.Sink 为 StreamHandler
+	// 这是一个适配器模式：将一个接口转换为另一个接口
+	handler := StreamHandlerFunc(func(ctx context.Context, event StreamEvent) error {
+		switch ev := event.(type) {
+		case TextDeltaEvent:
+			return sink.Emit(ctx, events.TextPart{Text: ev.Delta})
+		case ToolCallDeltaEvent:
+			return sink.Emit(ctx, events.ToolCallPart{
+				ToolCallID: ev.ToolCallID,
+				Delta:      ev.Delta,
+			})
+		}
+		return nil
+	})
+
+	response, err := streamingClient.ReplyStream(ctx, request, handler)
+	if err != nil {
+		return runtime.AssistantReply{}, fmt.Errorf("llm client stream reply: %w", err)
 	}
 
 	return runtime.AssistantReply{

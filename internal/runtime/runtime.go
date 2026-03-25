@@ -200,6 +200,16 @@ type Engine interface {
 	Reply(ctx context.Context, input ReplyInput) (AssistantReply, error)
 }
 
+// StreamingEngine 是支持流式的 engine 扩展接口。
+// runtime 在运行时通过类型断言检测 engine 是否支持流式。
+// 这是 Go 的接口隔离原则：不强制所有 Engine 实现都支持流式。
+type StreamingEngine interface {
+	Engine
+	// ReplyStream 执行流式 LLM 调用，实时发送事件到 sink。
+	// sink 已有 Emit 方法，天然适合接收流式事件。
+	ReplyStream(ctx context.Context, input ReplyInput, sink runtimeevents.Sink) (AssistantReply, error)
+}
+
 // StepConfig 持有每个 step 需要的不可变 engine 参数。
 // 用户 prompt 不在这里，因为它已经在 Run() 开始时追加到 history。
 type StepConfig struct {
@@ -431,11 +441,23 @@ func (r Runner) runStep(
 		return StepResult{}, fmt.Errorf("read runtime history: %w", err)
 	}
 
-	assistantReply, err := r.engine.Reply(ctx, ReplyInput{
+	// 构建 ReplyInput
+	replyInput := ReplyInput{
 		Model:        cfg.Model,
 		SystemPrompt: cfg.SystemPrompt,
 		History:      history,
-	})
+	}
+
+	var assistantReply AssistantReply
+
+	// 检查 engine 是否支持流式，以及是否有 eventSink
+	// 这是 Go 的"能力检测"模式：通过类型断言检查可选能力
+	if streamingEngine, ok := r.engine.(StreamingEngine); ok && r.eventSink != nil {
+		assistantReply, err = streamingEngine.ReplyStream(ctx, replyInput, r.eventSink)
+	} else {
+		assistantReply, err = r.engine.Reply(ctx, replyInput)
+	}
+
 	if err != nil {
 		return StepResult{}, fmt.Errorf("build assistant reply: %w", err)
 	}
