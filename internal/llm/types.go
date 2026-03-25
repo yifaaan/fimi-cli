@@ -15,6 +15,14 @@ type ToolCall struct {
 	Arguments string
 }
 
+// ToolDefinition 表示 provider-neutral 的工具声明。
+// Parameters 使用 JSON Schema object 形状，让具体 provider 能把它直接映射成函数调用定义。
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
 // Message 表示最小聊天消息单元。
 type Message struct {
 	Role    string
@@ -31,6 +39,7 @@ type Request struct {
 	Model        string
 	SystemPrompt string
 	Messages     []Message
+	Tools        []ToolDefinition
 }
 
 // Response 表示一次最小 LLM 调用响应。

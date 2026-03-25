@@ -50,6 +50,7 @@ func NewClient(cfg Config) *Client {
 type chatRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
+	Tools    []chatToolDef `json:"tools,omitempty"`
 }
 
 // chatMessage 是 OpenAI chat API 的消息格式。
@@ -64,6 +65,17 @@ type chatToolCall struct {
 	ID       string           `json:"id"`
 	Type     string           `json:"type,omitempty"`
 	Function chatToolFunction `json:"function"`
+}
+
+type chatToolDef struct {
+	Type     string              `json:"type"`
+	Function chatToolDefinition  `json:"function"`
+}
+
+type chatToolDefinition struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 type chatToolFunction struct {
@@ -135,6 +147,7 @@ func (c *Client) Reply(request llm.Request) (llm.Response, error) {
 	body := chatRequest{
 		Model:    model,
 		Messages: messages,
+		Tools:    buildChatToolDefinitions(request.Tools),
 	}
 
 	bodyBytes, err := json.Marshal(body)
@@ -205,6 +218,26 @@ func buildChatToolCalls(calls []llm.ToolCall) []chatToolCall {
 	}
 
 	return chatCalls
+}
+
+func buildChatToolDefinitions(tools []llm.ToolDefinition) []chatToolDef {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	definitions := make([]chatToolDef, 0, len(tools))
+	for _, tool := range tools {
+		definitions = append(definitions, chatToolDef{
+			Type: "function",
+			Function: chatToolDefinition{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.Parameters,
+			},
+		})
+	}
+
+	return definitions
 }
 
 func buildLLMToolCalls(calls []chatToolCall) []llm.ToolCall {

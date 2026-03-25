@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"strings"
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
@@ -44,14 +45,13 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	if client.gotRequest.SystemPrompt != "You are fimi, a coding agent." {
 		t.Fatalf("got Request.SystemPrompt = %q, want %q", client.gotRequest.SystemPrompt, "You are fimi, a coding agent.")
 	}
-	if len(client.gotRequest.Messages) != 4 {
-		t.Fatalf("len(Request.Messages) = %d, want 4", len(client.gotRequest.Messages))
+	if len(client.gotRequest.Messages) != 3 {
+		t.Fatalf("len(Request.Messages) = %d, want 3", len(client.gotRequest.Messages))
+	}
+	if client.gotRequest.Tools != nil {
+		t.Fatalf("Request.Tools = %#v, want nil when engine has no tools", client.gotRequest.Tools)
 	}
 	wantMessages := []Message{
-		{
-			Role:    RoleSystem,
-			Content: "You are fimi, a coding agent.",
-		},
 		{
 			Role:    RoleUser,
 			Content: "previous",
@@ -74,6 +74,72 @@ func TestEngineReplyUsesClient(t *testing.T) {
 	}
 	if prompt != "hello" {
 		t.Fatalf("PrimaryUserPrompt() = %q, want %q", prompt, "hello")
+	}
+}
+
+func TestEngineReplyIncludesConfiguredTools(t *testing.T) {
+	client := &spyClient{
+		response: Response{
+			Text: "assistant placeholder reply: hello",
+		},
+	}
+	engine := NewEngine(client, Config{
+		Tools: []ToolDefinition{
+			{
+				Name:        "bash",
+				Description: "Run a shell command inside the workspace.",
+				Parameters: map[string]any{
+					"type": "object",
+				},
+			},
+		},
+	})
+
+	_, err := engine.Reply(context.Background(), runtime.ReplyInput{
+		History: []contextstore.TextRecord{
+			contextstore.NewUserTextRecord("hello"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+
+	want := []ToolDefinition{
+		{
+			Name:        "bash",
+			Description: "Run a shell command inside the workspace.",
+			Parameters: map[string]any{
+				"type": "object",
+			},
+		},
+	}
+	if !reflect.DeepEqual(client.gotRequest.Tools, want) {
+		t.Fatalf("Request.Tools = %#v, want %#v", client.gotRequest.Tools, want)
+	}
+	if !strings.Contains(client.gotRequest.SystemPrompt, "Tool Use Policy:") {
+		t.Fatalf("Request.SystemPrompt = %q, want tool use policy appended", client.gotRequest.SystemPrompt)
+	}
+	if !strings.Contains(client.gotRequest.SystemPrompt, "Available tools:") {
+		t.Fatalf("Request.SystemPrompt = %q, want available tools section", client.gotRequest.SystemPrompt)
+	}
+}
+
+func TestComposeSystemPromptAppendsToolPolicy(t *testing.T) {
+	got := composeSystemPrompt("You are fimi.", []ToolDefinition{
+		{
+			Name:        "bash",
+			Description: "Run a shell command inside the workspace.",
+		},
+	})
+
+	if !strings.Contains(got, "You are fimi.") {
+		t.Fatalf("composeSystemPrompt() = %q, want base prompt preserved", got)
+	}
+	if !strings.Contains(got, "Tool Use Policy:") {
+		t.Fatalf("composeSystemPrompt() = %q, want tool use policy", got)
+	}
+	if !strings.Contains(got, "- bash: Run a shell command inside the workspace.") {
+		t.Fatalf("composeSystemPrompt() = %q, want tool listing", got)
 	}
 }
 

@@ -115,6 +115,63 @@ func TestClientReplyWithSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestClientReplyIncludesToolsInRequest(t *testing.T) {
+	var receivedRequest chatRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&receivedRequest); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+
+		resp := chatResponse{
+			Choices: []chatChoice{
+				{Message: chatMessage{Content: "OK"}},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Model:   "test-model",
+	})
+
+	_, err := client.Reply(llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "List files"},
+		},
+		Tools: []llm.ToolDefinition{
+			{
+				Name:        "bash",
+				Description: "Run a shell command inside the workspace.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"command": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+
+	if len(receivedRequest.Tools) != 1 {
+		t.Fatalf("len(request.Tools) = %d, want 1", len(receivedRequest.Tools))
+	}
+	if receivedRequest.Tools[0].Function.Name != "bash" {
+		t.Fatalf("request.Tools[0].Function.Name = %q, want %q", receivedRequest.Tools[0].Function.Name, "bash")
+	}
+	if receivedRequest.Tools[0].Function.Description != "Run a shell command inside the workspace." {
+		t.Fatalf("request.Tools[0].Function.Description = %q, want %q", receivedRequest.Tools[0].Function.Description, "Run a shell command inside the workspace.")
+	}
+}
+
 func TestClientReplyParsesToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := chatResponse{

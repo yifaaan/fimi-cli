@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
@@ -15,6 +16,7 @@ const DefaultHistoryTurnLimit = 2
 // Config 定义 llm engine 侧的最小消息构造参数。
 type Config struct {
 	HistoryTurnLimit int
+	Tools            []ToolDefinition
 }
 
 // DefaultConfig 返回 llm engine 的默认参数。
@@ -34,6 +36,7 @@ type Client interface {
 type Engine struct {
 	client           Client
 	historyTurnLimit int
+	tools            []ToolDefinition
 }
 
 // NewEngine 创建一个基于 llm client 的 runtime engine。
@@ -42,12 +45,13 @@ func NewEngine(client Client, cfg Config) Engine {
 		client = missingClient{}
 	}
 	if cfg.HistoryTurnLimit <= 0 {
-		cfg = DefaultConfig()
+		cfg.HistoryTurnLimit = DefaultHistoryTurnLimit
 	}
 
 	return Engine{
 		client:           client,
 		historyTurnLimit: cfg.HistoryTurnLimit,
+		tools:            cfg.Tools,
 	}
 }
 
@@ -55,8 +59,9 @@ func NewEngine(client Client, cfg Config) Engine {
 func (e Engine) Reply(ctx context.Context, input runtime.ReplyInput) (runtime.AssistantReply, error) {
 	request := Request{
 		Model:        input.Model,
-		SystemPrompt: input.SystemPrompt,
-		Messages:     buildMessages(input.SystemPrompt, input.History, e.historyTurnLimit),
+		SystemPrompt: composeSystemPrompt(input.SystemPrompt, e.tools),
+		Messages:     buildMessages(input.History, e.historyTurnLimit),
+		Tools:        e.tools,
 	}
 
 	response, err := e.client.Reply(request)
@@ -92,8 +97,9 @@ func (e Engine) ReplyStream(
 
 	request := Request{
 		Model:        input.Model,
-		SystemPrompt: input.SystemPrompt,
-		Messages:     buildMessages(input.SystemPrompt, input.History, e.historyTurnLimit),
+		SystemPrompt: composeSystemPrompt(input.SystemPrompt, e.tools),
+		Messages:     buildMessages(input.History, e.historyTurnLimit),
+		Tools:        e.tools,
 	}
 
 	// 适配 events.Sink 为 StreamHandler
@@ -127,22 +133,47 @@ func (e Engine) ReplyStream(
 	}, nil
 }
 
-func buildMessages(
-	systemPrompt string,
-	history []contextstore.TextRecord,
-	historyTurnLimit int,
-) []Message {
-	messages := make([]Message, 0, 1+historyTurnLimit*2)
-	if systemPrompt != "" {
-		messages = append(messages, Message{
-			Role:    RoleSystem,
-			Content: systemPrompt,
-		})
+func buildMessages(history []contextstore.TextRecord, historyTurnLimit int) []Message {
+	return buildHistoryMessages(history, historyTurnLimit)
+}
+
+func composeSystemPrompt(base string, tools []ToolDefinition) string {
+	base = strings.TrimSpace(base)
+	policy := strings.TrimSpace(buildToolUsePolicy(tools))
+
+	switch {
+	case base == "":
+		return policy
+	case policy == "":
+		return base
+	default:
+		return base + "\n\n" + policy
+	}
+}
+
+func buildToolUsePolicy(tools []ToolDefinition) string {
+	if len(tools) == 0 {
+		return ""
 	}
 
-	messages = append(messages, buildHistoryMessages(history, historyTurnLimit)...)
+	lines := []string{
+		"Tool Use Policy:",
+		"- Use the available tools directly when they are needed to answer or verify something.",
+		"- For repository files, directory listings, command output, searches, or other workspace facts, call a tool instead of guessing.",
+		"- Do not say you will run a command, inspect a file, or list files unless you actually emit a tool call.",
+		"- Do not ask the user for permission before safe read-only inspection or safe workspace-local commands.",
+		"Available tools:",
+	}
 
-	return messages
+	for _, tool := range tools {
+		line := "- " + tool.Name
+		if description := strings.TrimSpace(tool.Description); description != "" {
+			line += ": " + description
+		}
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func buildRuntimeToolCalls(calls []ToolCall) []runtime.ToolCall {

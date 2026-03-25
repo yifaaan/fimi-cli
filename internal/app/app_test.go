@@ -53,6 +53,32 @@ func TestBuildLLMConfig(t *testing.T) {
 	}
 }
 
+func TestBuildLLMToolDefinitions(t *testing.T) {
+	got := buildLLMToolDefinitions([]tools.Definition{
+		{
+			Name:        tools.ToolBash,
+			Description: "Run a shell command inside the workspace.",
+		},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
+	}
+	if got[0].Name != tools.ToolBash {
+		t.Fatalf("tool name = %q, want %q", got[0].Name, tools.ToolBash)
+	}
+	if got[0].Description != "Run a shell command inside the workspace." {
+		t.Fatalf("tool description = %q, want %q", got[0].Description, "Run a shell command inside the workspace.")
+	}
+	properties, ok := got[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
+	}
+	if _, ok := properties["command"]; !ok {
+		t.Fatalf("tool parameters missing %q property", "command")
+	}
+}
+
 func TestBuildRuntimeConfig(t *testing.T) {
 	cfg := config.Config{
 		LoopControl: config.LoopControl{
@@ -61,6 +87,14 @@ func TestBuildRuntimeConfig(t *testing.T) {
 		},
 		HistoryWindow: config.HistoryWindow{
 			RuntimeTurns: 7,
+		},
+		DefaultModel: "primary",
+		Models: map[string]config.ModelConfig{
+			"primary": {
+				Provider:            config.ProviderTypePlaceholder,
+				Model:               "primary",
+				ContextWindowTokens: 128000,
+			},
 		},
 	}
 
@@ -73,6 +107,9 @@ func TestBuildRuntimeConfig(t *testing.T) {
 	}
 	if got.MaxRetriesPerStep != 4 {
 		t.Fatalf("buildRuntimeConfig().MaxRetriesPerStep = %d, want %d", got.MaxRetriesPerStep, 4)
+	}
+	if got.ContextWindowTokens != 128000 {
+		t.Fatalf("buildRuntimeConfig().ContextWindowTokens = %d, want %d", got.ContextWindowTokens, 128000)
 	}
 }
 

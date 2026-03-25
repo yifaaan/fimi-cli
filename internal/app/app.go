@@ -320,13 +320,120 @@ func buildLLMConfig(cfg config.Config) llm.Config {
 	}
 }
 
+func buildLLMToolDefinitions(definitions []tools.Definition) []llm.ToolDefinition {
+	if len(definitions) == 0 {
+		return nil
+	}
+
+	toolDefs := make([]llm.ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		toolDefs = append(toolDefs, llm.ToolDefinition{
+			Name:        definition.Name,
+			Description: definition.Description,
+			Parameters:  toolParametersSchema(definition.Name),
+		})
+	}
+
+	return toolDefs
+}
+
+func toolParametersSchema(name string) map[string]any {
+	switch name {
+	case tools.ToolBash:
+		return objectSchema(requiredProperties(
+			schemaProperty("command", "string", "Shell command to run inside the workspace."),
+		))
+	case tools.ToolReadFile:
+		return objectSchema(requiredProperties(
+			schemaProperty("path", "string", "Workspace-relative file path to read."),
+		))
+	case tools.ToolGlob:
+		return objectSchema(requiredProperties(
+			schemaProperty("pattern", "string", "Glob pattern relative to the workspace root."),
+		))
+	case tools.ToolGrep:
+		return objectSchema(requiredProperties(
+			schemaProperty("pattern", "string", "Regular expression to search for."),
+			schemaProperty("path", "string", "Workspace-relative file or directory path to search."),
+		))
+	case tools.ToolWriteFile:
+		return objectSchema(requiredProperties(
+			schemaProperty("path", "string", "Workspace-relative file path to write."),
+			schemaProperty("content", "string", "Full file contents to write."),
+		))
+	case tools.ToolReplaceFile:
+		return objectSchema(requiredProperties(
+			schemaProperty("path", "string", "Workspace-relative file path to edit."),
+			schemaProperty("old", "string", "Exact text to replace."),
+			schemaProperty("new", "string", "Replacement text."),
+		))
+	case tools.ToolPatchFile:
+		return objectSchema(requiredProperties(
+			schemaProperty("path", "string", "Workspace-relative file path to patch."),
+			schemaProperty("diff", "string", "Unified diff patch content."),
+		))
+	default:
+		return map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": true,
+		}
+	}
+}
+
+func requiredProperties(properties ...schemaEntry) []schemaEntry {
+	return properties
+}
+
+type schemaEntry struct {
+	name   string
+	schema map[string]any
+}
+
+func schemaProperty(name, typeName, description string) schemaEntry {
+	return schemaEntry{
+		name: name,
+		schema: map[string]any{
+			"type":        typeName,
+			"description": description,
+		},
+	}
+}
+
+func objectSchema(entries []schemaEntry) map[string]any {
+	properties := make(map[string]any, len(entries))
+	required := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		properties[entry.name] = entry.schema
+		required = append(required, entry.name)
+	}
+
+	return map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"required":             required,
+		"additionalProperties": false,
+	}
+}
+
 // buildRuntimeConfig 把全局配置映射为 runtime 模块自己的最小配置。
 func buildRuntimeConfig(cfg config.Config) runtime.Config {
+	modelCfg, err := resolveConfiguredModel(cfg)
+
 	return runtime.Config{
 		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
 		MaxStepsPerRun:        cfg.LoopControl.MaxStepsPerRun,
 		MaxRetriesPerStep:     cfg.LoopControl.MaxRetriesPerStep,
+		ContextWindowTokens:   resolveContextWindowTokens(modelCfg, err),
 	}
+}
+
+func resolveContextWindowTokens(modelCfg config.ModelConfig, err error) int {
+	if err != nil {
+		return 0
+	}
+
+	return modelCfg.ContextWindowTokens
 }
 
 // buildRuntimeInput 把应用输入、模型选择和 agent prompt 映射为单次 runtime 调用输入。
@@ -350,6 +457,10 @@ func resolveRuntimeModelName(cfg config.Config) string {
 
 // buildEngine 负责装配当前默认的 llm engine。
 func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
+	return d.buildEngineForAgent(cfg, loadedAgent{})
+}
+
+func (d dependencies) buildEngineForAgent(cfg config.Config, agent loadedAgent) (llm.Engine, error) {
 	buildClient := d.buildLLMClient
 	if buildClient == nil {
 		buildClient = buildLLMClientFromConfig
@@ -360,7 +471,10 @@ func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
 		return llm.Engine{}, fmt.Errorf("build llm client: %w", err)
 	}
 
-	return llm.NewEngine(client, buildLLMConfig(cfg)), nil
+	llmCfg := buildLLMConfig(cfg)
+	llmCfg.Tools = buildLLMToolDefinitions(agent.Tools)
+
+	return llm.NewEngine(client, llmCfg), nil
 }
 
 // buildRunner 负责装配一次 runtime 执行所需的核心依赖。
@@ -374,7 +488,7 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		return d.buildRuntimeRunner(cfg)
 	}
 
-	engine, err := d.buildEngine(cfg)
+	engine, err := d.buildEngineForAgent(cfg, agent)
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,7 @@ import (
 type chatStreamRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
+	Tools    []chatToolDef `json:"tools,omitempty"`
 	Stream   bool          `json:"stream"`
 }
 
@@ -86,6 +87,7 @@ func (c *Client) ReplyStream(
 	body := chatStreamRequest{
 		Model:    model,
 		Messages: messages,
+		Tools:    buildChatToolDefinitions(request.Tools),
 		Stream:   true, // 启用流式模式
 	}
 
