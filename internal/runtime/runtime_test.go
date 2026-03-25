@@ -924,6 +924,37 @@ func TestRunnerRunEmitsFinishedStepEvents(t *testing.T) {
 	}
 }
 
+func TestRunnerRunEmitsContextUsageWhenWindowConfigured(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	sink := &recordingEventSink{}
+	runner := NewWithToolExecutorAndEvents(staticEngine{
+		reply: AssistantReply{
+			Text: "assistant reply",
+			Usage: Usage{
+				TotalTokens: 50,
+			},
+		},
+	}, nil, sink, Config{
+		ContextWindowTokens: 100,
+	})
+
+	_, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	want := []runtimeevents.Event{
+		runtimeevents.StepBegin{Number: 1},
+		runtimeevents.TextPart{Text: "assistant reply"},
+		runtimeevents.StatusUpdate{
+			Status: runtimeevents.StatusSnapshot{ContextUsage: 0.5},
+		},
+	}
+	if !reflect.DeepEqual(sink.events, want) {
+		t.Fatalf("captured events = %#v, want %#v", sink.events, want)
+	}
+}
+
 func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	sink := &recordingEventSink{}

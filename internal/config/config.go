@@ -17,8 +17,9 @@ type ProviderConfig struct {
 
 // ModelConfig 描述一个逻辑模型名如何映射到 provider 和真实模型名。
 type ModelConfig struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	Provider            string `json:"provider"`
+	Model               string `json:"model"`
+	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
 }
 
 // Config 表示应用当前最小可用的配置集合。
@@ -165,6 +166,9 @@ func validateModelConfig(
 	modelCfg ModelConfig,
 	providers map[string]ProviderConfig,
 ) error {
+	if modelCfg.ContextWindowTokens < 0 {
+		return fmt.Errorf("models.%s.context_window_tokens must be >= 0", modelAlias)
+	}
 	if modelCfg.Provider == "" {
 		return fmt.Errorf("models.%s.provider is required", modelAlias)
 	}

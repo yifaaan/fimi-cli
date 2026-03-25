@@ -23,6 +23,7 @@ type Config struct {
 	ReplyHistoryTurnLimit int
 	MaxStepsPerRun        int
 	MaxRetriesPerStep     int
+	ContextWindowTokens   int
 }
 
 // DefaultConfig 返回 runtime 的默认参数。
@@ -625,7 +626,7 @@ func (r Runner) emitStepEvents(
 	}
 
 	return r.emitEvent(ctx, runtimeevents.StatusUpdate{
-		Status: buildStatusSnapshot(store),
+		Status: buildStatusSnapshotWithWindow(store, r.config.ContextWindowTokens),
 	})
 }
 
@@ -643,9 +644,29 @@ func (r Runner) emitEvent(ctx context.Context, event runtimeevents.Event) error 
 }
 
 func buildStatusSnapshot(store contextstore.Context) runtimeevents.StatusSnapshot {
-	// 当前 runtime 还没有 provider-specific context window，
-	// 因此这里只先稳定事件形状，ContextUsage 暂时保留零值。
-	return runtimeevents.StatusSnapshot{}
+	return buildStatusSnapshotWithWindow(store, 0)
+}
+
+// buildStatusSnapshotWithWindow 计算当前 step 的上下文占用率近似值。
+// 这里故意使用“最后一次 LLM 调用的 total_tokens / context window”：
+// - 它不等于累计 usage
+// - 但足够表达“当前这轮请求离窗口上限还有多远”
+func buildStatusSnapshotWithWindow(
+	store contextstore.Context,
+	contextWindowTokens int,
+) runtimeevents.StatusSnapshot {
+	if contextWindowTokens <= 0 {
+		return runtimeevents.StatusSnapshot{}
+	}
+
+	lastUsage, err := store.ReadUsage()
+	if err != nil || lastUsage <= 0 {
+		return runtimeevents.StatusSnapshot{}
+	}
+
+	return runtimeevents.StatusSnapshot{
+		ContextUsage: float64(lastUsage) / float64(contextWindowTokens),
+	}
 }
 
 func (r Runner) interruptedResult(ctx context.Context, result Result) (Result, error) {

@@ -153,6 +153,31 @@ func TestLoadFileParsesProviders(t *testing.T) {
 	}
 }
 
+func TestLoadFileParsesModelContextWindowTokens(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configFile, []byte(`{
+		"default_model": "custom-model",
+		"models": {
+			"custom-model": {
+				"provider": "placeholder",
+				"model": "custom-model",
+				"context_window_tokens": 128000
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", configFile, err)
+	}
+
+	cfg, err := LoadFile(configFile)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+
+	if got := cfg.Models["custom-model"].ContextWindowTokens; got != 128000 {
+		t.Fatalf("LoadFile().Models[\"custom-model\"].ContextWindowTokens = %d, want %d", got, 128000)
+	}
+}
+
 func TestLoadFileReturnsValidationErrors(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -240,6 +265,20 @@ func TestLoadFileReturnsValidationErrors(t *testing.T) {
 				}
 			}`,
 			wantErrText: `providers.aliyun-prod.type is required`,
+		},
+		{
+			name: "negative context window tokens rejected",
+			content: `{
+				"default_model": "custom-model",
+				"models": {
+					"custom-model": {
+						"provider": "placeholder",
+						"model": "custom-model",
+						"context_window_tokens": -1
+					}
+				}
+			}`,
+			wantErrText: `models.custom-model.context_window_tokens must be >= 0`,
 		},
 	}
 
