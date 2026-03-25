@@ -7,8 +7,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
+	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
 // Update handles incoming messages and updates the model.
@@ -144,12 +145,36 @@ func (m Model) handleRuntimeEvent(msg runtimeEventMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleRuntimeDone marks the runtime as complete and handles any error.
+// It also processes the result records to populate the output buffer
+// when event streaming wasn't connected.
 func (m Model) handleRuntimeDone(msg runtimeDoneMsg) (tea.Model, tea.Cmd) {
 	m.running = false
 	if msg.err != nil {
 		m.err = msg.err
 	}
+
+	// Process result records into output buffer
+	// This handles the case when event streaming wasn't connected
+	for _, step := range msg.result.Steps {
+		for _, record := range step.AppendedRecords {
+			m.appendToRecord(&m.output, record)
+		}
+	}
+
 	return m, nil
+}
+
+// appendToRecord appends a contextstore.TextRecord to the output buffer.
+func (m *Model) appendToRecord(sb *strings.Builder, record contextstore.TextRecord) {
+	switch record.Role {
+	case "assistant":
+		sb.WriteString(record.Content)
+		sb.WriteString("\n")
+	case "tool":
+		sb.WriteString("[tool result] ")
+		sb.WriteString(record.Content)
+		sb.WriteString("\n")
+	}
 }
 
 // handleInterrupt handles interrupt signal by canceling running task.

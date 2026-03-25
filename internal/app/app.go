@@ -644,6 +644,7 @@ func helpFlagLines() []string {
 	return []string{
 		"  --continue, -C   Continue the previous session for this work dir",
 		"  --new-session    Explicitly start a fresh session for this run",
+		"  --shell, -i      Start interactive shell mode",
 		"  --model <alias>  Override the configured model for this run",
 		"  -h, --help       Show this help message",
 	}
