@@ -145,7 +145,7 @@ class DenwaRenji:
 
 Date: 2026-03-25
 
-Active phase: Phase 7, Event Stream And Print UI (in progress)
+Active phase: Phase 7, Event Stream And Print UI (mostly complete)
 
 **Phase 7 已完成:**
 - [x] `internal/runtime/events` 包创建
@@ -154,10 +154,11 @@ Active phase: Phase 7, Event Stream And Print UI (in progress)
 - [x] `internal/ui/printui` 最小实现
 - [x] 纯文本输出支持
 - [x] 非流式事件：`step_begin`, `text_part`, `tool_call`, `tool_result`, `status_update`, `interrupted`
+- [x] 流式 LLM seam：Text delta / ToolCall delta（SSE → events.Sink）
+- [x] print UI：TextPart 流式输出（不对每个 delta 自动换行），避免重复打印
 
 **Phase 7 待完成:**
-- [ ] 流式 LLM seam（`tool-call delta` 事件）
-- [ ] `stream-json` 输出模式
+- [ ] `stream-json` 输出模式（保留到后续 phase，一次性定 shape）
 
 ### Already Implemented In Go
 
