@@ -143,40 +143,7 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 
-	if input.shellMode {
-		return d.runShell(context.Background(), cfg, agent, workDir, input)
-	}
-
-	sess, sessionReused, err := d.openRunSession(workDir, input)
-	if err != nil {
-		return err
-	}
-
-	ctx := contextstore.New(sess.HistoryFile)
-	state, err := bootstrapStartupState(ctx)
-	if err != nil {
-		return err
-	}
-
-	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
-	if err != nil {
-		return err
-	}
-
-	runResult, err := d.runRuntime(context.Background(), runner, ctx, buildRuntimeInput(cfg, input, agent))
-	if err != nil {
-		return fmt.Errorf("run runtime: %w", err)
-	}
-
-	state = applyRuntimeResult(state, runResult)
-
-	printState := d.printStartupState
-	if printState == nil {
-		printState = printStartupState
-	}
-	printState(sess, ctx, state, sessionReused, resolveRuntimeModelName(cfg))
-
-	return nil
+	return d.runShell(context.Background(), cfg, agent, workDir, input)
 }
 
 // runInput 表示当前 CLI 入口解析出的最小输入结果。
@@ -184,7 +151,6 @@ type runInput struct {
 	prompt          string
 	forceNewSession bool
 	continueSession bool
-	shellMode       bool
 	modelAlias      string
 	showHelp        bool
 }
@@ -217,10 +183,6 @@ func parseRunInput(args []string) (runInput, error) {
 			input.showHelp = true
 			continue
 		}
-		if parseFlags && (arg == "--shell" || arg == "-i") {
-			input.shellMode = true
-			continue
-		}
 		if parseFlags && arg == "--model" {
 			if i+1 >= len(args) {
 				return runInput{}, fmt.Errorf("%w: %s", ErrCLIFlagValueRequired, arg)
@@ -251,7 +213,6 @@ func parseRunInput(args []string) (runInput, error) {
 		prompt:          input.prompt,
 		forceNewSession: input.forceNewSession,
 		continueSession: input.continueSession,
-		shellMode:       input.shellMode,
 		modelAlias:      input.modelAlias,
 		showHelp:        input.showHelp,
 	}, nil
@@ -778,7 +739,6 @@ func helpFlagLines() []string {
 	return []string{
 		"  --continue, -C   Continue the previous session for this work dir",
 		"  --new-session    Explicitly start a fresh session for this run",
-		"  --shell, -i      Start interactive shell mode",
 		"  --model <alias>  Override the configured model for this run",
 		"  -h, --help       Show this help message",
 	}
@@ -787,7 +747,7 @@ func helpFlagLines() []string {
 func helpPromptRuleLines() []string {
 	return []string{
 		"  --                Stop parsing flags; everything after it is prompt text",
-		"  prompt...         Remaining args are joined into one prompt string",
+		"  prompt...         Remaining args are joined into the shell's initial prompt",
 	}
 }
 

@@ -326,13 +326,12 @@ func TestHelpText(t *testing.T) {
 		"Flags:\n" +
 		"  --continue, -C   Continue the previous session for this work dir\n" +
 		"  --new-session    Explicitly start a fresh session for this run\n" +
-		"  --shell, -i      Start interactive shell mode\n" +
 		"  --model <alias>  Override the configured model for this run\n" +
 		"  -h, --help       Show this help message\n" +
 		"\n" +
 		"Prompt Rules:\n" +
 		"  --                Stop parsing flags; everything after it is prompt text\n" +
-		"  prompt...         Remaining args are joined into one prompt string\n" +
+		"  prompt...         Remaining args are joined into the shell's initial prompt\n" +
 		"\n" +
 		"Examples:\n" +
 		"  fimi fix the flaky test\n" +
@@ -451,21 +450,6 @@ func TestParseRunInput(t *testing.T) {
 			},
 		},
 		{
-			name: "shell long flag",
-			args: []string{"--shell"},
-			want: runInput{
-				shellMode: true,
-			},
-		},
-		{
-			name: "shell short flag with prompt",
-			args: []string{"-i", "fix", "tests"},
-			want: runInput{
-				prompt:    "fix tests",
-				shellMode: true,
-			},
-		},
-		{
 			name: "flag terminator keeps literal flag in prompt",
 			args: []string{"--new-session", "--", "--new-session", "fix"},
 			want: runInput{
@@ -498,6 +482,16 @@ func TestParseRunInput(t *testing.T) {
 		{
 			name:    "unknown flag",
 			args:    []string{"--bad-flag", "fix"},
+			wantErr: ErrUnknownCLIFlag,
+		},
+		{
+			name:    "removed shell flag is unknown",
+			args:    []string{"--shell", "fix"},
+			wantErr: ErrUnknownCLIFlag,
+		},
+		{
+			name:    "removed short shell flag is unknown",
+			args:    []string{"-i", "fix"},
 			wantErr: ErrUnknownCLIFlag,
 		},
 		{
@@ -537,17 +531,8 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	var gotWorkDir string
 	var gotModelAlias string
-
-	type printedState struct {
-		session       session.Session
-		historyPath   string
-		state         startupState
-		sessionReused bool
-		model         string
-		called        bool
-	}
-
-	printed := printedState{}
+	var shellDeps shell.Dependencies
+	var shellCalled bool
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
 			return config.Config{
@@ -580,19 +565,10 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 			gotModelAlias = cfg.DefaultModel
 			return llm.NewPlaceholderClient(), nil
 		},
-		printStartupState: func(
-			sess session.Session,
-			ctx contextstore.Context,
-			state startupState,
-			sessionReused bool,
-			model string,
-		) {
-			printed.session = sess
-			printed.historyPath = ctx.Path()
-			printed.state = state
-			printed.sessionReused = sessionReused
-			printed.model = model
-			printed.called = true
+		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+			shellCalled = true
+			shellDeps = deps
+			return nil
 		},
 	}
 
@@ -607,39 +583,23 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if gotModelAlias != "custom-model" {
 		t.Fatalf("builder got DefaultModel = %q, want %q", gotModelAlias, "custom-model")
 	}
-	if !printed.called {
-		t.Fatalf("printStartupState() called = false, want true")
+	if !shellCalled {
+		t.Fatalf("runShellUI() called = false, want true")
 	}
-	if printed.session.ID != "session-123" {
-		t.Fatalf("printed session ID = %q, want %q", printed.session.ID, "session-123")
+	if shellDeps.Runner == nil {
+		t.Fatalf("shell deps runner = nil, want non-nil")
 	}
-	if printed.historyPath != historyFile {
-		t.Fatalf("printed history path = %q, want %q", printed.historyPath, historyFile)
+	if shellDeps.Store.Path() != historyFile {
+		t.Fatalf("shell deps store path = %q, want %q", shellDeps.Store.Path(), historyFile)
 	}
-	if printed.sessionReused {
-		t.Fatalf("printed sessionReused = true, want false")
+	if shellDeps.ModelName != "custom-model" {
+		t.Fatalf("shell deps model = %q, want %q", shellDeps.ModelName, "custom-model")
 	}
-	if printed.model != "custom-model" {
-		t.Fatalf("printed model = %q, want %q", printed.model, "custom-model")
+	if shellDeps.SystemPrompt != "You are the configured agent." {
+		t.Fatalf("shell deps system prompt = %q, want %q", shellDeps.SystemPrompt, "You are the configured agent.")
 	}
-
-	wantLastRecord := contextstore.NewAssistantTextRecord("assistant placeholder reply: fix tests")
-	if !printed.state.historyExists {
-		t.Fatalf("printed historyExists = false, want true")
-	}
-	if !printed.state.historySeeded {
-		t.Fatalf("printed historySeeded = false, want true")
-	}
-	// startupState 当前只根据 bootstrap 结果和 step 追加记录推进，
-	// runtime 的 UserRecord 已经写入 history，但不会重复计入打印态计数。
-	if printed.state.historyCount != 2 {
-		t.Fatalf("printed historyCount = %d, want %d", printed.state.historyCount, 2)
-	}
-	if !printed.state.hasLastRecord {
-		t.Fatalf("printed hasLastRecord = false, want true")
-	}
-	if printed.state.lastRecord != wantLastRecord {
-		t.Fatalf("printed lastRecord = %#v, want %#v", printed.state.lastRecord, wantLastRecord)
+	if shellDeps.InitialPrompt != "fix tests" {
+		t.Fatalf("shell deps initial prompt = %q, want %q", shellDeps.InitialPrompt, "fix tests")
 	}
 
 	ctx := contextstore.New(historyFile)
@@ -649,8 +609,6 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	}
 	wantRecords := []contextstore.TextRecord{
 		contextstore.NewSystemTextRecord(initialRecordContent),
-		contextstore.NewUserTextRecord("fix tests"),
-		wantLastRecord,
 	}
 	if !reflect.DeepEqual(records, wantRecords) {
 		t.Fatalf("history records = %#v, want %#v", records, wantRecords)
@@ -708,7 +666,7 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 	}
 }
 
-func TestDependenciesRunDelegatesToShellMode(t *testing.T) {
+func TestDependenciesRunDelegatesToShellByDefault(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	var gotDeps shell.Dependencies
 	var printedState bool
@@ -754,7 +712,7 @@ func TestDependenciesRunDelegatesToShellMode(t *testing.T) {
 		},
 	}
 
-	if err := deps.run([]string{"--shell", "fix", "tests"}); err != nil {
+	if err := deps.run([]string{"fix", "tests"}); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 
@@ -796,10 +754,10 @@ func TestDependenciesRunDelegatesToShellMode(t *testing.T) {
 	}
 }
 
-func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
+func TestDependenciesRunAppliesModelOverrideToRunnerAndShell(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	var gotRunnerCfg config.Config
-	var printedModel string
+	var shellModel string
 
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
@@ -830,29 +788,11 @@ func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
 		},
 		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
 			gotRunnerCfg = cfg
-			return &stubRunner{
-				result: runtime.Result{
-					Steps: []runtime.StepResult{
-						{
-							Kind: runtime.StepKindFinished,
-							AppendedRecords: []contextstore.TextRecord{
-								contextstore.NewUserTextRecord("fix tests"),
-								contextstore.NewAssistantTextRecord("runner reply"),
-							},
-						},
-					},
-				},
-				appendToContext: true,
-			}, nil
+			return &stubRunner{}, nil
 		},
-		printStartupState: func(
-			sess session.Session,
-			ctx contextstore.Context,
-			state startupState,
-			sessionReused bool,
-			model string,
-		) {
-			printedModel = model
+		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+			shellModel = deps.ModelName
+			return nil
 		},
 	}
 
@@ -864,8 +804,8 @@ func TestDependenciesRunAppliesModelOverrideToRunnerAndPrinter(t *testing.T) {
 	if gotRunnerCfg.DefaultModel != "fast-model" {
 		t.Fatalf("runner cfg.DefaultModel = %q, want %q", gotRunnerCfg.DefaultModel, "fast-model")
 	}
-	if printedModel != "actual-fast-model" {
-		t.Fatalf("printed model = %q, want %q", printedModel, "actual-fast-model")
+	if shellModel != "actual-fast-model" {
+		t.Fatalf("shell model = %q, want %q", shellModel, "actual-fast-model")
 	}
 }
 
@@ -873,8 +813,8 @@ func TestDependenciesRunCreatesNewSessionByDefault(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	var createCalled bool
 	var gotCreateWorkDir string
-	var printedSession session.Session
-	var printedReused bool
+	var shellDeps shell.Dependencies
+	var shellCalled bool
 
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
@@ -902,30 +842,12 @@ func TestDependenciesRunCreatesNewSessionByDefault(t *testing.T) {
 			}, nil
 		},
 		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
-			return &stubRunner{
-				result: runtime.Result{
-					Steps: []runtime.StepResult{
-						{
-							Kind: runtime.StepKindFinished,
-							AppendedRecords: []contextstore.TextRecord{
-								contextstore.NewUserTextRecord("fix tests"),
-								contextstore.NewAssistantTextRecord("runner reply"),
-							},
-						},
-					},
-				},
-				appendToContext: true,
-			}, nil
+			return &stubRunner{}, nil
 		},
-		printStartupState: func(
-			sess session.Session,
-			ctx contextstore.Context,
-			state startupState,
-			sessionReused bool,
-			model string,
-		) {
-			printedSession = sess
-			printedReused = sessionReused
+		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+			shellCalled = true
+			shellDeps = deps
+			return nil
 		},
 	}
 
@@ -940,11 +862,11 @@ func TestDependenciesRunCreatesNewSessionByDefault(t *testing.T) {
 	if gotCreateWorkDir != "/tmp/fimi-project" {
 		t.Fatalf("createSession() got workDir = %q, want %q", gotCreateWorkDir, "/tmp/fimi-project")
 	}
-	if printedSession.ID != "session-new" {
-		t.Fatalf("printed session ID = %q, want %q", printedSession.ID, "session-new")
+	if !shellCalled {
+		t.Fatalf("runShellUI() called = false, want true")
 	}
-	if printedReused {
-		t.Fatalf("printed sessionReused = true, want false")
+	if shellDeps.Store.Path() != historyFile {
+		t.Fatalf("shell deps store path = %q, want %q", shellDeps.Store.Path(), historyFile)
 	}
 }
 
@@ -953,8 +875,8 @@ func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
 	var continueCalled bool
 	var createCalled bool
 	var gotContinueWorkDir string
-	var printedSession session.Session
-	var printedReused bool
+	var shellDeps shell.Dependencies
+	var shellCalled bool
 
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
@@ -986,30 +908,12 @@ func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
 			return session.Session{}, nil
 		},
 		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
-			return &stubRunner{
-				result: runtime.Result{
-					Steps: []runtime.StepResult{
-						{
-							Kind: runtime.StepKindFinished,
-							AppendedRecords: []contextstore.TextRecord{
-								contextstore.NewUserTextRecord("fix tests"),
-								contextstore.NewAssistantTextRecord("runner reply"),
-							},
-						},
-					},
-				},
-				appendToContext: true,
-			}, nil
+			return &stubRunner{}, nil
 		},
-		printStartupState: func(
-			sess session.Session,
-			ctx contextstore.Context,
-			state startupState,
-			sessionReused bool,
-			model string,
-		) {
-			printedSession = sess
-			printedReused = sessionReused
+		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+			shellCalled = true
+			shellDeps = deps
+			return nil
 		},
 	}
 
@@ -1027,32 +931,19 @@ func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
 	if gotContinueWorkDir != "/tmp/fimi-project" {
 		t.Fatalf("continueSession() got workDir = %q, want %q", gotContinueWorkDir, "/tmp/fimi-project")
 	}
-	if printedSession.ID != "session-old" {
-		t.Fatalf("printed session ID = %q, want %q", printedSession.ID, "session-old")
+	if !shellCalled {
+		t.Fatalf("runShellUI() called = false, want true")
 	}
-	if !printedReused {
-		t.Fatalf("printed sessionReused = false, want true")
+	if shellDeps.Store.Path() != historyFile {
+		t.Fatalf("shell deps store path = %q, want %q", shellDeps.Store.Path(), historyFile)
 	}
 }
 
-func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
+func TestDependenciesRunUsesInjectedRunnerBuilderForShell(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
-	runner := &stubRunner{
-		result: runtime.Result{
-			Steps: []runtime.StepResult{
-				{
-					Kind: runtime.StepKindFinished,
-					AppendedRecords: []contextstore.TextRecord{
-						contextstore.NewUserTextRecord("fix tests"),
-						contextstore.NewAssistantTextRecord("runner reply"),
-					},
-				},
-			},
-		},
-		appendToContext: true,
-	}
+	runner := &stubRunner{}
 	var gotCfg config.Config
-	var printed startupState
+	var gotShellDeps shell.Dependencies
 
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
@@ -1078,14 +969,9 @@ func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 			gotCfg = cfg
 			return runner, nil
 		},
-		printStartupState: func(
-			sess session.Session,
-			ctx contextstore.Context,
-			state startupState,
-			sessionReused bool,
-			model string,
-		) {
-			printed = state
+		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+			gotShellDeps = deps
+			return nil
 		},
 	}
 
@@ -1097,25 +983,14 @@ func TestDependenciesRunUsesInjectedRunnerBuilder(t *testing.T) {
 	if gotCfg.DefaultModel != "custom-model" {
 		t.Fatalf("runner builder got DefaultModel = %q, want %q", gotCfg.DefaultModel, "custom-model")
 	}
-	if !reflect.DeepEqual(runner.gotInput, runtime.Input{
-		Prompt:       "fix tests",
-		Model:        "custom-model",
-		SystemPrompt: "You are the configured agent.",
-	}) {
-		t.Fatalf("runner got Input = %#v, want %#v", runner.gotInput, runtime.Input{
-			Prompt:       "fix tests",
-			Model:        "custom-model",
-			SystemPrompt: "You are the configured agent.",
-		})
+	if gotShellDeps.Runner != runner {
+		t.Fatalf("shell deps runner = %#v, want injected runner %#v", gotShellDeps.Runner, runner)
 	}
-	if runner.gotCtx.Path() != historyFile {
-		t.Fatalf("runner got history path = %q, want %q", runner.gotCtx.Path(), historyFile)
+	if gotShellDeps.Store.Path() != historyFile {
+		t.Fatalf("shell deps store path = %q, want %q", gotShellDeps.Store.Path(), historyFile)
 	}
-	if printed.historyCount != 3 {
-		t.Fatalf("printed historyCount = %d, want %d", printed.historyCount, 3)
-	}
-	if printed.lastRecord != contextstore.NewAssistantTextRecord("runner reply") {
-		t.Fatalf("printed lastRecord = %#v, want %#v", printed.lastRecord, contextstore.NewAssistantTextRecord("runner reply"))
+	if gotShellDeps.InitialPrompt != "fix tests" {
+		t.Fatalf("shell deps initial prompt = %q, want %q", gotShellDeps.InitialPrompt, "fix tests")
 	}
 }
 
@@ -1128,7 +1003,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 	errCreateSessionFailed := errors.New("create session failed")
 	errLoadAgentFailed := errors.New("load agent failed")
 	errBuildRunnerFailed := errors.New("build runner failed")
-	errRunnerFailed := errors.New("runner failed")
+	errShellUIFailed := errors.New("shell ui failed")
 
 	tests := []struct {
 		name        string
@@ -1292,7 +1167,7 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 			wantErr: errBuildRunnerFailed,
 		},
 		{
-			name: "run runtime",
+			name: "run shell ui",
 			setup: func(t *testing.T) dependencies {
 				return dependencies{
 					loadConfig: func() (config.Config, error) {
@@ -1310,11 +1185,14 @@ func TestDependenciesRunWrapsBoundaryErrors(t *testing.T) {
 						}, nil
 					},
 					buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
-						return &stubRunner{err: errRunnerFailed}, nil
+						return &stubRunner{}, nil
+					},
+					runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+						return errShellUIFailed
 					},
 				}
 			},
-			wantErr: errRunnerFailed,
+			wantErr: errShellUIFailed,
 		},
 	}
 

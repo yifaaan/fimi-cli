@@ -95,7 +95,7 @@ func TestVisualizeLiveRedrawsShellBlock(t *testing.T) {
 	close(eventsCh)
 
 	var out bytes.Buffer
-	display := newDisplay(&out)
+	display := newDisplay(&out, true)
 	err := visualizeLive(display)(context.Background(), eventsCh)
 	if err != nil {
 		t.Fatalf("visualizeLive() error = %v", err)
@@ -132,7 +132,7 @@ func TestVisualizeLiveFlushesPreviousStepBeforeRenderingNextOne(t *testing.T) {
 	close(eventsCh)
 
 	var out bytes.Buffer
-	display := newDisplay(&out)
+	display := newDisplay(&out, true)
 	err := visualizeLive(display)(context.Background(), eventsCh)
 	if err != nil {
 		t.Fatalf("visualizeLive() error = %v", err)
@@ -197,8 +197,8 @@ func TestRunHandlesMetaCommandsWithoutCallingRunner(t *testing.T) {
 	if !strings.Contains(out.String(), "Shell commands:\n") {
 		t.Fatalf("shell output = %q, want help text", out.String())
 	}
-	if !strings.Contains(out.String(), clearScreenANSI) {
-		t.Fatalf("shell output = %q, want clear screen sequence", out.String())
+	if strings.Contains(out.String(), clearScreenANSI) {
+		t.Fatalf("shell output = %q, want no clear screen sequence in fallback mode", out.String())
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("shell stderr = %q, want empty", errOut.String())
@@ -207,7 +207,7 @@ func TestRunHandlesMetaCommandsWithoutCallingRunner(t *testing.T) {
 
 func TestDisplayClearDropsTranscriptState(t *testing.T) {
 	var out bytes.Buffer
-	display := newDisplay(&out)
+	display := newDisplay(&out, true)
 
 	if err := display.AppendTranscriptLines([]string{"first line", "second line"}); err != nil {
 		t.Fatalf("AppendTranscriptLines() error = %v", err)
@@ -324,6 +324,51 @@ func TestRunLoadsExistingShellHistoryWithoutWarning(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestRunFallsBackToScannerAndTranscriptWhenNotTTY(t *testing.T) {
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := runtime.New(fakeRuntimeEngine{
+		reply: runtime.AssistantReply{
+			Text: "assistant reply",
+		},
+	}, runtime.Config{})
+
+	var out bytes.Buffer
+	err := Run(context.Background(), Dependencies{
+		Runner:       runner,
+		Store:        store,
+		Input:        strings.NewReader("hello\n/exit\n"),
+		Output:       &out,
+		HistoryFile:  filepath.Join(t.TempDir(), "shell_history.txt"),
+		ModelName:    "test-model",
+		SystemPrompt: "You are the configured agent.",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "[step 1]\n[assistant]\nassistant reply\n") {
+		t.Fatalf("shell output = %q, want transcript output", got)
+	}
+	if strings.Contains(got, "\033[") {
+		t.Fatalf("shell output = %q, want no ansi redraw in fallback mode", got)
+	}
+}
+
+func TestDisplayClearSkipsANSIWhenNotInteractive(t *testing.T) {
+	var out bytes.Buffer
+	display := newDisplay(&out, false)
+	if err := display.AppendTranscriptLines([]string{"line"}); err != nil {
+		t.Fatalf("AppendTranscriptLines() error = %v", err)
+	}
+	if err := display.Clear(); err != nil {
+		t.Fatalf("Clear() error = %v", err)
+	}
+	if strings.Contains(out.String(), clearScreenANSI) {
+		t.Fatalf("display output = %q, want no clear ansi in non-interactive mode", out.String())
 	}
 }
 

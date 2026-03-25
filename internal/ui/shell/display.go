@@ -27,19 +27,21 @@ func (t transcript) Snapshot() []string {
 }
 
 type display struct {
-	out        io.Writer
-	live       *liveRenderer
-	transcript transcript
+	out         io.Writer
+	live        *liveRenderer
+	interactive bool
+	transcript  transcript
 }
 
-func newDisplay(w io.Writer) *display {
+func newDisplay(w io.Writer, interactive bool) *display {
 	if w == nil {
 		w = io.Discard
 	}
 
 	return &display{
-		out:  w,
-		live: newLiveRenderer(w),
+		out:         w,
+		live:        newLiveRenderer(w),
+		interactive: interactive,
 	}
 }
 
@@ -63,6 +65,9 @@ func (d *display) Clear() error {
 	}
 
 	d.transcript.Clear()
+	if !d.interactive {
+		return nil
+	}
 	if _, err := fmt.Fprint(d.out, clearScreenANSI); err != nil {
 		return fmt.Errorf("clear shell display: %w", err)
 	}

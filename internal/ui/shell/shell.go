@@ -57,7 +57,8 @@ func Run(ctx context.Context, deps Dependencies) error {
 		output = io.Discard
 	}
 
-	display := newDisplay(output)
+	interactiveTTY := supportsInteractiveTTY(input, output)
+	display := newDisplay(output, interactiveTTY)
 	history, err := loadHistoryStore(deps.HistoryFile)
 	if err != nil {
 		if appendErr := display.AppendTranscriptLines([]string{
@@ -69,7 +70,11 @@ func Run(ctx context.Context, deps Dependencies) error {
 
 	editorFactory := deps.EditorFactory
 	if editorFactory == nil {
-		editorFactory = newLinerEditor
+		if interactiveTTY {
+			editorFactory = newLinerEditor
+		} else {
+			editorFactory = newScannerEditor
+		}
 	}
 	editor, err := editorFactory(input, output, history.Entries())
 	if err != nil {
@@ -77,7 +82,7 @@ func Run(ctx context.Context, deps Dependencies) error {
 	}
 	defer editor.Close()
 
-	if err := runPrompt(ctx, deps, display, editor, &history, strings.TrimSpace(deps.InitialPrompt)); err != nil {
+	if err := runPrompt(ctx, deps, display, editor, &history, interactiveTTY, strings.TrimSpace(deps.InitialPrompt)); err != nil {
 		return err
 	}
 
@@ -104,7 +109,7 @@ func Run(ctx context.Context, deps Dependencies) error {
 			continue
 		}
 
-		exit, err := dispatchCommand(ctx, deps, display, editor, &history, line)
+		exit, err := dispatchCommand(ctx, deps, display, editor, &history, interactiveTTY, line)
 		if err != nil {
 			return err
 		}
@@ -120,6 +125,7 @@ func dispatchCommand(
 	display *display,
 	editor lineEditor,
 	history *historyStore,
+	interactiveTTY bool,
 	line string,
 ) (bool, error) {
 	switch line {
@@ -136,7 +142,7 @@ func dispatchCommand(
 			})
 		}
 
-		if err := runPrompt(ctx, deps, display, editor, history, line); err != nil {
+		if err := runPrompt(ctx, deps, display, editor, history, interactiveTTY, line); err != nil {
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
@@ -155,6 +161,7 @@ func runPrompt(
 	display *display,
 	editor lineEditor,
 	history *historyStore,
+	interactiveTTY bool,
 	prompt string,
 ) error {
 	if prompt == "" {
@@ -190,7 +197,7 @@ func runPrompt(
 				SystemPrompt: deps.SystemPrompt,
 			})
 		},
-		visualizeLive(display),
+		visualizeForMode(display, interactiveTTY),
 	)
 	if err != nil {
 		return err
@@ -200,6 +207,14 @@ func runPrompt(
 	}
 
 	return nil
+}
+
+func visualizeForMode(display *display, interactiveTTY bool) ui.VisualizeFunc {
+	if interactiveTTY {
+		return visualizeLive(display)
+	}
+
+	return visualizeTranscript(display)
 }
 
 func helpText() string {
