@@ -18,6 +18,7 @@ import (
 	"fimi-cli/internal/tools"
 	"fimi-cli/internal/ui"
 	"fimi-cli/internal/ui/printui"
+	"fimi-cli/internal/ui/shell"
 )
 
 const (
@@ -140,6 +141,10 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 
+	if input.shellMode {
+		return d.runShell(cfg, agent, workDir)
+	}
+
 	sess, sessionReused, err := d.openRunSession(workDir, input)
 	if err != nil {
 		return err
@@ -172,11 +177,39 @@ func (d dependencies) run(args []string) error {
 	return nil
 }
 
+// runShell assembles dependencies for shell mode and delegates to shell.Run.
+func (d dependencies) runShell(cfg config.Config, agent loadedAgent, workDir string) error {
+	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
+	if err != nil {
+		return fmt.Errorf("build runner for shell: %w", err)
+	}
+
+	createSession := d.createSession
+	if createSession == nil {
+		createSession = session.New
+	}
+
+	sess, err := createSession(workDir)
+	if err != nil {
+		return fmt.Errorf("create session for shell: %w", err)
+	}
+
+	store := contextstore.New(sess.HistoryFile)
+
+	shellRunner, ok := runner.(runtime.Runner)
+	if !ok {
+		return fmt.Errorf("runner does not implement runtime.Runner")
+	}
+
+	return shell.Run(context.Background(), shellRunner, store, resolveRuntimeModelName(cfg), agent.SystemPrompt)
+}
+
 // runInput 表示当前 CLI 入口解析出的最小输入结果。
 type runInput struct {
 	prompt          string
 	forceNewSession bool
 	continueSession bool
+	shellMode       bool
 	modelAlias      string
 	showHelp        bool
 }
@@ -209,6 +242,10 @@ func parseRunInput(args []string) (runInput, error) {
 			input.showHelp = true
 			continue
 		}
+		if parseFlags && (arg == "--shell" || arg == "-i") {
+			input.shellMode = true
+			continue
+		}
 		if parseFlags && arg == "--model" {
 			if i+1 >= len(args) {
 				return runInput{}, fmt.Errorf("%w: %s", ErrCLIFlagValueRequired, arg)
@@ -239,6 +276,7 @@ func parseRunInput(args []string) (runInput, error) {
 		prompt:          input.prompt,
 		forceNewSession: input.forceNewSession,
 		continueSession: input.continueSession,
+		shellMode:       input.shellMode,
 		modelAlias:      input.modelAlias,
 		showHelp:        input.showHelp,
 	}, nil
