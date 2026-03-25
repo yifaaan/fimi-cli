@@ -71,7 +71,21 @@ func Run(ctx context.Context, deps Dependencies) error {
 		output = io.Discard
 	}
 
-	interactiveTTY := supportsInteractiveTTY(input, output)
+	errOutput := deps.ErrOutput
+	if errOutput == nil {
+		errOutput = output
+	}
+
+	interactiveTTY, fallbackReason := interactiveTTYStatus(input, output)
+	if !interactiveTTY && fallbackReason != "" {
+		if _, err := fmt.Fprintf(
+			errOutput,
+			"shell ui disabled: %s; falling back to text mode\n",
+			fallbackReason,
+		); err != nil {
+			return fmt.Errorf("write shell ui fallback reason: %w", err)
+		}
+	}
 
 	// 加载历史记录
 	history, err := loadHistoryStore(deps.HistoryFile)

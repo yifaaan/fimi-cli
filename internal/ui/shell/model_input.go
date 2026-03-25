@@ -73,6 +73,11 @@ func (m InputModel) handleKeyPress(msg tea.KeyMsg) (InputModel, tea.Cmd) {
 		m.value += string(msg.Runes)
 		m.historyIdx = -1
 
+	case tea.KeySpace:
+		// Bubble Tea 会把空格作为独立按键类型发送。
+		m.value += " "
+		m.historyIdx = -1
+
 	case tea.KeyBackspace:
 		// 删除最后一个字符
 		if len(m.value) > 0 {

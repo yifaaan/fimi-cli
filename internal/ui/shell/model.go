@@ -9,6 +9,7 @@ import (
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/ui/shell/styles"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -83,6 +84,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
 
+	case spinner.TickMsg:
+		if m.mode == ModeIdle {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.runtime, cmd = m.runtime.UpdateSpinner(msg)
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -93,11 +102,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(inputCmd, outputCmd)
 
 	case RuntimeEventMsg:
+		// RuntimeCompleteMsg 可能先于尾部缓冲事件到达。
+		// 当前 run 已结束后，迟到事件不能再把 UI 切回运行中。
+		if m.eventsCh == nil {
+			return m, nil
+		}
 		m.runtime = m.runtime.ApplyEvent(msg.Event)
 		m.mode = ModeStreaming
-		// 将实时内容追加到输出
-		m.output = m.output.AppendPending(m.runtime.ToLines())
-		return m, tea.Batch(m.runtime.SpinnerCmd())
+		// runtime.ToLines 返回的是当前完整快照，这里要整体替换而不是持续追加。
+		m.output = m.output.SetPending(m.runtime.ToLines())
+		return m, tea.Batch(
+			m.runtime.SpinnerCmd(),
+			waitForRuntimeEvents(m.eventsCh),
+		)
 
 	case InputSubmitMsg:
 		return m.handleSubmit(msg.Text)
@@ -106,6 +123,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = ModeIdle
 		m.output = m.output.FlushPending()
 		m.runtime = m.runtime.Reset()
+		m.eventsCh = nil
 		if msg.Err != nil {
 			m.err = msg.Err
 			m.output = m.output.AppendLine(TranscriptLine{
@@ -278,9 +296,13 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	m.mode = ModeThinking
 
 	// 启动 runtime 执行
+	eventsCh := make(chan runtimeevents.Event, 32)
+	m.eventsCh = eventsCh
+
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
-		m.startRuntimeExecution(text),
+		waitForRuntimeEvents(eventsCh),
+		m.startRuntimeExecution(text, eventsCh),
 	)
 }
 
@@ -308,11 +330,8 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 }
 
 // startRuntimeExecution 返回一个启动 runtime 执行的命令。
-func (m Model) startRuntimeExecution(prompt string) tea.Cmd {
+func (m Model) startRuntimeExecution(prompt string, eventsCh chan runtimeevents.Event) tea.Cmd {
 	return func() tea.Msg {
-		// 创建事件通道
-		eventsCh := make(chan runtimeevents.Event, 32)
-
 		// 创建事件 sink
 		sink := runtimeevents.SinkFunc(func(ctx context.Context, event runtimeevents.Event) error {
 			select {
@@ -323,10 +342,13 @@ func (m Model) startRuntimeExecution(prompt string) tea.Cmd {
 			}
 		})
 
+		runner := m.deps.Runner
+		if eventfulRunner, ok := runner.(eventSinkCapableRunner); ok {
+			runner = eventfulRunner.WithEventSink(sink)
+		}
+
 		// 执行 runtime
-		result, err := m.deps.Runner.(eventSinkCapableRunner).
-			WithEventSink(sink).
-			Run(context.Background(), m.deps.Store, runtime.Input{
+		result, err := runner.Run(context.Background(), m.deps.Store, runtime.Input{
 				Prompt:       prompt,
 				Model:        m.deps.ModelName,
 				SystemPrompt: m.deps.SystemPrompt,

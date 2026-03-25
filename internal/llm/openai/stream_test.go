@@ -3,10 +3,12 @@ package openai
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"fimi-cli/internal/llm"
 )
@@ -161,5 +163,49 @@ func TestClientReplyStreamResponsesEventsAccumulate(t *testing.T) {
 	}
 	if resp.Usage.TotalTokens != 15 {
 		t.Fatalf("resp.Usage.TotalTokens = %d, want %d", resp.Usage.TotalTokens, 15)
+	}
+}
+
+func TestParseResponsesSSEStreamReturnsOnCompletedWithoutDONE(t *testing.T) {
+	reader, writer := io.Pipe()
+	done := make(chan struct {
+		resp llm.Response
+		err  error
+	}, 1)
+
+	go func() {
+		resp, err := (&Client{}).parseResponsesSSEStream(
+			context.Background(),
+			reader,
+			llm.StreamHandlerFunc(func(ctx context.Context, event llm.StreamEvent) error {
+				return nil
+			}),
+		)
+		done <- struct {
+			resp llm.Response
+			err  error
+		}{resp: resp, err: err}
+	}()
+
+	go func() {
+		fmt.Fprint(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n")
+		fmt.Fprint(writer, "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+		time.Sleep(300 * time.Millisecond)
+		_ = writer.Close()
+	}()
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("parseResponsesSSEStream() error = %v", result.err)
+		}
+		if result.resp.Text != "Hello" {
+			t.Fatalf("resp.Text = %q, want %q", result.resp.Text, "Hello")
+		}
+		if result.resp.Usage.TotalTokens != 2 {
+			t.Fatalf("resp.Usage.TotalTokens = %d, want %d", result.resp.Usage.TotalTokens, 2)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("parseResponsesSSEStream() blocked after response.completed")
 	}
 }

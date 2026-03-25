@@ -471,6 +471,8 @@ func (c *Client) parseResponsesSSEStream(
 				}
 			}
 
+			return buildResponsesStreamResult(textBuilder, toolCallBuilders, toolCallOrder, usage), nil
+
 		case "error":
 			var errEvent responseErrorEvent
 			if err := json.Unmarshal([]byte(data), &errEvent); err != nil {
@@ -487,6 +489,15 @@ func (c *Client) parseResponsesSSEStream(
 		return llm.Response{}, fmt.Errorf("read stream: %w", markRetryable(err))
 	}
 
+	return buildResponsesStreamResult(textBuilder, toolCallBuilders, toolCallOrder, usage), nil
+}
+
+func buildResponsesStreamResult(
+	textBuilder strings.Builder,
+	toolCallBuilders map[string]*toolCallBuilder,
+	toolCallOrder []string,
+	usage llm.Usage,
+) llm.Response {
 	var toolCalls []llm.ToolCall
 	for _, key := range toolCallOrder {
 		builder := toolCallBuilders[key]
@@ -501,5 +512,5 @@ func (c *Client) parseResponsesSSEStream(
 		Text:      textBuilder.String(),
 		ToolCalls: toolCalls,
 		Usage:     usage,
-	}, nil
+	}
 }

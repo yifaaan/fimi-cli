@@ -162,6 +162,13 @@ func (m RuntimeModel) SpinnerCmd() tea.Cmd {
 	return m.spinner.Tick
 }
 
+// UpdateSpinner 推进 spinner 动画到下一帧。
+func (m RuntimeModel) UpdateSpinner(msg tea.Msg) (RuntimeModel, tea.Cmd) {
+	var cmd tea.Cmd
+	m.spinner, cmd = m.spinner.Update(msg)
+	return m, cmd
+}
+
 // SpinnerView 渲染 spinner 视图。
 func (m RuntimeModel) SpinnerView() string {
 	return m.spinner.View()

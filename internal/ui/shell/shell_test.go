@@ -14,6 +14,9 @@ import (
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
+
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestRunProcessesInitialPromptBeforeEnteringLoop(t *testing.T) {
@@ -60,8 +63,8 @@ func TestRunProcessesInitialPromptBeforeEnteringLoop(t *testing.T) {
 	if !strings.HasSuffix(out.String(), promptText) {
 		t.Fatalf("shell output = %q, want trailing prompt %q", out.String(), promptText)
 	}
-	if errOut.Len() != 0 {
-		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	if !strings.Contains(errOut.String(), "shell ui disabled: stdin is not a TTY; falling back to text mode\n") {
+		t.Fatalf("shell stderr = %q, want fallback reason", errOut.String())
 	}
 }
 
@@ -247,8 +250,8 @@ func TestRunHandlesMetaCommandsWithoutCallingRunner(t *testing.T) {
 	if strings.Contains(out.String(), clearScreenANSI) {
 		t.Fatalf("shell output = %q, want no clear screen sequence in fallback mode", out.String())
 	}
-	if errOut.Len() != 0 {
-		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	if !strings.Contains(errOut.String(), "shell ui disabled: stdin is not a TTY; falling back to text mode\n") {
+		t.Fatalf("shell stderr = %q, want fallback reason", errOut.String())
 	}
 }
 
@@ -291,8 +294,8 @@ func TestRunPrintsUnknownCommandToTranscript(t *testing.T) {
 	if !strings.Contains(out.String(), "unknown command: /nope\n") {
 		t.Fatalf("shell output = %q, want unknown command in transcript", out.String())
 	}
-	if errOut.Len() != 0 {
-		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	if !strings.Contains(errOut.String(), "shell ui disabled: stdin is not a TTY; falling back to text mode\n") {
+		t.Fatalf("shell stderr = %q, want fallback reason", errOut.String())
 	}
 }
 
@@ -316,8 +319,8 @@ func TestRunPrintsPromptErrorsToTranscript(t *testing.T) {
 	if !strings.Contains(out.String(), "run error: unknown runtime step kind\n") {
 		t.Fatalf("shell output = %q, want run error in transcript", out.String())
 	}
-	if errOut.Len() != 0 {
-		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	if !strings.Contains(errOut.String(), "shell ui disabled: stdin is not a TTY; falling back to text mode\n") {
+		t.Fatalf("shell stderr = %q, want fallback reason", errOut.String())
 	}
 }
 
@@ -369,8 +372,8 @@ func TestRunLoadsExistingShellHistoryWithoutWarning(t *testing.T) {
 	if strings.Contains(out.String(), "shell history unavailable:") {
 		t.Fatalf("shell output = %q, want no history warning", out.String())
 	}
-	if errOut.Len() != 0 {
-		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	if !strings.Contains(errOut.String(), "shell ui disabled: stdin is not a TTY; falling back to text mode\n") {
+		t.Fatalf("shell stderr = %q, want fallback reason", errOut.String())
 	}
 }
 
@@ -383,11 +386,13 @@ func TestRunFallsBackToScannerAndTranscriptWhenNotTTY(t *testing.T) {
 	}, runtime.Config{})
 
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	err := Run(context.Background(), Dependencies{
 		Runner:       runner,
 		Store:        store,
 		Input:        strings.NewReader("hello\n/exit\n"),
 		Output:       &out,
+		ErrOutput:    &errOut,
 		HistoryFile:  filepath.Join(t.TempDir(), "shell_history.txt"),
 		ModelName:    "test-model",
 		SystemPrompt: "You are the configured agent.",
@@ -403,6 +408,9 @@ func TestRunFallsBackToScannerAndTranscriptWhenNotTTY(t *testing.T) {
 	if strings.Contains(got, "\033[") {
 		t.Fatalf("shell output = %q, want no ansi redraw in fallback mode", got)
 	}
+	if !strings.Contains(errOut.String(), "shell ui disabled: stdin is not a TTY; falling back to text mode\n") {
+		t.Fatalf("shell stderr = %q, want fallback reason", errOut.String())
+	}
 }
 
 func TestDisplayClearSkipsANSIWhenNotInteractive(t *testing.T) {
@@ -416,6 +424,189 @@ func TestDisplayClearSkipsANSIWhenNotInteractive(t *testing.T) {
 	}
 	if strings.Contains(out.String(), clearScreenANSI) {
 		t.Fatalf("display output = %q, want no clear ansi in non-interactive mode", out.String())
+	}
+}
+
+func TestModelReplacesPendingSnapshotForRuntimeEvents(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.eventsCh = make(chan runtimeevents.Event)
+
+	updated, _ := model.Update(RuntimeEventMsg{Event: runtimeevents.TextPart{Text: "hel"}})
+	model = updated.(Model)
+
+	updated, _ = model.Update(RuntimeEventMsg{Event: runtimeevents.TextPart{Text: "lo"}})
+	model = updated.(Model)
+
+	if len(model.output.pending) != 1 {
+		t.Fatalf("pending lines = %d, want 1", len(model.output.pending))
+	}
+	if model.output.pending[0].Content != "hello" {
+		t.Fatalf("pending content = %q, want %q", model.output.pending[0].Content, "hello")
+	}
+}
+
+func TestInputModelAcceptsSpaceKey(t *testing.T) {
+	input := NewInputModel()
+
+	input, _ = input.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("hello"),
+	}, 80)
+	input, _ = input.Update(tea.KeyMsg{Type: tea.KeySpace}, 80)
+	input, _ = input.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("world"),
+	}, 80)
+
+	if input.Value() != "hello world" {
+		t.Fatalf("input value = %q, want %q", input.Value(), "hello world")
+	}
+}
+
+func TestModelAdvancesSpinnerWhileRunning(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeThinking
+
+	initialView := model.runtime.SpinnerView()
+	tickCmd := model.runtime.SpinnerCmd()
+	msg := tickCmd()
+
+	if _, ok := msg.(spinner.TickMsg); !ok {
+		t.Fatalf("tick msg type = %T, want spinner.TickMsg", msg)
+	}
+
+	updated, nextCmd := model.Update(msg)
+	model = updated.(Model)
+
+	if nextCmd == nil {
+		t.Fatalf("nextCmd = nil, want next spinner tick command")
+	}
+	if model.runtime.SpinnerView() == initialView {
+		t.Fatalf("spinner view = %q, want animation frame to advance from %q", model.runtime.SpinnerView(), initialView)
+	}
+}
+
+func TestModelIgnoresLateRuntimeEventsAfterCompletion(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeStreaming
+	model.eventsCh = make(chan runtimeevents.Event)
+	model.output = model.output.SetPending([]TranscriptLine{
+		{Type: LineTypeAssistant, Content: "partial"},
+	})
+
+	updated, _ := model.Update(RuntimeCompleteMsg{
+		Result: runtime.Result{Status: runtime.RunStatusFinished},
+	})
+	model = updated.(Model)
+
+	if model.mode != ModeIdle {
+		t.Fatalf("mode after completion = %v, want %v", model.mode, ModeIdle)
+	}
+
+	updated, cmd := model.Update(RuntimeEventMsg{
+		Event: runtimeevents.StatusUpdate{
+			Status: runtimeevents.StatusSnapshot{ContextUsage: 0.5},
+		},
+	})
+	model = updated.(Model)
+
+	if cmd != nil {
+		t.Fatalf("cmd after late event = %#v, want nil", cmd)
+	}
+	if model.mode != ModeIdle {
+		t.Fatalf("mode after late event = %v, want %v", model.mode, ModeIdle)
+	}
+	if model.eventsCh != nil {
+		t.Fatal("eventsCh should remain nil after late event")
+	}
+}
+
+func TestStartRuntimeExecutionStreamsEventsBeforeCompletion(t *testing.T) {
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := runtime.New(fakeRuntimeEngine{
+		reply: runtime.AssistantReply{
+			Text: "assistant reply",
+		},
+	}, runtime.Config{})
+
+	model := NewModel(Dependencies{
+		Runner:       runner,
+		Store:        store,
+		ModelName:    "test-model",
+		SystemPrompt: "You are the configured agent.",
+	}, nil)
+
+	eventsCh := make(chan runtimeevents.Event, 32)
+	cmd := model.startRuntimeExecution("hello", eventsCh)
+
+	done := make(chan RuntimeCompleteMsg, 1)
+	go func() {
+		msg := cmd()
+		complete, ok := msg.(RuntimeCompleteMsg)
+		if !ok {
+			t.Errorf("completion msg type = %T, want RuntimeCompleteMsg", msg)
+			return
+		}
+		done <- complete
+	}()
+
+	firstMsg := waitForRuntimeEvents(eventsCh)()
+	firstEvent, ok := firstMsg.(RuntimeEventMsg)
+	if !ok {
+		t.Fatalf("first msg type = %T, want RuntimeEventMsg", firstMsg)
+	}
+	stepBegin, ok := firstEvent.Event.(runtimeevents.StepBegin)
+	if !ok {
+		t.Fatalf("first event type = %T, want StepBegin", firstEvent.Event)
+	}
+	if stepBegin.Number != 1 {
+		t.Fatalf("step number = %d, want 1", stepBegin.Number)
+	}
+
+	secondMsg := waitForRuntimeEvents(eventsCh)()
+	secondEvent, ok := secondMsg.(RuntimeEventMsg)
+	if !ok {
+		t.Fatalf("second msg type = %T, want RuntimeEventMsg", secondMsg)
+	}
+	textPart, ok := secondEvent.Event.(runtimeevents.TextPart)
+	if !ok {
+		t.Fatalf("second event type = %T, want TextPart", secondEvent.Event)
+	}
+	if textPart.Text != "assistant reply" {
+		t.Fatalf("text part = %q, want %q", textPart.Text, "assistant reply")
+	}
+
+	complete := <-done
+	if complete.Err != nil {
+		t.Fatalf("completion err = %v, want nil", complete.Err)
+	}
+	if complete.Result.Status != runtime.RunStatusFinished {
+		t.Fatalf("completion status = %q, want %q", complete.Result.Status, runtime.RunStatusFinished)
+	}
+
+	thirdMsg := waitForRuntimeEvents(eventsCh)()
+	thirdEvent, ok := thirdMsg.(RuntimeEventMsg)
+	if !ok {
+		t.Fatalf("third msg type = %T, want RuntimeEventMsg", thirdMsg)
+	}
+	if _, ok := thirdEvent.Event.(runtimeevents.StatusUpdate); !ok {
+		t.Fatalf("third event type = %T, want StatusUpdate", thirdEvent.Event)
+	}
+
+	if msg := waitForRuntimeEvents(eventsCh)(); msg != nil {
+		t.Fatalf("final msg = %#v, want nil after closed channel", msg)
+	}
+}
+
+func TestInteractiveTTYStatusReturnsTERMReasonFirst(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+
+	interactive, reason := interactiveTTYStatus(nil, nil)
+	if interactive {
+		t.Fatalf("interactive = true, want false")
+	}
+	if reason != "TERM=dumb" {
+		t.Fatalf("reason = %q, want %q", reason, "TERM=dumb")
 	}
 }
 

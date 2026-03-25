@@ -64,9 +64,9 @@ func (m OutputModel) AppendLine(line TranscriptLine) OutputModel {
 	return m
 }
 
-// AppendPending 添加实时内容（流式输出）。
-func (m OutputModel) AppendPending(lines []TranscriptLine) OutputModel {
-	m.pending = append(m.pending, lines...)
+// SetPending 用最新快照替换实时内容。
+func (m OutputModel) SetPending(lines []TranscriptLine) OutputModel {
+	m.pending = append([]TranscriptLine(nil), lines...)
 	return m
 }
 
