@@ -89,7 +89,8 @@ func TestVisualizeLiveRedrawsShellBlock(t *testing.T) {
 	close(eventsCh)
 
 	var out bytes.Buffer
-	err := visualizeLive(&out)(context.Background(), eventsCh)
+	display := newDisplay(&out)
+	err := visualizeLive(display)(context.Background(), eventsCh)
 	if err != nil {
 		t.Fatalf("visualizeLive() error = %v", err)
 	}
@@ -100,6 +101,30 @@ func TestVisualizeLiveRedrawsShellBlock(t *testing.T) {
 	}
 	if !strings.Contains(got, "\033[") {
 		t.Fatalf("visualizer output = %q, want ansi redraw sequence", got)
+	}
+	if !strings.HasSuffix(got, "[step 1]\n[assistant]\nhello\n") {
+		t.Fatalf("visualizer output = %q, want finalized transcript suffix", got)
+	}
+	if gotTranscript := display.transcript.Snapshot(); !equalLines(gotTranscript, []string{"[step 1]", "[assistant]", "hello"}) {
+		t.Fatalf("transcript snapshot = %#v", gotTranscript)
+	}
+}
+
+func TestLiveRendererClearRemovesPreviousBlock(t *testing.T) {
+	var out bytes.Buffer
+	renderer := newLiveRenderer(&out)
+
+	if err := renderer.Render([]string{"[step 1]", "hello"}); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if err := renderer.Clear(); err != nil {
+		t.Fatalf("Clear() error = %v", err)
+	}
+	if renderer.renderedLines != 0 {
+		t.Fatalf("renderedLines = %d, want 0", renderer.renderedLines)
+	}
+	if !strings.Contains(out.String(), "\033[2A") {
+		t.Fatalf("renderer output = %q, want cursor-up clear sequence", out.String())
 	}
 }
 
@@ -133,8 +158,74 @@ func TestRunHandlesMetaCommandsWithoutCallingRunner(t *testing.T) {
 	}
 }
 
+func TestDisplayClearDropsTranscriptState(t *testing.T) {
+	var out bytes.Buffer
+	display := newDisplay(&out)
+
+	if err := display.AppendTranscriptLines([]string{"first line", "second line"}); err != nil {
+		t.Fatalf("AppendTranscriptLines() error = %v", err)
+	}
+	if err := display.Clear(); err != nil {
+		t.Fatalf("Clear() error = %v", err)
+	}
+
+	if got := display.transcript.Snapshot(); len(got) != 0 {
+		t.Fatalf("transcript snapshot = %#v, want empty", got)
+	}
+	if !strings.Contains(out.String(), clearScreenANSI) {
+		t.Fatalf("display output = %q, want clear sequence", out.String())
+	}
+}
+
+func TestRunPrintsUnknownCommandToTranscript(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := Run(context.Background(), Dependencies{
+		Runner:    &countingRunner{},
+		Store:     contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:     strings.NewReader("/nope\n/exit\n"),
+		Output:    &out,
+		ErrOutput: &errOut,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(out.String(), "unknown command: /nope\n") {
+		t.Fatalf("shell output = %q, want unknown command in transcript", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestRunPrintsPromptErrorsToTranscript(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	err := Run(context.Background(), Dependencies{
+		Runner:    &countingRunner{err: runtime.ErrUnknownStepKind},
+		Store:     contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:     strings.NewReader("hello\n/exit\n"),
+		Output:    &out,
+		ErrOutput: &errOut,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(out.String(), "run error: unknown runtime step kind\n") {
+		t.Fatalf("shell output = %q, want run error in transcript", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	}
+}
+
 type countingRunner struct {
 	calls int
+	err   error
 }
 
 func (r *countingRunner) Run(
@@ -143,6 +234,9 @@ func (r *countingRunner) Run(
 	_ runtime.Input,
 ) (runtime.Result, error) {
 	r.calls++
+	if r.err != nil {
+		return runtime.Result{}, r.err
+	}
 	return runtime.Result{Status: runtime.RunStatusFinished}, nil
 }
 
@@ -156,4 +250,17 @@ func (e fakeRuntimeEngine) Reply(
 	input runtime.ReplyInput,
 ) (runtime.AssistantReply, error) {
 	return e.reply, e.err
+}
+
+func equalLines(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+
+	return true
 }

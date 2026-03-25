@@ -1,6 +1,11 @@
 package llm
 
-import "fimi-cli/internal/contextstore"
+import (
+	"encoding/json"
+	"fmt"
+
+	"fimi-cli/internal/contextstore"
+)
 
 // buildHistoryMessages 将历史记录转换为消息列表，同时应用 turn limit。
 // 关键语义：最后一个 user message 是"当前输入"，不计入 turn limit。
@@ -70,9 +75,14 @@ func textRecordToMessage(record contextstore.TextRecord) (Message, bool) {
 			Content: record.Content,
 		}, true
 	case contextstore.RoleAssistant:
+		toolCalls, err := decodeAssistantToolCalls(record.ToolCallsJSON)
+		if err != nil {
+			return Message{}, false
+		}
 		return Message{
-			Role:    RoleAssistant,
-			Content: record.Content,
+			Role:      RoleAssistant,
+			Content:   record.Content,
+			ToolCalls: toolCalls,
 		}, true
 	case contextstore.RoleTool:
 		// tool result 必须有 tool_call_id 才能关联回之前的调用
@@ -87,4 +97,17 @@ func textRecordToMessage(record contextstore.TextRecord) (Message, bool) {
 	default:
 		return Message{}, false
 	}
+}
+
+func decodeAssistantToolCalls(encoded string) ([]ToolCall, error) {
+	if encoded == "" {
+		return nil, nil
+	}
+
+	var toolCalls []ToolCall
+	if err := json.Unmarshal([]byte(encoded), &toolCalls); err != nil {
+		return nil, fmt.Errorf("decode assistant tool calls: %w", err)
+	}
+
+	return toolCalls, nil
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"fimi-cli/internal/llm"
@@ -143,9 +142,6 @@ func (c *Client) replyChatStream(
 	}
 
 	bodyBytes, err := json.Marshal(body)
-
-	// DEBUG: 打印请求内容
-	fmt.Fprintf(os.Stderr, "[DEBUG STREAM] Request body: %s\n", string(bodyBytes))
 	if err != nil {
 		return llm.Response{}, fmt.Errorf("marshal stream request: %w", err)
 	}
@@ -193,9 +189,6 @@ func (c *Client) replyResponsesStream(
 	}
 
 	bodyBytes, err := json.Marshal(body)
-
-	// DEBUG: 打印请求内容
-	fmt.Fprintf(os.Stderr, "[DEBUG STREAM] Request body: %s\n", string(bodyBytes))
 	if err != nil {
 		return llm.Response{}, fmt.Errorf("marshal stream request: %w", err)
 	}
@@ -246,12 +239,10 @@ func (c *Client) parseChatSSEStream(
 			continue
 		}
 		if !strings.HasPrefix(line, "data: ") {
-			fmt.Fprintf(os.Stderr, "[DEBUG SSE] Non-data line: %s\n", line)
 			continue
 		}
 
 		data := strings.TrimPrefix(line, "data: ")
-		fmt.Fprintf(os.Stderr, "[DEBUG SSE] data: %s\n", data)
 
 		if data == "[DONE]" {
 			break
@@ -349,12 +340,10 @@ func (c *Client) parseResponsesSSEStream(
 			continue
 		}
 		if !strings.HasPrefix(line, "data: ") {
-			fmt.Fprintf(os.Stderr, "[DEBUG SSE] Non-data line: %s\n", line)
 			continue
 		}
 
 		data := strings.TrimPrefix(line, "data: ")
-		fmt.Fprintf(os.Stderr, "[DEBUG SSE] data: %s\n", data)
 
 		if data == "[DONE]" {
 			break

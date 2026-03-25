@@ -55,15 +55,12 @@ func Run(ctx context.Context, deps Dependencies) error {
 		output = io.Discard
 	}
 
-	errOutput := deps.ErrOutput
-	if errOutput == nil {
-		errOutput = output
-	}
+	display := newDisplay(output)
 
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	if err := runPrompt(ctx, deps, output, errOutput, strings.TrimSpace(deps.InitialPrompt)); err != nil {
+	if err := runPrompt(ctx, deps, display, strings.TrimSpace(deps.InitialPrompt)); err != nil {
 		return err
 	}
 
@@ -89,7 +86,7 @@ func Run(ctx context.Context, deps Dependencies) error {
 			continue
 		}
 
-		exit, err := dispatchCommand(ctx, deps, output, errOutput, line)
+		exit, err := dispatchCommand(ctx, deps, display, line)
 		if err != nil {
 			return err
 		}
@@ -102,35 +99,30 @@ func Run(ctx context.Context, deps Dependencies) error {
 func dispatchCommand(
 	ctx context.Context,
 	deps Dependencies,
-	output io.Writer,
-	errOutput io.Writer,
+	display *display,
 	line string,
 ) (bool, error) {
 	switch line {
 	case "/exit":
 		return true, nil
 	case "/help":
-		_, err := fmt.Fprintln(output, helpText())
-		return false, err
+		return false, display.AppendTranscriptText(helpText())
 	case "/clear":
-		_, err := fmt.Fprint(output, clearScreenANSI)
-		return false, err
+		return false, display.Clear()
 	default:
 		if strings.HasPrefix(line, "/") {
-			if _, err := fmt.Fprintf(errOutput, "unknown command: %s\n", line); err != nil {
-				return false, fmt.Errorf("write shell error: %w", err)
-			}
-
-			return false, nil
+			return false, display.AppendTranscriptLines([]string{
+				fmt.Sprintf("unknown command: %s", line),
+			})
 		}
 
-		if err := runPrompt(ctx, deps, output, errOutput, line); err != nil {
+		if err := runPrompt(ctx, deps, display, line); err != nil {
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
-			if _, writeErr := fmt.Fprintf(errOutput, "run error: %v\n", err); writeErr != nil {
-				return false, fmt.Errorf("write shell error: %w", writeErr)
-			}
+			return false, display.AppendTranscriptLines([]string{
+				fmt.Sprintf("run error: %v", err),
+			})
 		}
 
 		return false, nil
@@ -140,8 +132,7 @@ func dispatchCommand(
 func runPrompt(
 	ctx context.Context,
 	deps Dependencies,
-	output io.Writer,
-	errOutput io.Writer,
+	display *display,
 	prompt string,
 ) error {
 	if prompt == "" {
@@ -165,7 +156,7 @@ func runPrompt(
 				SystemPrompt: deps.SystemPrompt,
 			})
 		},
-		visualizeLive(output),
+		visualizeLive(display),
 	)
 	if err != nil {
 		return err
@@ -174,7 +165,6 @@ func runPrompt(
 		return fmt.Errorf("runtime finished with status %q", result.Status)
 	}
 
-	_ = errOutput
 	return nil
 }
 

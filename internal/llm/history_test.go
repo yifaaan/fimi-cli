@@ -21,6 +21,34 @@ func TestTextRecordToMessage(t *testing.T) {
 	}
 }
 
+func TestTextRecordToMessageParsesAssistantToolCalls(t *testing.T) {
+	record := contextstore.TextRecord{
+		Role:          contextstore.RoleAssistant,
+		Content:       "I will inspect the file.",
+		ToolCallsJSON: `[{"ID":"call_read","Name":"read_file","Arguments":"{\"path\":\"main.go\"}"}]`,
+	}
+
+	message, ok := textRecordToMessage(record)
+	if !ok {
+		t.Fatalf("textRecordToMessage() ok = false, want true")
+	}
+
+	want := Message{
+		Role:    RoleAssistant,
+		Content: "I will inspect the file.",
+		ToolCalls: []ToolCall{
+			{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: `{"path":"main.go"}`,
+			},
+		},
+	}
+	if !reflect.DeepEqual(message, want) {
+		t.Fatalf("textRecordToMessage() = %#v, want %#v", message, want)
+	}
+}
+
 func TestTextRecordToMessageSkipsSystemRecord(t *testing.T) {
 	_, ok := textRecordToMessage(contextstore.NewSystemTextRecord("boot"))
 	if ok {
@@ -83,5 +111,37 @@ func TestBuildHistoryMessagesReturnsEmptyWhenLimitNonPositive(t *testing.T) {
 	}, 0)
 	if len(got) != 0 {
 		t.Fatalf("len(buildHistoryMessages()) = %d, want 0", len(got))
+	}
+}
+
+func TestBuildHistoryMessagesPreservesAssistantToolCallChain(t *testing.T) {
+	records := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("list current dir"),
+		{
+			Role:          contextstore.RoleAssistant,
+			ToolCallsJSON: `[{"ID":"call_bash","Name":"bash","Arguments":"{\"command\":\"pwd && ls -la\"}"}]`,
+		},
+		contextstore.NewToolResultRecord("call_bash", "/tmp/project"),
+		contextstore.NewUserTextRecord("summarize it"),
+	}
+
+	got := buildHistoryMessages(records, 2)
+	want := []Message{
+		{Role: RoleUser, Content: "list current dir"},
+		{
+			Role: RoleAssistant,
+			ToolCalls: []ToolCall{
+				{
+					ID:        "call_bash",
+					Name:      "bash",
+					Arguments: `{"command":"pwd && ls -la"}`,
+				},
+			},
+		},
+		{Role: RoleTool, ToolCallID: "call_bash", Content: "/tmp/project"},
+		{Role: RoleUser, Content: "summarize it"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildHistoryMessages() = %#v, want %#v", got, want)
 	}
 }

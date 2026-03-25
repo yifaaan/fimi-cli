@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"fimi-cli/internal/llm"
@@ -231,6 +232,50 @@ func TestClientReplyParsesToolCalls(t *testing.T) {
 			Name:      "read_file",
 			Arguments: `{"path":"main.go"}`,
 		})
+	}
+}
+
+func TestBuildResponseInputKeepsAssistantFunctionCallBeforeToolOutput(t *testing.T) {
+	got := buildResponseInput([]llm.Message{
+		{Role: llm.RoleUser, Content: "list current dir"},
+		{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{
+				{
+					ID:        "call_bash",
+					Name:      "bash",
+					Arguments: `{"command":"pwd && ls -la"}`,
+				},
+			},
+		},
+		{
+			Role:       llm.RoleTool,
+			ToolCallID: "call_bash",
+			Content:    "/tmp/project",
+		},
+	})
+
+	want := []responseInputItem{
+		{Role: llm.RoleUser, Content: "list current dir"},
+		{
+			Type:      "function_call",
+			CallID:    "call_bash",
+			Name:      "bash",
+			Arguments: `{"command":"pwd && ls -la"}`,
+		},
+		{
+			Type:   "function_call_output",
+			CallID: "call_bash",
+			Output: "/tmp/project",
+		},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(buildResponseInput()) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !reflect.DeepEqual(got[i], want[i]) {
+			t.Fatalf("buildResponseInput()[%d] = %#v, want %#v", i, got[i], want[i])
+		}
 	}
 }
 
