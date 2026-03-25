@@ -1,8 +1,8 @@
 package shell
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -30,6 +30,8 @@ type Dependencies struct {
 	Input         io.Reader
 	Output        io.Writer
 	ErrOutput     io.Writer
+	HistoryFile   string
+	EditorFactory lineEditorFactory
 	ModelName     string
 	SystemPrompt  string
 	InitialPrompt string
@@ -56,11 +58,26 @@ func Run(ctx context.Context, deps Dependencies) error {
 	}
 
 	display := newDisplay(output)
+	history, err := loadHistoryStore(deps.HistoryFile)
+	if err != nil {
+		if appendErr := display.AppendTranscriptLines([]string{
+			fmt.Sprintf("shell history unavailable: %v", err),
+		}); appendErr != nil {
+			return appendErr
+		}
+	}
 
-	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	editorFactory := deps.EditorFactory
+	if editorFactory == nil {
+		editorFactory = newLinerEditor
+	}
+	editor, err := editorFactory(input, output, history.Entries())
+	if err != nil {
+		return fmt.Errorf("create shell line editor: %w", err)
+	}
+	defer editor.Close()
 
-	if err := runPrompt(ctx, deps, display, strings.TrimSpace(deps.InitialPrompt)); err != nil {
+	if err := runPrompt(ctx, deps, display, editor, &history, strings.TrimSpace(deps.InitialPrompt)); err != nil {
 		return err
 	}
 
@@ -69,24 +86,25 @@ func Run(ctx context.Context, deps Dependencies) error {
 			return ctx.Err()
 		}
 
-		if _, err := fmt.Fprint(output, promptText); err != nil {
-			return fmt.Errorf("write shell prompt: %w", err)
-		}
-
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return fmt.Errorf("read shell input: %w", err)
-			}
-
+		line, err := editor.ReadLine(promptText)
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
-
-		line := strings.TrimSpace(scanner.Text())
+		if errors.Is(err, ErrLineReadAborted) {
+			if err := display.AppendTranscriptLines([]string{"[interrupted]"}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read shell input: %w", err)
+		}
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 
-		exit, err := dispatchCommand(ctx, deps, display, line)
+		exit, err := dispatchCommand(ctx, deps, display, editor, &history, line)
 		if err != nil {
 			return err
 		}
@@ -100,6 +118,8 @@ func dispatchCommand(
 	ctx context.Context,
 	deps Dependencies,
 	display *display,
+	editor lineEditor,
+	history *historyStore,
 	line string,
 ) (bool, error) {
 	switch line {
@@ -116,7 +136,7 @@ func dispatchCommand(
 			})
 		}
 
-		if err := runPrompt(ctx, deps, display, line); err != nil {
+		if err := runPrompt(ctx, deps, display, editor, history, line); err != nil {
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
@@ -133,10 +153,24 @@ func runPrompt(
 	ctx context.Context,
 	deps Dependencies,
 	display *display,
+	editor lineEditor,
+	history *historyStore,
 	prompt string,
 ) error {
 	if prompt == "" {
 		return nil
+	}
+	if editor != nil {
+		editor.AppendHistory(prompt)
+	}
+	if history != nil {
+		if err := history.Append(prompt); err != nil {
+			if appendErr := display.AppendTranscriptLines([]string{
+				fmt.Sprintf("shell history unavailable: %v", err),
+			}); appendErr != nil {
+				return appendErr
+			}
+		}
 	}
 
 	result, err := ui.Run(

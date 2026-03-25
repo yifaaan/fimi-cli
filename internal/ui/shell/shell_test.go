@@ -1,8 +1,12 @@
 package shell
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,6 +32,8 @@ func TestRunProcessesInitialPromptBeforeEnteringLoop(t *testing.T) {
 		Input:         strings.NewReader("/exit\n"),
 		Output:        &out,
 		ErrOutput:     &errOut,
+		HistoryFile:   filepath.Join(t.TempDir(), "shell_history.txt"),
+		EditorFactory: scriptedEditorFactory(),
 		ModelName:     "test-model",
 		SystemPrompt:  "You are the configured agent.",
 		InitialPrompt: "fix tests",
@@ -110,6 +116,45 @@ func TestVisualizeLiveRedrawsShellBlock(t *testing.T) {
 	}
 }
 
+func TestVisualizeLiveFlushesPreviousStepBeforeRenderingNextOne(t *testing.T) {
+	eventsCh := make(chan runtimeevents.Event, 6)
+	eventsCh <- runtimeevents.StepBegin{Number: 1}
+	eventsCh <- runtimeevents.ToolCall{
+		Name:      "bash",
+		Arguments: `{"command":"pwd && ls -la"}`,
+	}
+	eventsCh <- runtimeevents.ToolResult{
+		ToolName: "bash",
+		Output:   "/tmp/project",
+	}
+	eventsCh <- runtimeevents.StepBegin{Number: 2}
+	eventsCh <- runtimeevents.TextPart{Text: "done"}
+	close(eventsCh)
+
+	var out bytes.Buffer
+	display := newDisplay(&out)
+	err := visualizeLive(display)(context.Background(), eventsCh)
+	if err != nil {
+		t.Fatalf("visualizeLive() error = %v", err)
+	}
+
+	wantTranscript := []string{
+		"[step 1]",
+		`[tool] bash {"command":"pwd && ls -la"}`,
+		"[tool result] bash",
+		"/tmp/project",
+		"[step 2]",
+		"[assistant]",
+		"done",
+	}
+	if got := display.transcript.Snapshot(); !equalLines(got, wantTranscript) {
+		t.Fatalf("transcript snapshot = %#v, want %#v", got, wantTranscript)
+	}
+	if !strings.Contains(out.String(), "/tmp/project\n") {
+		t.Fatalf("visualizer output = %q, want flushed step 1 transcript", out.String())
+	}
+}
+
 func TestLiveRendererClearRemovesPreviousBlock(t *testing.T) {
 	var out bytes.Buffer
 	renderer := newLiveRenderer(&out)
@@ -134,11 +179,13 @@ func TestRunHandlesMetaCommandsWithoutCallingRunner(t *testing.T) {
 	runner := &countingRunner{}
 
 	err := Run(context.Background(), Dependencies{
-		Runner:    runner,
-		Store:     contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
-		Input:     strings.NewReader("/help\n/clear\n/exit\n"),
-		Output:    &out,
-		ErrOutput: &errOut,
+		Runner:        runner,
+		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:         strings.NewReader("/help\n/clear\n/exit\n"),
+		Output:        &out,
+		ErrOutput:     &errOut,
+		HistoryFile:   filepath.Join(t.TempDir(), "shell_history.txt"),
+		EditorFactory: scriptedEditorFactory(),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -182,11 +229,13 @@ func TestRunPrintsUnknownCommandToTranscript(t *testing.T) {
 	var errOut bytes.Buffer
 
 	err := Run(context.Background(), Dependencies{
-		Runner:    &countingRunner{},
-		Store:     contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
-		Input:     strings.NewReader("/nope\n/exit\n"),
-		Output:    &out,
-		ErrOutput: &errOut,
+		Runner:        &countingRunner{},
+		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:         strings.NewReader("/nope\n/exit\n"),
+		Output:        &out,
+		ErrOutput:     &errOut,
+		HistoryFile:   filepath.Join(t.TempDir(), "shell_history.txt"),
+		EditorFactory: scriptedEditorFactory(),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -205,11 +254,13 @@ func TestRunPrintsPromptErrorsToTranscript(t *testing.T) {
 	var errOut bytes.Buffer
 
 	err := Run(context.Background(), Dependencies{
-		Runner:    &countingRunner{err: runtime.ErrUnknownStepKind},
-		Store:     contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
-		Input:     strings.NewReader("hello\n/exit\n"),
-		Output:    &out,
-		ErrOutput: &errOut,
+		Runner:        &countingRunner{err: runtime.ErrUnknownStepKind},
+		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:         strings.NewReader("hello\n/exit\n"),
+		Output:        &out,
+		ErrOutput:     &errOut,
+		HistoryFile:   filepath.Join(t.TempDir(), "shell_history.txt"),
+		EditorFactory: scriptedEditorFactory(),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -217,6 +268,59 @@ func TestRunPrintsPromptErrorsToTranscript(t *testing.T) {
 
 	if !strings.Contains(out.String(), "run error: unknown runtime step kind\n") {
 		t.Fatalf("shell output = %q, want run error in transcript", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestRunAppendsSubmittedPromptsToShellHistory(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "shell_history.txt")
+	var out bytes.Buffer
+
+	err := Run(context.Background(), Dependencies{
+		Runner:        &countingRunner{},
+		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:         strings.NewReader("first prompt\nsecond prompt\n/exit\n"),
+		Output:        &out,
+		HistoryFile:   historyFile,
+		EditorFactory: scriptedEditorFactory(),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != "first prompt\nsecond prompt\n" {
+		t.Fatalf("history file = %q, want %q", string(data), "first prompt\nsecond prompt\n")
+	}
+}
+
+func TestRunLoadsExistingShellHistoryWithoutWarning(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "shell_history.txt")
+	if err := os.WriteFile(historyFile, []byte("first prompt\nsecond prompt\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err := Run(context.Background(), Dependencies{
+		Runner:        &countingRunner{},
+		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:         strings.NewReader("/exit\n"),
+		Output:        &out,
+		ErrOutput:     &errOut,
+		HistoryFile:   historyFile,
+		EditorFactory: scriptedEditorFactory(),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if strings.Contains(out.String(), "shell history unavailable:") {
+		t.Fatalf("shell output = %q, want no history warning", out.String())
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("shell stderr = %q, want empty", errOut.String())
@@ -263,4 +367,109 @@ func equalLines(got, want []string) bool {
 	}
 
 	return true
+}
+
+type scriptedEditor struct {
+	lines   []string
+	index   int
+	history []string
+	output  io.Writer
+}
+
+func scriptedEditorFactory() lineEditorFactory {
+	return func(input io.Reader, output io.Writer, history []string) (lineEditor, error) {
+		scanner := bufio.NewScanner(input)
+		lines := make([]string, 0, 8)
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+
+		return &scriptedEditor{
+			lines:   lines,
+			history: append([]string(nil), history...),
+			output:  output,
+		}, nil
+	}
+}
+
+func (e *scriptedEditor) ReadLine(prompt string) (string, error) {
+	if e.output != nil {
+		if _, err := io.WriteString(e.output, prompt); err != nil {
+			return "", err
+		}
+	}
+	if e.index >= len(e.lines) {
+		return "", io.EOF
+	}
+	line := e.lines[e.index]
+	e.index++
+	if line == "^C" {
+		return "", ErrLineReadAborted
+	}
+	return line, nil
+}
+
+func (e *scriptedEditor) AppendHistory(entry string) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return
+	}
+	e.history = append(e.history, entry)
+}
+
+func (e *scriptedEditor) Close() error {
+	return nil
+}
+
+type failingEditor struct {
+	err error
+}
+
+func (e failingEditor) ReadLine(prompt string) (string, error) {
+	_ = prompt
+	return "", e.err
+}
+
+func (e failingEditor) AppendHistory(entry string) {
+	_ = entry
+}
+
+func (e failingEditor) Close() error {
+	return nil
+}
+
+func TestRunPrintsInterruptedWhenEditorAbortsPrompt(t *testing.T) {
+	var out bytes.Buffer
+	err := Run(context.Background(), Dependencies{
+		Runner:        &countingRunner{},
+		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:         strings.NewReader("^C\n/exit\n"),
+		Output:        &out,
+		HistoryFile:   filepath.Join(t.TempDir(), "shell_history.txt"),
+		EditorFactory: scriptedEditorFactory(),
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "[interrupted]\n") {
+		t.Fatalf("shell output = %q, want interrupted transcript", out.String())
+	}
+}
+
+func TestRunReturnsEditorReadError(t *testing.T) {
+	wantErr := errors.New("editor failed")
+	err := Run(context.Background(), Dependencies{
+		Runner: &countingRunner{},
+		Store:  contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Output: io.Discard,
+		EditorFactory: func(input io.Reader, output io.Writer, history []string) (lineEditor, error) {
+			return failingEditor{err: wantErr}, nil
+		},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
 }

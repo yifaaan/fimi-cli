@@ -94,23 +94,37 @@ func visualizeLive(display *display) ui.VisualizeFunc {
 		state := liveState{}
 
 		for event := range events {
+			if stepBegin, ok := event.(runtimeevents.StepBegin); ok {
+				// 当 runtime 进入下一步时，先把上一 step 的 live 内容固化到 transcript。
+				// 这样用户在 step 2 期间仍能看到 step 1 的工具活动，而不是屏幕只剩一个 step 标题。
+				if stepBegin.Number > 1 {
+					if err := flushLiveState(display, state); err != nil {
+						return err
+					}
+				}
+			}
+
 			state.Apply(event)
 			if err := display.live.Render(state.Lines()); err != nil {
 				return err
 			}
 		}
 
-		finalLines := state.Lines()
-		if len(finalLines) == 0 {
-			return nil
-		}
-		if err := display.live.Clear(); err != nil {
-			return err
-		}
-		if err := display.AppendTranscriptLines(finalLines); err != nil {
-			return err
-		}
+		return flushLiveState(display, state)
+	}
+}
 
+func flushLiveState(display *display, state liveState) error {
+	finalLines := state.Lines()
+	if len(finalLines) == 0 {
 		return nil
 	}
+	if err := display.live.Clear(); err != nil {
+		return err
+	}
+	if err := display.AppendTranscriptLines(finalLines); err != nil {
+		return err
+	}
+
+	return nil
 }

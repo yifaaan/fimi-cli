@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	AppStateDirName    = "fimi"
-	SessionsDirName    = "sessions"
-	HistoryFileExtName = ".jsonl"
+	AppStateDirName      = "fimi"
+	SessionsDirName      = "sessions"
+	HistoryFileExtName   = ".jsonl"
+	ShellHistoryFileName = "shell_history.txt"
 )
 
 var ErrNoPreviousSession = errors.New("no previous session")
@@ -65,6 +66,17 @@ func DirForWorkDir(workDir string) (string, string, error) {
 // HistoryFileForSession 返回某个 session 对应的 history file 路径。
 func HistoryFileForSession(sessionsDir, sessionID string) string {
 	return filepath.Join(sessionsDir, sessionID+HistoryFileExtName)
+}
+
+// ShellHistoryFileForWorkDir 返回某个工作目录对应的 shell 输入历史文件路径。
+// 它按工作目录维度存储，而不是按 session 维度存储，这样同一仓库下的 shell 交互历史可以复用。
+func ShellHistoryFileForWorkDir(workDir string) (string, error) {
+	_, workDirSessionsDir, err := DirForWorkDir(workDir)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(workDirSessionsDir, ShellHistoryFileName), nil
 }
 
 // New 为工作目录创建一个新的 session。

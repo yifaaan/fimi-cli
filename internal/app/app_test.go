@@ -767,6 +767,13 @@ func TestDependenciesRunDelegatesToShellMode(t *testing.T) {
 	if gotDeps.ModelName != "actual-model" {
 		t.Fatalf("shell deps model = %q, want %q", gotDeps.ModelName, "actual-model")
 	}
+	wantHistoryFile, err := session.ShellHistoryFileForWorkDir("/tmp/fimi-project")
+	if err != nil {
+		t.Fatalf("ShellHistoryFileForWorkDir() error = %v", err)
+	}
+	if gotDeps.HistoryFile != wantHistoryFile {
+		t.Fatalf("shell deps history file = %q, want %q", gotDeps.HistoryFile, wantHistoryFile)
+	}
 	if gotDeps.SystemPrompt != "You are the configured agent." {
 		t.Fatalf("shell deps system prompt = %q, want %q", gotDeps.SystemPrompt, "You are the configured agent.")
 	}

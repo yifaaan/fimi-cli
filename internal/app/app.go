@@ -543,12 +543,18 @@ func (d dependencies) runShell(
 		runShellUI = shell.Run
 	}
 
+	historyFile, err := session.ShellHistoryFileForWorkDir(sess.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve shell history file: %w", err)
+	}
+
 	return runShellUI(ctx, shell.Dependencies{
 		Runner:        runner,
 		Store:         store,
 		Input:         os.Stdin,
 		Output:        os.Stdout,
 		ErrOutput:     os.Stderr,
+		HistoryFile:   historyFile,
 		ModelName:     resolveRuntimeModelName(cfg),
 		SystemPrompt:  agent.SystemPrompt,
 		InitialPrompt: input.prompt,
