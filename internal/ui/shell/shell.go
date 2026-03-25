@@ -48,6 +48,8 @@ type StartupInfo struct {
 	SessionReused  bool
 	ModelName      string
 	ConversationDB string
+	LastRole       string
+	LastSummary    string
 }
 
 // Run 启动最小交互式 shell。
@@ -258,6 +260,13 @@ func startupBannerLines(info StartupInfo) []string {
 	}
 	if info.ConversationDB != "" {
 		lines = append(lines, fmt.Sprintf("  history: %s", info.ConversationDB))
+	}
+	if info.LastSummary != "" {
+		if info.LastRole != "" {
+			lines = append(lines, fmt.Sprintf("  last: %s: %s", info.LastRole, info.LastSummary))
+		} else {
+			lines = append(lines, fmt.Sprintf("  last: %s", info.LastSummary))
+		}
 	}
 	lines = append(lines, "  commands: /help /clear /exit")
 

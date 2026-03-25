@@ -79,6 +79,8 @@ func TestRunPrintsStartupBannerWhenProvided(t *testing.T) {
 			SessionReused:  true,
 			ModelName:      "test-model",
 			ConversationDB: "/tmp/history.jsonl",
+			LastRole:       "assistant",
+			LastSummary:    "resumed from previous reply",
 		},
 	})
 	if err != nil {
@@ -92,6 +94,7 @@ func TestRunPrintsStartupBannerWhenProvided(t *testing.T) {
 		"  mode: continue\n",
 		"  model: test-model\n",
 		"  history: /tmp/history.jsonl\n",
+		"  last: assistant: resumed from previous reply\n",
 		"  commands: /help /clear /exit\n",
 	} {
 		if !strings.Contains(got, want) {

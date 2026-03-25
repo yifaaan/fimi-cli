@@ -180,6 +180,13 @@ func TestApplyRunInputToConfigReturnsErrorForUnknownModelAlias(t *testing.T) {
 	}
 }
 
+func TestSummarizeStartupContentCompactsWhitespaceAndTruncates(t *testing.T) {
+	got := summarizeStartupContent("line one\n\n   line two   line three", 18)
+	if got != "line one line t..." {
+		t.Fatalf("summarizeStartupContent() = %q, want %q", got, "line one line t...")
+	}
+}
+
 func TestBuildRuntimeInputUsesConfiguredModelName(t *testing.T) {
 	cfg := config.Config{
 		DefaultModel: "primary",
@@ -604,6 +611,9 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if shellDeps.StartupInfo.ConversationDB != historyFile {
 		t.Fatalf("shell startup history = %q, want %q", shellDeps.StartupInfo.ConversationDB, historyFile)
 	}
+	if shellDeps.StartupInfo.LastSummary != "" {
+		t.Fatalf("shell startup last summary = %q, want empty for new session", shellDeps.StartupInfo.LastSummary)
+	}
 	if shellDeps.SystemPrompt != "You are the configured agent." {
 		t.Fatalf("shell deps system prompt = %q, want %q", shellDeps.SystemPrompt, "You are the configured agent.")
 	}
@@ -899,6 +909,17 @@ func TestDependenciesRunCreatesNewSessionByDefault(t *testing.T) {
 
 func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	store := contextstore.New(historyFile)
+	if _, err := store.Bootstrap(buildInitialRecord()); err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+	if err := store.Append(contextstore.NewUserTextRecord("continue the refactor")); err != nil {
+		t.Fatalf("Append(user) error = %v", err)
+	}
+	if err := store.Append(contextstore.NewAssistantTextRecord("picked up\nfrom the latest checkpoint")); err != nil {
+		t.Fatalf("Append(assistant) error = %v", err)
+	}
+
 	var continueCalled bool
 	var createCalled bool
 	var gotContinueWorkDir string
@@ -969,6 +990,12 @@ func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
 	}
 	if !shellDeps.StartupInfo.SessionReused {
 		t.Fatalf("shell startup session reused = false, want true")
+	}
+	if shellDeps.StartupInfo.LastRole != contextstore.RoleAssistant {
+		t.Fatalf("shell startup last role = %q, want %q", shellDeps.StartupInfo.LastRole, contextstore.RoleAssistant)
+	}
+	if shellDeps.StartupInfo.LastSummary != "picked up from the latest checkpoint" {
+		t.Fatalf("shell startup last summary = %q, want %q", shellDeps.StartupInfo.LastSummary, "picked up from the latest checkpoint")
 	}
 }
 

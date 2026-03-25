@@ -490,7 +490,8 @@ func (d dependencies) runShell(
 	}
 
 	store := contextstore.New(sess.HistoryFile)
-	if _, err := bootstrapStartupState(store); err != nil {
+	state, err := bootstrapStartupState(store)
+	if err != nil {
 		return err
 	}
 
@@ -524,6 +525,8 @@ func (d dependencies) runShell(
 			SessionReused:  sessionReused,
 			ModelName:      resolveRuntimeModelName(cfg),
 			ConversationDB: sess.HistoryFile,
+			LastRole:       startupLastRole(state),
+			LastSummary:    startupLastSummary(state),
 		},
 	})
 }
@@ -694,6 +697,45 @@ func printStartupState(
 		fmt.Printf("last history role: %s\n", state.lastRecord.Role)
 		fmt.Printf("last history content: %s\n", state.lastRecord.Content)
 	}
+}
+
+func startupLastRole(state startupState) string {
+	if !shouldShowStartupLastRecord(state) {
+		return ""
+	}
+
+	return state.lastRecord.Role
+}
+
+func startupLastSummary(state startupState) string {
+	if !shouldShowStartupLastRecord(state) {
+		return ""
+	}
+
+	return summarizeStartupContent(state.lastRecord.Content, 80)
+}
+
+func shouldShowStartupLastRecord(state startupState) bool {
+	if !state.hasLastRecord {
+		return false
+	}
+	if state.lastRecord.Role == contextstore.RoleSystem && state.lastRecord.Content == initialRecordContent {
+		return false
+	}
+
+	return true
+}
+
+func summarizeStartupContent(content string, maxLen int) string {
+	compact := strings.Join(strings.Fields(content), " ")
+	if maxLen <= 0 || len(compact) <= maxLen {
+		return compact
+	}
+	if maxLen <= 3 {
+		return compact[:maxLen]
+	}
+
+	return compact[:maxLen-3] + "..."
 }
 
 // printHelp 输出当前 CLI 入口支持的最小帮助信息。
