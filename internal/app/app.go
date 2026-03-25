@@ -484,7 +484,7 @@ func (d dependencies) runShell(
 	workDir string,
 	input runInput,
 ) error {
-	sess, _, err := d.openRunSession(workDir, input)
+	sess, sessionReused, err := d.openRunSession(workDir, input)
 	if err != nil {
 		return err
 	}
@@ -519,6 +519,12 @@ func (d dependencies) runShell(
 		ModelName:     resolveRuntimeModelName(cfg),
 		SystemPrompt:  agent.SystemPrompt,
 		InitialPrompt: input.prompt,
+		StartupInfo: shell.StartupInfo{
+			SessionID:      sess.ID,
+			SessionReused:  sessionReused,
+			ModelName:      resolveRuntimeModelName(cfg),
+			ConversationDB: sess.HistoryFile,
+		},
 	})
 }
 

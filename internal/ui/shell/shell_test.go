@@ -37,11 +37,20 @@ func TestRunProcessesInitialPromptBeforeEnteringLoop(t *testing.T) {
 		ModelName:     "test-model",
 		SystemPrompt:  "You are the configured agent.",
 		InitialPrompt: "fix tests",
+		StartupInfo: StartupInfo{
+			SessionID:      "session-123",
+			SessionReused:  false,
+			ModelName:      "test-model",
+			ConversationDB: store.Path(),
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	if !strings.Contains(out.String(), "Shell session\n") {
+		t.Fatalf("shell output = %q, want startup banner", out.String())
+	}
 	if !strings.Contains(out.String(), "[step 1]\n") {
 		t.Fatalf("shell output = %q, want step header", out.String())
 	}
@@ -53,6 +62,41 @@ func TestRunProcessesInitialPromptBeforeEnteringLoop(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("shell stderr = %q, want empty", errOut.String())
+	}
+}
+
+func TestRunPrintsStartupBannerWhenProvided(t *testing.T) {
+	var out bytes.Buffer
+	err := Run(context.Background(), Dependencies{
+		Runner:        &countingRunner{},
+		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:         strings.NewReader("/exit\n"),
+		Output:        &out,
+		HistoryFile:   filepath.Join(t.TempDir(), "shell_history.txt"),
+		EditorFactory: scriptedEditorFactory(),
+		StartupInfo: StartupInfo{
+			SessionID:      "session-123",
+			SessionReused:  true,
+			ModelName:      "test-model",
+			ConversationDB: "/tmp/history.jsonl",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"Shell session\n",
+		"  session: session-123\n",
+		"  mode: continue\n",
+		"  model: test-model\n",
+		"  history: /tmp/history.jsonl\n",
+		"  commands: /help /clear /exit\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shell output = %q, want substring %q", got, want)
+		}
 	}
 }
 

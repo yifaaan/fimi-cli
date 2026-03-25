@@ -595,6 +595,15 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if shellDeps.ModelName != "custom-model" {
 		t.Fatalf("shell deps model = %q, want %q", shellDeps.ModelName, "custom-model")
 	}
+	if shellDeps.StartupInfo.SessionID != "session-123" {
+		t.Fatalf("shell startup session = %q, want %q", shellDeps.StartupInfo.SessionID, "session-123")
+	}
+	if shellDeps.StartupInfo.SessionReused {
+		t.Fatalf("shell startup session reused = true, want false")
+	}
+	if shellDeps.StartupInfo.ConversationDB != historyFile {
+		t.Fatalf("shell startup history = %q, want %q", shellDeps.StartupInfo.ConversationDB, historyFile)
+	}
 	if shellDeps.SystemPrompt != "You are the configured agent." {
 		t.Fatalf("shell deps system prompt = %q, want %q", shellDeps.SystemPrompt, "You are the configured agent.")
 	}
@@ -732,6 +741,18 @@ func TestDependenciesRunDelegatesToShellByDefault(t *testing.T) {
 	if gotDeps.HistoryFile != wantHistoryFile {
 		t.Fatalf("shell deps history file = %q, want %q", gotDeps.HistoryFile, wantHistoryFile)
 	}
+	if gotDeps.StartupInfo.SessionID != "session-123" {
+		t.Fatalf("shell startup session = %q, want %q", gotDeps.StartupInfo.SessionID, "session-123")
+	}
+	if gotDeps.StartupInfo.SessionReused {
+		t.Fatalf("shell startup session reused = true, want false")
+	}
+	if gotDeps.StartupInfo.ModelName != "actual-model" {
+		t.Fatalf("shell startup model = %q, want %q", gotDeps.StartupInfo.ModelName, "actual-model")
+	}
+	if gotDeps.StartupInfo.ConversationDB != historyFile {
+		t.Fatalf("shell startup history = %q, want %q", gotDeps.StartupInfo.ConversationDB, historyFile)
+	}
 	if gotDeps.SystemPrompt != "You are the configured agent." {
 		t.Fatalf("shell deps system prompt = %q, want %q", gotDeps.SystemPrompt, "You are the configured agent.")
 	}
@@ -868,6 +889,12 @@ func TestDependenciesRunCreatesNewSessionByDefault(t *testing.T) {
 	if shellDeps.Store.Path() != historyFile {
 		t.Fatalf("shell deps store path = %q, want %q", shellDeps.Store.Path(), historyFile)
 	}
+	if shellDeps.StartupInfo.SessionID != "session-new" {
+		t.Fatalf("shell startup session = %q, want %q", shellDeps.StartupInfo.SessionID, "session-new")
+	}
+	if shellDeps.StartupInfo.SessionReused {
+		t.Fatalf("shell startup session reused = true, want false")
+	}
 }
 
 func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
@@ -936,6 +963,12 @@ func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
 	}
 	if shellDeps.Store.Path() != historyFile {
 		t.Fatalf("shell deps store path = %q, want %q", shellDeps.Store.Path(), historyFile)
+	}
+	if shellDeps.StartupInfo.SessionID != "session-old" {
+		t.Fatalf("shell startup session = %q, want %q", shellDeps.StartupInfo.SessionID, "session-old")
+	}
+	if !shellDeps.StartupInfo.SessionReused {
+		t.Fatalf("shell startup session reused = false, want true")
 	}
 }
 

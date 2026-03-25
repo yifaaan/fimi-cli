@@ -35,10 +35,19 @@ type Dependencies struct {
 	ModelName     string
 	SystemPrompt  string
 	InitialPrompt string
+	StartupInfo   StartupInfo
 }
 
 type eventSinkCapableRunner interface {
 	WithEventSink(sink runtimeevents.Sink) runtime.Runner
+}
+
+// StartupInfo 描述 shell 首屏需要展示的启动上下文。
+type StartupInfo struct {
+	SessionID      string
+	SessionReused  bool
+	ModelName      string
+	ConversationDB string
 }
 
 // Run 启动最小交互式 shell。
@@ -81,6 +90,10 @@ func Run(ctx context.Context, deps Dependencies) error {
 		return fmt.Errorf("create shell line editor: %w", err)
 	}
 	defer editor.Close()
+
+	if err := displayStartupBanner(display, deps.StartupInfo); err != nil {
+		return err
+	}
 
 	if err := runPrompt(ctx, deps, display, editor, &history, interactiveTTY, strings.TrimSpace(deps.InitialPrompt)); err != nil {
 		return err
@@ -215,6 +228,40 @@ func visualizeForMode(display *display, interactiveTTY bool) ui.VisualizeFunc {
 	}
 
 	return visualizeTranscript(display)
+}
+
+func displayStartupBanner(display *display, info StartupInfo) error {
+	lines := startupBannerLines(info)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	return display.AppendTranscriptLines(lines)
+}
+
+func startupBannerLines(info StartupInfo) []string {
+	if info == (StartupInfo{}) {
+		return nil
+	}
+
+	lines := []string{"Shell session"}
+	if info.SessionID != "" {
+		lines = append(lines, fmt.Sprintf("  session: %s", info.SessionID))
+	}
+	if info.SessionReused {
+		lines = append(lines, "  mode: continue")
+	} else {
+		lines = append(lines, "  mode: new")
+	}
+	if info.ModelName != "" {
+		lines = append(lines, fmt.Sprintf("  model: %s", info.ModelName))
+	}
+	if info.ConversationDB != "" {
+		lines = append(lines, fmt.Sprintf("  history: %s", info.ConversationDB))
+	}
+	lines = append(lines, "  commands: /help /clear /exit")
+
+	return lines
 }
 
 func helpText() string {
