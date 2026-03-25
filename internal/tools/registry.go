@@ -17,10 +17,12 @@ type Kind string
 const (
 	KindCommand Kind = "command"
 	KindFile    Kind = "file"
+	KindAgent   Kind = "agent"
 )
 
 const (
 	ToolBash        = "bash"
+	ToolAgent       = "agent"
 	ToolReadFile    = "read_file"
 	ToolGlob        = "glob"
 	ToolGrep        = "grep"
@@ -60,6 +62,11 @@ func NewRegistry(definitions ...Definition) (Registry, error) {
 // BuiltinRegistry 返回当前内建的最小工具注册表。
 func BuiltinRegistry() Registry {
 	registry, err := NewRegistry(
+		Definition{
+			Name:        ToolAgent,
+			Kind:        KindAgent,
+			Description: "Run a declared subagent for a focused task.",
+		},
 		Definition{
 			Name:        ToolBash,
 			Kind:        KindCommand,

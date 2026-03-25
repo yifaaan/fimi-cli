@@ -276,6 +276,12 @@ func buildLLMToolDefinitions(definitions []tools.Definition) []llm.ToolDefinitio
 
 func toolParametersSchema(name string) map[string]any {
 	switch name {
+	case tools.ToolAgent:
+		return objectSchema(requiredProperties(
+			schemaProperty("description", "string", "Short task description for the subagent."),
+			schemaProperty("prompt", "string", "Detailed task prompt for the subagent."),
+			schemaProperty("subagent_name", "string", "Declared subagent name to run."),
+		))
 	case tools.ToolBash:
 		return objectSchema(requiredProperties(
 			schemaProperty("command", "string", "Shell command to run inside the workspace."),
@@ -430,7 +436,14 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		return nil, err
 	}
 
-	toolExecutor := tools.NewBuiltinExecutor(agent.Tools, workDir)
+	registry := d.resolveToolRegistry()
+	toolExecutor := tools.NewBuiltinExecutorWithExtraHandlers(
+		agent.Tools,
+		workDir,
+		map[string]tools.HandlerFunc{
+			tools.ToolAgent: d.newAgentToolHandler(cfg, agent, workDir, registry),
+		},
+	)
 
 	return runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg)), nil
 }
@@ -602,6 +615,61 @@ func loadDeclaredSubagent(
 	return agent, nil
 }
 
+func (d dependencies) newAgentToolHandler(
+	cfg config.Config,
+	rootAgent loadedAgent,
+	workDir string,
+	registry tools.Registry,
+) tools.HandlerFunc {
+	return tools.NewAgentToolHandler(func(
+		ctx context.Context,
+		call runtime.ToolCall,
+		args tools.AgentArguments,
+		definition tools.Definition,
+	) (runtime.ToolExecution, error) {
+		return d.runDeclaredSubagent(ctx, cfg, rootAgent, workDir, registry, call, args)
+	})
+}
+
+func (d dependencies) runDeclaredSubagent(
+	ctx context.Context,
+	cfg config.Config,
+	rootAgent loadedAgent,
+	workDir string,
+	registry tools.Registry,
+	call runtime.ToolCall,
+	args tools.AgentArguments,
+) (runtime.ToolExecution, error) {
+	subagent, err := loadDeclaredSubagent(rootAgent, args.SubagentName, registry)
+	if err != nil {
+		return runtime.ToolExecution{}, err
+	}
+
+	historyFile, err := subagentHistoryFile(workDir, args.SubagentName, call.ID)
+	if err != nil {
+		return runtime.ToolExecution{}, fmt.Errorf("resolve subagent history file: %w", err)
+	}
+
+	runner, err := d.buildRunnerForAgent(cfg, subagent, workDir)
+	if err != nil {
+		return runtime.ToolExecution{}, fmt.Errorf("build subagent runner: %w", err)
+	}
+
+	result, err := runner.Run(ctx, contextstore.New(historyFile), runtime.Input{
+		Prompt:       args.Prompt,
+		Model:        resolveRuntimeModelName(cfg),
+		SystemPrompt: subagent.SystemPrompt,
+	})
+	if err != nil {
+		return runtime.ToolExecution{}, fmt.Errorf("run subagent %q: %w", args.SubagentName, err)
+	}
+
+	return runtime.ToolExecution{
+		Call:   call,
+		Output: finalAssistantText(result),
+	}, nil
+}
+
 func loadAgentFromFile(agentFile string, registry tools.Registry) (loadedAgent, error) {
 	spec, err := agentspec.LoadFile(agentFile)
 	if err != nil {
@@ -644,6 +712,54 @@ func filterExcludedTools(resolved []tools.Definition, excluded []string) []tools
 	}
 
 	return filtered
+}
+
+func subagentHistoryFile(workDir, subagentName, toolCallID string) (string, error) {
+	_, sessionsDir, err := session.DirForWorkDir(workDir)
+	if err != nil {
+		return "", err
+	}
+
+	baseName := sanitizeSubagentPathComponent(strings.TrimSpace(toolCallID))
+	if baseName == "" {
+		baseName = sanitizeSubagentPathComponent(strings.TrimSpace(subagentName))
+	}
+	if baseName == "" {
+		baseName = "subagent"
+	}
+
+	return filepath.Join(sessionsDir, "subagents", baseName+session.HistoryFileExtName), nil
+}
+
+func sanitizeSubagentPathComponent(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-', r == '_':
+			builder.WriteRune(r)
+		default:
+			builder.WriteByte('_')
+		}
+	}
+
+	return strings.Trim(builder.String(), "_")
+}
+
+func finalAssistantText(result runtime.Result) string {
+	for i := len(result.Steps) - 1; i >= 0; i-- {
+		text := strings.TrimSpace(result.Steps[i].AssistantText)
+		if text != "" {
+			return text
+		}
+	}
+
+	return ""
 }
 
 // openRunSession 根据当前应用输入决定 session 获取策略。

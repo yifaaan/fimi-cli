@@ -75,9 +75,36 @@ func NewBuiltinExecutor(definitions []Definition, workDir string) Executor {
 	return NewBuiltinExecutorWithShaper(definitions, workDir, NewOutputShaper())
 }
 
+func NewBuiltinExecutorWithExtraHandlers(
+	definitions []Definition,
+	workDir string,
+	extraHandlers map[string]HandlerFunc,
+) Executor {
+	return NewBuiltinExecutorWithShaperAndExtraHandlers(
+		definitions,
+		workDir,
+		NewOutputShaper(),
+		extraHandlers,
+	)
+}
+
 // NewBuiltinExecutorWithShaper 创建带自定义塑形器的执行器。
 func NewBuiltinExecutorWithShaper(definitions []Definition, workDir string, shaper OutputShaper) Executor {
-	return NewExecutor(definitions, builtinHandlers(workDir, shaper))
+	return NewBuiltinExecutorWithShaperAndExtraHandlers(definitions, workDir, shaper, nil)
+}
+
+func NewBuiltinExecutorWithShaperAndExtraHandlers(
+	definitions []Definition,
+	workDir string,
+	shaper OutputShaper,
+	extraHandlers map[string]HandlerFunc,
+) Executor {
+	handlers := builtinHandlers(workDir, shaper)
+	for name, handler := range extraHandlers {
+		handlers[name] = handler
+	}
+
+	return NewExecutor(definitions, handlers)
 }
 
 func builtinHandlers(workDir string, shaper OutputShaper) map[string]HandlerFunc {

@@ -66,6 +66,21 @@ func TestRegistryResolveAllPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestBuiltinRegistryIncludesAgentTool(t *testing.T) {
+	registry := BuiltinRegistry()
+
+	got, err := registry.Resolve(ToolAgent)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.Name != ToolAgent {
+		t.Fatalf("Resolve().Name = %q, want %q", got.Name, ToolAgent)
+	}
+	if got.Kind != KindAgent {
+		t.Fatalf("Resolve().Kind = %q, want %q", got.Kind, KindAgent)
+	}
+}
+
 func TestRegistryReturnsStructuredErrors(t *testing.T) {
 	registry := BuiltinRegistry()
 

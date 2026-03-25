@@ -5,6 +5,7 @@ agent:
   system_prompt_args:
     ROLE: coding agent
   tools:
+    - agent
     - bash
     - read_file
     - glob

@@ -81,6 +81,28 @@ func TestBuildLLMToolDefinitions(t *testing.T) {
 	}
 }
 
+func TestBuildLLMToolDefinitionsForAgentTool(t *testing.T) {
+	got := buildLLMToolDefinitions([]tools.Definition{
+		{
+			Name:        tools.ToolAgent,
+			Description: "Run a declared subagent for a focused task.",
+		},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
+	}
+	properties, ok := got[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
+	}
+	for _, name := range []string{"description", "prompt", "subagent_name"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("tool parameters missing %q property", name)
+		}
+	}
+}
+
 func TestBuildRuntimeConfig(t *testing.T) {
 	cfg := config.Config{
 		LoopControl: config.LoopControl{
@@ -496,6 +518,109 @@ agent:
 	}
 	if !errors.Is(err, tools.ErrToolNotRegistered) {
 		t.Fatalf("loadDeclaredSubagent() error = %v, want wrapped %v", err, tools.ErrToolNotRegistered)
+	}
+}
+
+func TestDependenciesRunDeclaredSubagentReturnsFinalAssistantTextAndUsesIsolatedHistory(t *testing.T) {
+	workDir := t.TempDir()
+	rootHistory := contextstore.New(filepath.Join(workDir, "root-history.jsonl"))
+	if err := rootHistory.Append(contextstore.NewUserTextRecord("root prompt")); err != nil {
+		t.Fatalf("Append(root user) error = %v", err)
+	}
+	if err := rootHistory.Append(contextstore.NewAssistantTextRecord("root reply")); err != nil {
+		t.Fatalf("Append(root assistant) error = %v", err)
+	}
+
+	subagentFile := filepath.Join(workDir, "reviewer.yaml")
+	if err := os.WriteFile(subagentFile, []byte(`
+version: 1
+agent:
+  name: Reviewer Agent
+  system_prompt_path: ./reviewer.md
+  tools:
+    - read_file
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(reviewer.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "reviewer.md"), []byte("You are the reviewer agent.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(reviewer.md) error = %v", err)
+	}
+
+	deps := dependencies{
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			return llm.NewPlaceholderClient(), nil
+		},
+	}
+	cfg := config.Config{
+		DefaultModel: "test-model",
+		Models: map[string]config.ModelConfig{
+			"test-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "test-model",
+			},
+		},
+	}
+	root := loadedAgent{
+		Spec: agentspec.Spec{
+			Name: "Root Agent",
+			Subagents: map[string]agentspec.SubagentSpec{
+				"reviewer": {
+					Path:        subagentFile,
+					Description: "Review code",
+				},
+			},
+		},
+	}
+
+	got, err := deps.runDeclaredSubagent(
+		context.Background(),
+		cfg,
+		root,
+		workDir,
+		tools.BuiltinRegistry(),
+		runtime.ToolCall{
+			ID:   "call/1",
+			Name: tools.ToolAgent,
+		},
+		tools.AgentArguments{
+			Description:  "review tests",
+			Prompt:       "explain the test setup",
+			SubagentName: "reviewer",
+		},
+	)
+	if err != nil {
+		t.Fatalf("runDeclaredSubagent() error = %v", err)
+	}
+	if got.Output != "assistant placeholder reply: explain the test setup" {
+		t.Fatalf("runDeclaredSubagent().Output = %q, want %q", got.Output, "assistant placeholder reply: explain the test setup")
+	}
+
+	rootRecords, err := rootHistory.ReadAll()
+	if err != nil {
+		t.Fatalf("rootHistory.ReadAll() error = %v", err)
+	}
+	wantRootRecords := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("root prompt"),
+		contextstore.NewAssistantTextRecord("root reply"),
+	}
+	if !reflect.DeepEqual(rootRecords, wantRootRecords) {
+		t.Fatalf("root history records = %#v, want %#v", rootRecords, wantRootRecords)
+	}
+
+	subagentHistoryFile, err := subagentHistoryFile(workDir, "reviewer", "call/1")
+	if err != nil {
+		t.Fatalf("subagentHistoryFile() error = %v", err)
+	}
+	subagentRecords, err := contextstore.New(subagentHistoryFile).ReadAll()
+	if err != nil {
+		t.Fatalf("subagent store ReadAll() error = %v", err)
+	}
+	wantSubagentRecords := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("explain the test setup"),
+		contextstore.NewAssistantTextRecord("assistant placeholder reply: explain the test setup"),
+	}
+	if !reflect.DeepEqual(subagentRecords, wantSubagentRecords) {
+		t.Fatalf("subagent history records = %#v, want %#v", subagentRecords, wantSubagentRecords)
 	}
 }
 

@@ -129,6 +129,38 @@ func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestNewBuiltinExecutorWithExtraHandlersUsesInjectedHandler(t *testing.T) {
+	ctx := context.Background()
+	executor := NewBuiltinExecutorWithExtraHandlers(
+		[]Definition{
+			{
+				Name: ToolAgent,
+				Kind: KindAgent,
+			},
+		},
+		t.TempDir(),
+		map[string]HandlerFunc{
+			ToolAgent: func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+				return runtime.ToolExecution{
+					Call:   call,
+					Output: "delegated",
+				}, nil
+			},
+		},
+	)
+
+	got, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolAgent,
+		Arguments: `{"description":"review","prompt":"check tests","subagent_name":"reviewer"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Output != "delegated" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "delegated")
+	}
+}
+
 func TestNewBashHandlerWithTimeoutCancelsLongRunningCommand(t *testing.T) {
 	ctx := context.Background()
 	shaper := NewOutputShaperWithLimits(1000, 500) // 使用宽松的限制便于测试
