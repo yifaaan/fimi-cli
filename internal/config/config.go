@@ -56,6 +56,7 @@ const (
 const (
 	ProviderTypePlaceholder = "placeholder"
 	ProviderTypeQWEN        = "qwen"
+	ProviderTypeOpenAI      = "openai"
 	DefaultProviderName     = ProviderTypePlaceholder
 )
 

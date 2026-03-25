@@ -6,6 +6,7 @@ import (
 
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/llm"
+	"fimi-cli/internal/llm/openai"
 	"fimi-cli/internal/llm/qwen"
 )
 
@@ -39,6 +40,8 @@ func buildLLMClientForProvider(
 		return buildPlaceholderClient(providerName, providerCfg, modelCfg)
 	case config.ProviderTypeQWEN:
 		return buildQwenClient(providerName, providerCfg, modelCfg)
+	case config.ProviderTypeOpenAI:
+		return buildOpenAIClient(providerName, providerCfg, modelCfg)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProviderType, providerCfg.Type)
 	}
@@ -99,6 +102,23 @@ func buildQwenClient(
 	}
 
 	return qwen.NewClient(qwen.Config{
+		APIKey:  providerCfg.APIKey,
+		BaseURL: providerCfg.BaseURL,
+		Model:   modelCfg.Model,
+	}), nil
+}
+
+// buildOpenAIClient 从配置构建 OpenAI 兼容 client。
+func buildOpenAIClient(
+	providerName string,
+	providerCfg config.ProviderConfig,
+	modelCfg config.ModelConfig,
+) (llm.Client, error) {
+	if providerCfg.APIKey == "" {
+		return nil, fmt.Errorf("openai api_key is required; set providers.%s.api_key in your config", providerName)
+	}
+
+	return openai.NewClient(openai.Config{
 		APIKey:  providerCfg.APIKey,
 		BaseURL: providerCfg.BaseURL,
 		Model:   modelCfg.Model,
