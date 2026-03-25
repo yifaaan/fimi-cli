@@ -2,202 +2,153 @@
 
 ## Purpose
 
-This file tracks the migration gap between the current Go rewrite and the Python reference in `temp/`.
+This file tracks the migration gap between the Python reference implementation in `temp/`
+and the current Go rewrite.
 
-The old plan stopped at "build the initial CLI skeleton". That is now outdated. The Go codebase already has a working entry chain, config loading, session selection, JSONL history storage, a minimal LLM engine boundary, and a single-turn runtime. The plan now needs to answer a different question:
+Updated: 2026-03-25
 
-`What is still missing before fimi-cli reaches the real kimi-cli target?`
+The previous version of this plan was outdated in two important ways:
 
----
+- it still treated shell UI as "not started"
+- it still treated streaming LLM support as "missing"
 
-## Python Reference Architecture (from `temp/`)
+Both are already present in the Go codebase. The real remaining gap is now mostly:
 
-Based on detailed analysis of the Python implementation:
-
-### Core Loop (`soul/kimisoul.py`)
-
-```
-run() → _agent_loop() → _step() (循环直到 finished 或达到最大步数)
-
-┌─────────────────────────────────────────────────────────┐
-│ run(user_input, event_queue)                           │
-│   1. _checkpoint()     ← 创建初始检查点                 │
-│   2. append_message(user)                               │
-│   3. _agent_loop()                                     │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│ _agent_loop()                                          │
-│   while True:                                          │
-│     StepBegin(step_no) → event_queue                  │
-│     try:                                               │
-│       _checkpoint()                                   │
-│       set_n_checkpoints()                             │
-│       finished = _step()                              │
-│     except BackToTheFuture → revert + continue       │
-│     except ChatProviderError/CancelledError → raise  │
-│     if finished → return                             │
-│     step_no++                                         │
-│     if step_no > max_steps → MaxStepsReached         │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│ _step() → _step_impl() (带重试机制)                     │
-│   kosong.step() → LLM 调用                            │
-│   result.tool_results() → 等待工具结果                │
-│   _grow_context() → 更新上下文                        │
-│   fetch_pending_dmail() → 检查 D-Mail                 │
-│   return not result.tool_calls (True=完成)           │
-└─────────────────────────────────────────────────────────┘
-```
-
-**关键设计特点:**
-- **重试机制**: 使用 `tenacity` 库，对特定 API 错误（429, 500, 502, 503）自动重试
-- **中断屏蔽**: `_grow_context` 使用 `asyncio.shield` 防止上下文操作被中断
-- **BackToTheFuture**: 异常机制实现时间旅行 - 当收到 D-Mail 时回滚到指定检查点
-
-### Event System (`soul/event.py`)
-
-```python
-type ControlFlowEvent = StepBegin | StepInterrupted | StatusUpdate
-type Event = ControlFlowEvent | ContentPart | ToolCall | ToolCallPart | ToolResult
-
-class EventQueue:
-    _queue: asyncio.Queue()
-    put_nowait(event)      # 生产者（KimiSoul）调用
-    async get() → Event    # 消费者（UI）调用
-    shutdown()
-```
-
-### Tools Architecture (`tools/`)
-
-| 工具 | 主要参数 | 特点 |
-|------|----------|------|
-| **Bash** | `command`, `timeout` (默认60s, 最大300s) | 异步子进程，流式输出收集 |
-| **ReadFile** | `path`, `line_offset`, `n_lines` | 最多1000行, 每行最多2000字符 |
-| **WriteFile** | `path`, `content`, `mode` (overwrite/append) | 路径安全检查 |
-| **Glob** | `pattern`, `directory`, `include_dirs` | 禁止 `**` 开头 |
-| **Grep** | `pattern`, `path`, `output_mode`, ... | 底层用 ripgrepy |
-| **PatchFile** | `path`, `diff` | 使用 patch_ng 库 |
-| **StrReplaceFile** | `path`, `edit` (old/new/replace_all) | 支持批量编辑 |
-| **SearchWeb** | `query`, `limit`, `include_content` | moonshot 搜索 API |
-| **FetchURL** | `url` | aiohttp + trafilatura |
-| **Task** | `description`, `subagent_name`, `prompt` | 子代理独立 Context |
-| **Think** | `thought` | 仅记录，返回空 |
-| **SetTodoList** | `todos` | 渲染为纯文本 |
-| **SendDMail** | `message`, `checkpoint_id` | 时间旅行消息 |
-
-**共享工具 (`utils.py`):**
-- `ToolResultBuilder` - 带字符/行限制的输出构建器
-- `load_desc()` - 从 .md 文件加载工具描述
-- `truncate_line()` - 行截断工具
-
-### UI Architecture (`ui/`)
-
-```
-KimiSoul (Soul)
-    |
-    | async events via EventQueue
-    v
-run_soul() [ui/__init__.py]
-    - spawns visualization task + run task concurrently
-    - coordinates cancellation via asyncio.wait()
-    |
-    v
-EventQueue [soul/event.py]
-    |
-    v
-Visualization Loop
-    ├── ShellApp._visualize (rich.Live)
-    │     ├── StepLiveView: 实时 step 渲染
-    │     ├── CustomPromptSession: prompt_toolkit
-    │     └── MetaCommandRegistry: /help, /clear, /exit
-    │
-    └── PrintApp._visualize_text / _visualize_stream_json
-```
-
-### D-Mail 时间旅行 (`soul/denwarenji.py`)
-
-```python
-class DMail(BaseModel):
-    message: str
-    checkpoint_id: int  # 要发送到的检查点
-
-class DenwaRenji:
-    send_dmail(dmail)              # agent 调用
-    fetch_pending_dmail() → DMail  # KimiSoul 调用
-```
-
-**工作流程:**
-1. agent 调用 `send_dmail()` 发送消息到过去的检查点
-2. `_step()` 结束后 `fetch_pending_dmail()` 检查待处理邮件
-3. 如果有 → 抛出 `BackToTheFuture` 异常
-4. `_agent_loop()` 捕获，调用 `revert_to()` 回滚
-5. 添加 D-Mail 内容到历史，继续循环
+- richer agent spec parity
+- subagent / task delegation
+- web tools
+- MCP integration
+- wider event protocol parity
+- D-Mail / ACP / `stream-json`
 
 ---
 
-## Current Status Snapshot
+## Reference Baseline In `temp/`
 
-### Current Execution Focus
+The Python reference is broader than the old plan implied. The important source files are:
 
-Date: 2026-03-25
+### Runtime / protocol
 
-Active phase: Phase 7, Event Stream And Print UI (mostly complete)
+- `temp/src/kimi_cli/soul/kimisoul.py`
+  - main turn loop
+  - step loop with retries
+  - checkpoint management
+  - D-Mail rollback integration
+  - MCP loading hooks
+  - status updates and streamed content/tool events
+- `temp/src/kimi_cli/wire/types.py`
+  - actual event protocol center
+  - includes `TurnBegin`, `TurnEnd`, `SteerInput`, `StepBegin`, `StepInterrupted`
+  - includes `CompactionBegin`, `CompactionEnd`
+  - includes MCP snapshots, subagent events, approval/question events, notifications
 
-**Phase 7 已完成:**
-- [x] `internal/runtime/events` 包创建
-- [x] 事件 sink 边界定义（`Sink` 接口 + no-op 默认）
-- [x] app/runtime 与 UI 消费者之间的协调器
-- [x] `internal/ui/printui` 最小实现
-- [x] 纯文本输出支持
-- [x] 非流式事件：`step_begin`, `text_part`, `tool_call`, `tool_result`, `status_update`, `interrupted`
-- [x] 流式 LLM seam：Text delta / ToolCall delta（SSE → events.Sink）
-- [x] print UI：TextPart 流式输出（不对每个 delta 自动换行），避免重复打印
+### UI
 
-**Phase 7 待完成:**
-- [ ] `stream-json` 输出模式（保留到后续 phase，一次性定 shape）
+- `temp/src/kimi_cli/ui/print/visualize.py`
+  - text output
+  - `stream-json` output
+- `temp/src/kimi_cli/ui/shell/`
+  - interactive shell UI
+  - prompt handling
+  - live rendering
+  - approval/question panels
+  - MCP status panel
+  - task browser / replay / export-import helpers
+- `temp/src/kimi_cli/ui/acp/`
+  - ACP-facing UI / transport mode
 
-### Already Implemented In Go
+### Agent spec / delegation / tools
 
-- [x] `cmd/fimi -> internal/app.Run` entry chain
-- [x] CLI argument parsing with `--help`, `--new-session`, `--model`, `--continue`
-- [x] Config loading, defaults, validation, model/provider mapping
-- [x] Explicit session creation/continue semantics with metadata-backed `last_session_id`
-- [x] JSONL history persistence with bootstrap and recent-turn reads
-- [x] Multi-step runtime loop with tool-call closure
-- [x] LLM request/message construction boundary
-- [x] OpenAI/Qwen-compatible provider
-- [x] Tool registry and execution layer (7 tools: bash, read_file, glob, grep, write_file, replace_file, patch_file)
-- [x] Tool output shaping (`OutputShaper`)
-- [x] Workspace path guardrails
-- [x] Token usage persistence
-- [x] Checkpoint creation and revert
-- [x] History file rotation backup
-- [x] Agent spec loading from YAML with `extend` inheritance
-- [x] System prompt template expansion
-- [x] Basic event streaming to print UI
+- `temp/src/kimi_cli/agentspec.py`
+  - `extend`
+  - `system_prompt_args` merge
+  - `model`
+  - `when_to_use`
+  - `tools`
+  - `allowed_tools`
+  - `exclude_tools`
+  - `subagents`
+- `temp/src/kimi_cli/subagents/`
+  - subagent builder / runner / store / model
+- `temp/src/kimi_cli/soul/toolset.py`
+  - tool loading
+  - hidden tools
+  - MCP tool loading and status
+- `temp/src/kimi_cli/tools/`
+  - local tools
+  - web tools
+  - think / todo
+  - plan mode
+  - ask-user
+  - background task tools
+  - D-Mail tool
+  - Agent tool
+- `temp/src/kimi_cli/cli/mcp.py`
+  - MCP config management CLI
 
-### Still Missing Versus `temp/kimi-cli`
+---
 
-**高优先级 (阻塞核心功能):**
-- [ ] Agent spec parity: `exclude_tools` / `subagents`
-- [ ] Shell UI (interactive prompt loop, liveview)
-- [ ] Streaming LLM response (text/tool-call deltas)
+## Current Go Snapshot
 
-**中优先级 (扩展能力):**
-- [ ] Task/subagent delegation
-- [ ] Web tools (search, fetch)
-- [ ] Think/todo tools
-- [ ] MCP integration
-- [ ] Services config (beyond model providers)
+As of 2026-03-25, the Go rewrite already has more than the old plan credited it for.
 
-**低优先级 (高级特性):**
-- [ ] D-Mail 时间旅行机制
-- [ ] ACP server mode
-- [ ] Stream-json output format
+### Implemented
+
+- entry chain: `cmd/fimi -> internal/app`
+- config loading with models/providers
+- session create / continue flow
+- JSONL history persistence
+- checkpoint create / revert
+- multi-step runtime loop
+- tool-call execution loop
+- token usage persistence
+- agent spec loading with `extend`
+- system prompt template expansion
+- LLM engine boundary
+- OpenAI-compatible and Qwen-compatible providers
+- streaming LLM seam
+- runtime event sink boundary
+- print visualizer
+- shell UI with:
+  - REPL loop
+  - TTY live mode
+  - non-TTY transcript fallback
+  - `/help`, `/clear`, `/exit`
+  - shell history persistence
+- builtin tool runtime with 7 handlers:
+  - `bash`
+  - `read_file`
+  - `glob`
+  - `grep`
+  - `write_file`
+  - `replace_file`
+  - `patch_file`
+
+### Important nuance
+
+- builtin tool runtime exposes 7 tools, but the default agent currently enables 6 of them
+- shell UI exists, but it is still much smaller than Python shell mode
+- streaming exists for text and tool-call deltas, but protocol coverage is still narrower than Python
+
+---
+
+## What The Old Plan Got Wrong
+
+These statements were inaccurate and should no longer guide the roadmap:
+
+- "Shell UI not started"
+- "UI mode is print only"
+- "Streaming LLM response is missing"
+- "`internal/runtime/events` is missing streaming events"
+- "`internal/ui/shell` is TODO"
+- "Streaming LLM seam" and "Shell UI basics" should be the top next steps
+
+More accurate replacements:
+
+- shell UI is implemented, but lacks Python's richer interaction surface
+- streaming is implemented, but only for a smaller event family
+- the next priority is agent/delegation/tooling parity, not basic shell/streaming enablement
+- Python event references should point to `temp/src/kimi_cli/wire/types.py`, not a simplified `soul/event.py`
 
 ---
 
@@ -205,217 +156,189 @@ Active phase: Phase 7, Event Stream And Print UI (mostly complete)
 
 ```text
 Current Go
-  = CLI + explicit session + agentspec + multi-step runtime + local tools +
-    context history/checkpoint + basic event stream + print UI
+  = app entry + config + sessions + context/history + checkpoints +
+    multi-step runtime + local tool execution + streaming seam +
+    print visualizer + shell UI
 
-Target from temp
-  = current core + streaming LLM + shell UI + web tools +
-    task delegation + MCP + D-Mail + ACP
+Python target in temp
+  = current Go core +
+    richer agent spec +
+    subagent runtime +
+    web tools +
+    MCP loading/config/tool bridge +
+    wider event protocol +
+    D-Mail +
+    ACP +
+    stream-json
 ```
 
-**核心差异:**
+### Capability Matrix
 
-| 方面 | Go 实现 | Python 实现 |
-|------|---------|-------------|
-| **架构风格** | 依赖注入 + 接口边界清晰 | monolithic 模块 |
-| **工具执行** | 同步 HandlerFunc | 类继承 + asyncio |
-| **事件系统** | 基础事件定义 | 完整 EventQueue + 事件类型层次 |
-| **UI 模式** | print 仅 | print + shell + ACP |
-| **工具集** | 7 个本地工具 | 13+ 工具（含 web/task/dmail） |
-| **时间旅行** | checkpoint/revert 仅 | D-Mail 消息机制 |
-| **流式输出** | 非流式 | 完整 streaming |
+| Area | Python reference | Current Go | Status |
+| --- | --- | --- | --- |
+| Entry / app wiring | yes | yes | `done` |
+| Config: models/providers | yes | yes | `done` |
+| Config: services / MCP | yes | no | `missing` |
+| Session create/continue | yes | yes | `done` |
+| Context history | yes | yes | `done` |
+| Checkpoint / revert | yes | yes | `done` |
+| Multi-step runtime | yes | yes | `done` |
+| Step retry | provider-aware retry/backoff | simple retry loop | `partial` |
+| Streaming text/tool deltas | yes | yes | `done` |
+| Turn / compaction / MCP / subagent event families | yes | no | `missing` |
+| Print UI | text + `stream-json` | text only | `partial` |
+| Shell UI | rich shell suite | minimal shell/live shell | `partial` |
+| ACP mode | yes | no | `missing` |
+| Agent spec `extend` | yes | yes | `done` |
+| Agent spec `model` / `when_to_use` / `allowed_tools` | yes | no | `missing` |
+| Agent spec `exclude_tools` / `subagents` | yes | no | `missing` |
+| Local file/command tools | yes | yes | `done` |
+| Web tools | yes | no | `missing` |
+| Think / todo tools | yes | no | `missing` |
+| Agent / subagent delegation | yes | no | `missing` |
+| Background task tools/store | yes | no | `missing` |
+| MCP tool bridge | yes | no | `missing` |
+| D-Mail protocol | yes | no | `missing` |
 
 ---
 
 ## Reference Mapping
 
-| Python Reference | Go Rewrite Target | Status |
+| Python reference | Go target | Status |
 | --- | --- | --- |
-| `__init__.py` (entry) | `cmd/fimi` + `internal/app` | **done** |
-| `config.py` | `internal/config` | **mostly done** (缺少 services) |
-| `metadata.py` | `internal/session` | **done** |
-| `agent.py` | `internal/agentspec` | **mostly done** (缺少 exclude_tools/subagents) |
-| `soul/kimisoul.py` | `internal/runtime` | **core done** (缺少 streaming) |
-| `soul/context.py` | `internal/contextstore` | **done** |
-| `soul/event.py` | `internal/runtime/events` | **partial** (缺少流式事件) |
-| `soul/message.py` | `internal/llm/tool_messages.go` | **done** |
-| `soul/denwarenji.py` | - | **not started** |
-| `tools/bash/` | `internal/tools/builtin.go` | **done** |
-| `tools/file/read.py` | `internal/tools/builtin.go` | **done** |
-| `tools/file/write.py` | `internal/tools/builtin.go` | **done** |
-| `tools/file/glob.py` | `internal/tools/builtin.go` | **done** |
-| `tools/file/grep.py` | `internal/tools/builtin.go` | **done** |
-| `tools/file/patch.py` | `internal/tools/builtin.go` | **done** |
-| `tools/file/replace.py` | `internal/tools/builtin.go` | **done** |
-| `tools/web/` | - | **not started** |
-| `tools/think/` | - | **not started** |
-| `tools/todo/` | - | **not started** |
-| `tools/task/` | - | **not started** |
-| `tools/mcp.py` | - | **not started** |
-| `ui/shell/` | - | **not started** |
-| `ui/print/` | `internal/ui/printui` | **partial** (缺少 stream-json) |
-| `ui/acp/` | - | **not started** |
+| `temp/src/kimi_cli/app.py` | `cmd/fimi` + `internal/app` | `done` |
+| `temp/src/kimi_cli/config.py` | `internal/config` | `partial` |
+| `temp/src/kimi_cli/metadata.py` / session files | `internal/session` | `done` |
+| `temp/src/kimi_cli/agentspec.py` | `internal/agentspec` | `partial` |
+| `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | `partial` |
+| `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | `done` |
+| `temp/src/kimi_cli/wire/types.py` | `internal/runtime/events` | `partial` |
+| `temp/src/kimi_cli/ui/print/` | `internal/ui/printui` | `partial` |
+| `temp/src/kimi_cli/ui/shell/` | `internal/ui/shell` | `partial` |
+| `temp/src/kimi_cli/ui/acp/` | - | `missing` |
+| `temp/src/kimi_cli/subagents/` | - | `missing` |
+| `temp/src/kimi_cli/soul/toolset.py` MCP/tool loading parts | `internal/tools` + app wiring | `missing` |
+| `temp/src/kimi_cli/tools/web/` | - | `missing` |
+| `temp/src/kimi_cli/tools/think/` | - | `missing` |
+| `temp/src/kimi_cli/tools/todo/` | - | `missing` |
+| `temp/src/kimi_cli/tools/agent/` | - | `missing` |
+| `temp/src/kimi_cli/tools/background/` | - | `missing` |
+| `temp/src/kimi_cli/tools/dmail/` | - | `missing` |
+| `temp/src/kimi_cli/cli/mcp.py` | - | `missing` |
 
 ---
 
-## Recommended Build Order
+## Remaining Work, In Practical Order
 
-1. **Streaming LLM seam** - 让事件流支持真正的流式输出
-2. **Shell UI basics** - 交互式 prompt loop + liveview
-3. **Agent spec parity** - exclude_tools + subagents
-4. **Task tool** - 子代理派发
-5. **Web tools** - search/fetch
-6. **MCP integration** - 外部工具协议
-7. **Advanced features** - D-Mail, ACP, stream-json
+The next roadmap should follow the actual dependency chain, not the old shell/streaming-first ordering.
 
----
+### Phase 8: Agent Spec Parity
 
-## Phased Roadmap
+Goal: make agent definitions expressive enough to match the Python model before building delegation.
 
-### Phase 0-6: Completed Foundation
+- [ ] add `model` to `internal/agentspec.Spec`
+- [ ] add `when_to_use`
+- [ ] add `allowed_tools`
+- [ ] add `exclude_tools`
+- [ ] add `subagents`
+- [ ] keep current inheritance rule for `system_prompt_args` merge
+- [ ] add overwrite semantics for `tools`, `allowed_tools`, `exclude_tools`, `subagents`
+- [ ] apply `exclude_tools` during tool resolution in app wiring
 
-- [x] Phase 0: `internal/app`, `config`, `session`, `contextstore`, `llm`, `runtime` basic
-- [x] Phase 1: Agent Composition Layer (`agentspec`)
-- [x] Phase 2: Runtime Loop Kernel (multi-step)
-- [x] Phase 3: Tool Runtime Boundary
-- [x] Phase 4: Minimum Useful Tool Set (7 tools)
-- [x] Phase 5: Richer Context Store (checkpoint/revert)
-- [x] Phase 6: Session Metadata And Continue Semantics
+Why now:
 
-### Phase 7: Event Stream And Print UI
+- subagent delegation depends on `subagents`
+- tool exposure control depends on `exclude_tools`
+- this is the smallest missing boundary that unlocks later phases cleanly
 
-Status: **in progress**
+### Phase 9: Foreground Subagent Delegation
 
-Goal: make runtime observable before building the full interactive shell.
+Goal: match the Python `Agent` tool at a minimal useful level.
 
-- [x] create `internal/runtime/events`
-- [x] define an event sink boundary with a no-op default
-- [x] add coordinator between app/runtime and UI consumers
-- [x] create minimal `internal/ui/printui`
-- [x] support plain text output
-- [x] emit non-streaming events: step_begin, text, tool_call, tool_result, status
-- [ ] widen runtime/LLM seam for streaming (text deltas, tool-call deltas)
-- [ ] defer `stream-json` until the event boundary is stable
+- [ ] add an `agent` or `task` tool contract
+- [ ] load subagent specs by declared name
+- [ ] create isolated subagent history/context
+- [ ] run a subagent with its own tools/system prompt/model
+- [ ] return final summary to the parent run
 
-**Python 对比:**
-```
-Python EventQueue:
-  - asyncio.Queue based
-  - Event types: StepBegin, StepInterrupted, StatusUpdate,
-    TextPart, ToolCall, ToolCallPart, ToolResult
+Keep out of this phase unless necessary:
 
-Go events.Sink:
-  - interface-based
-  - Events: StepBegin, TextPart, ToolCall, ToolResult, Status, Interrupted
-  - Missing: ToolCallPart (streaming)
-```
+- background tasks
+- resume existing subagent instances
+- ACP projection
 
-### Phase 8: Shell UI
+### Phase 10: Background Task Model
 
-Goal: add the main interactive interface.
+Goal: catch up with Python's separation between foreground subagent calls and background task management.
 
-- [ ] create `internal/ui/shell`
-- [ ] interactive prompt loop (prompt_toolkit equivalent)
-- [ ] render step/tool progress (rich.Live equivalent)
-- [ ] input history persistence
-- [ ] meta commands (`/help`, `/clear`, `/exit`)
+- [ ] define background task model/store
+- [ ] add task listing/output/stop tools
+- [ ] persist task metadata separately from foreground transcript
 
-**Python 参考 (`ui/shell/`):**
-```
-shell/
-├── __init__.py    # ShellApp class
-├── console.py     # rich.Console wrapper
-├── prompt.py      # CustomPromptSession (prompt_toolkit)
-├── liveview.py    # StepLiveView (rich.Live)
-└── metacmd.py     # @meta_command decorator
-```
+### Phase 11: Services Config And Missing Utility Tools
 
-Keep out of this phase unless required:
-- ACP
-- MCP
-- subagents
+Goal: add external information tools without mixing provider config and service config.
 
-### Phase 9: Agent Spec Parity And Delegation
+- [ ] extend `internal/config` with service configuration
+- [ ] add `search_web`
+- [ ] add `fetch_url`
+- [ ] add `think`
+- [ ] add `todo` / `set_todo_list`
+- [ ] decide whether fetch is pure HTTP or content-extraction aware
 
-Goal: close capability gaps for delegation.
+### Phase 12: MCP Integration
 
-- [ ] extend `internal/agentspec.Spec` with `ExcludeTools` and `Subagents`
-- [ ] add `SubagentSpec { Path, Description }` and resolve paths relative to declaring YAML
-- [ ] match Python inheritance semantics: merge `system_prompt_args`; overwrite `tools`, `exclude_tools`, `subagents`
-- [ ] apply `exclude_tools` during app tool resolution
-- [ ] add `task` tool contract with `description`, `subagent_name`, `prompt`
-- [ ] add isolated subagent execution with fresh history/context
+Goal: bridge external MCP tools into the Go tool runtime.
 
-**Python 参考 (`tools/task/__init__.py`):**
-```python
-class Task(CallableTool2[Params]):
-    async def __call__(params):
-        # 1. Load subagent spec by name
-        # 2. Create fresh Context (独立 history 文件)
-        # 3. Run subagent loop
-        # 4. Return final summary
-```
+- [ ] add MCP config surface
+- [ ] add MCP tool loading lifecycle
+- [ ] expose MCP status snapshots to runtime/UI
+- [ ] decide CLI management shape for MCP config
 
-### Phase 10: Advanced Tools And Service Config
+### Phase 13: Event Protocol Expansion
 
-Goal: add external-network capabilities.
+Goal: widen the Go event model toward Python wire parity.
 
-- [ ] add `services` config surface (search service config)
-- [ ] `web/search` tool (moonshot search API)
-- [ ] `web/fetch` tool (aiohttp + trafilatura equivalent)
-- [ ] `think` tool (simple thought logging)
-- [ ] `todo` tool (todo list management)
-- [ ] MCP tool adapter / CLI MCP config loading
+- [ ] add turn-level events
+- [ ] add compaction-related events if compaction is implemented
+- [ ] add MCP loading/status events
+- [ ] add subagent events
+- [ ] add approval/question/notification events only when the runtime can emit them
+- [ ] add `stream-json` print output mode
 
-**Python 参考 (`tools/web/`):**
-```python
-class SearchWeb:
-    params: query, limit (default 5, max 20), include_content
-    uses: moonshot search API via aiohttp
+### Phase 14: D-Mail
 
-class FetchURL:
-    params: url
-    uses: aiohttp + trafilatura for content extraction
-```
+Goal: add the time-travel protocol on top of the existing checkpoint/revert foundation.
 
-### Phase 11: D-Mail Time Travel (Optional)
+- [ ] add D-Mail state holder
+- [ ] add D-Mail tool
+- [ ] integrate fetch/send behavior into the runtime loop
+- [ ] define rollback semantics and history replay behavior
 
-Goal: implement the unique time-travel messaging feature.
+### Phase 15: ACP
 
-- [ ] `DenwaRenji` equivalent in Go
-- [ ] `BackToTheFuture` error type
-- [ ] `dmail` tool
-- [ ] integrate with checkpoint/revert flow
+Goal: add machine-facing transport parity after the runtime/event model is wide enough.
 
-**Python 参考 (`soul/denwarenji.py`):**
-```python
-class DMail(BaseModel):
-    message: str
-    checkpoint_id: int
-
-class DenwaRenji:
-    def send_dmail(self, dmail): ...
-    def fetch_pending_dmail(self) -> DMail | None: ...
-```
-
-### Phase 12: Transport Parity
-
-Goal: support machine-facing execution modes.
-
-- [ ] ACP server mode
-- [ ] `stream-json` output format
-- [ ] cancellation and interruption across transport boundaries
+- [ ] add ACP server mode
+- [ ] project runtime events onto transport messages
+- [ ] support cancellation/interruption across the transport boundary
 
 ---
 
 ## Immediate Next Steps
 
-Based on the analysis, the recommended next teaching units are:
+These are the real next steps now:
 
-1. **Streaming LLM Seam** - 让 runtime 能够接收流式 LLM 响应并发出 text/tool-call delta 事件
-2. **Shell UI Basics** - 交互式 prompt + liveview
-3. **Agent Spec Extensions** - exclude_tools + subagents 字段
-4. **Task Tool** - 子代理派发协议
+1. agent spec parity: `exclude_tools` and `subagents` first
+2. minimal subagent delegation path
+3. services config + web tools
+4. MCP integration
+5. event protocol widening + `stream-json`
+
+Not immediate anymore:
+
+- basic shell UI
+- basic streaming LLM support
 
 ---
 
@@ -430,47 +353,50 @@ internal/app
   +-- internal/config
   +-- internal/session
   +-- internal/agentspec
-  +-- internal/tools
   +-- internal/contextstore
+  +-- internal/tools
   +-- internal/llm
-  +-- internal/ui/printui
+  +-- internal/ui
+  |     +-- printui
+  |     +-- shell
   |
   v
 internal/runtime
   |
-  +-- reads/writes internal/contextstore
-  +-- calls internal/llm
-  +-- executes internal/tools
-  +-- emits to internal/runtime/events
+  +-- drives step loop
+  +-- reads/writes contextstore
+  +-- calls llm engine
+  +-- executes tools
+  +-- emits runtime events
 ```
 
 ## Target Architecture Diagram
 
 ```text
-CLI / UI / Transport
+CLI / Shell / Print / ACP
   |
   v
 internal/app
   |
-  +-- internal/agentspec        adapter/integration, replaceable
-  +-- internal/config           infrastructure
-  +-- internal/session          infrastructure
-  +-- internal/ui/*             adapter/integration, replaceable
-  |     +-- printui             done
-  |     +-- shell               TODO
-  |     +-- acp                 TODO
+  +-- config                infrastructure
+  +-- session               infrastructure
+  +-- agentspec             adapter/integration
+  +-- ui/*                  adapter/integration
   |
   v
-internal/runtime                core agent logic, stable
+internal/runtime            core agent logic
   |
-  +-- internal/runtime/events   core boundary, stable (partial)
-  +-- internal/contextstore     core logic + persistence
-  +-- internal/llm              adapter boundary, replaceable
-  +-- internal/tools/*          adapter/integration, replaceable
-  |     +-- builtin.go          done (7 tools)
-  |     +-- web.go              TODO
-  |     +-- task.go             TODO
-  |     +-- mcp.go              TODO
+  +-- contextstore          core logic + persistence
+  +-- runtime/events        core boundary
+  +-- llm                   replaceable adapter boundary
+  +-- tools                 replaceable tool boundary
+  |     +-- builtin local tools
+  |     +-- web tools
+  |     +-- MCP bridge
+  |     +-- delegation tool
+  |
+  +-- subagents             planned
+  +-- dmail                 planned
 ```
 
 ---
@@ -479,16 +405,16 @@ internal/runtime                core agent logic, stable
 
 Good migration discipline:
 
-- keep runtime unaware of shell rendering
-- keep tools behind explicit interfaces
-- keep provider-specific HTTP code out of runtime
-- keep history persistence append-first and testable
-- emit events, don't call UI directly
+- keep runtime unaware of shell rendering details
+- keep tool execution behind explicit boundaries
+- keep MCP as an adapter layer, not runtime-specific code
+- keep subagent execution isolated from parent context storage
+- treat `stream-json` as a projection of runtime events, not a separate runtime
 
-Bad migration shortcuts to avoid:
+Bad shortcuts to avoid:
 
-- turning `internal/app` into a giant god package
-- hardcoding tools directly inside runtime branches
-- implementing shell UI before runtime events exist
-- adding subagents before the main agent loop is stable
-- bypassing event sink for direct UI calls
+- building subagents before agent spec can describe them
+- mixing service config into model provider config without a clear boundary
+- bolting MCP directly into runtime branches
+- implementing D-Mail before the event/runtime protocol has stable extension points
+- turning shell/UI concerns into special cases inside runtime
