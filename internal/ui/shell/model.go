@@ -1,0 +1,325 @@
+package shell
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"fimi-cli/internal/runtime"
+	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/ui/shell/styles"
+
+	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Mode 表示 UI 的当前操作模式。
+type Mode int
+
+const (
+	// ModeIdle 空闲状态，等待用户输入
+	ModeIdle Mode = iota
+	// ModeThinking AI 正在处理（显示 spinner）
+	ModeThinking
+	// ModeStreaming AI 响应正在流式输出
+	ModeStreaming
+)
+
+// Model 是 Bubble Tea 的根模型。
+// 它组合了输入、输出和运行时三个子模型。
+type Model struct {
+	// 子模型 (组合模式)
+	input   InputModel
+	output  OutputModel
+	runtime RuntimeModel
+
+	// 共享状态
+	width  int
+	height int
+	mode   Mode
+	err    error
+
+	// 依赖
+	deps    Dependencies
+	history *historyStore
+
+	// 运行时事件通道 (由 Run() 创建)
+	eventsCh <-chan runtimeevents.Event
+}
+
+// NewModel 创建一个新的 Bubble Tea 模型。
+func NewModel(deps Dependencies, history *historyStore) Model {
+	return Model{
+		input:    NewInputModel(),
+		output:   NewOutputModel(),
+		runtime:  NewRuntimeModel(),
+		mode:     ModeIdle,
+		deps:     deps,
+		history:  history,
+	}
+}
+
+// Init 实现 tea.Model 接口。
+// 返回初始命令，包括 spinner 动画和事件监听。
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(
+		m.runtime.SpinnerCmd(),
+	)
+}
+
+// Update 实现 tea.Model 接口。
+// 处理所有传入的消息并更新模型状态。
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		return m.handleKeyPress(msg)
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		// 更新子模型的尺寸
+		var inputCmd, outputCmd tea.Cmd
+		m.input, inputCmd = m.input.Update(msg, m.width)
+		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
+		return m, tea.Batch(inputCmd, outputCmd)
+
+	case RuntimeEventMsg:
+		m.runtime = m.runtime.ApplyEvent(msg.Event)
+		m.mode = ModeStreaming
+		// 将实时内容追加到输出
+		m.output = m.output.AppendPending(m.runtime.ToLines())
+		return m, tea.Batch(m.runtime.SpinnerCmd())
+
+	case InputSubmitMsg:
+		return m.handleSubmit(msg.Text)
+
+	case RuntimeCompleteMsg:
+		m.mode = ModeIdle
+		m.output = m.output.FlushPending()
+		m.runtime = m.runtime.Reset()
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.output = m.output.AppendLine(TranscriptLine{
+				Type:    LineTypeError,
+				Content: fmt.Sprintf("Error: %v", msg.Err),
+			})
+		}
+		return m, nil
+
+	case ClearMsg:
+		m.output = m.output.Clear()
+		return m, nil
+
+	case ErrorMsg:
+		m.err = msg.Err
+		return m, nil
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+// View 实现 tea.Model 接口。
+// 渲染整个 UI。
+func (m Model) View() string {
+	var sections []string
+
+	// 1. 输出区域 (可滚动的 transcript)
+	outputView := m.output.View()
+	if outputView != "" {
+		sections = append(sections, outputView)
+	}
+
+	// 2. 实时状态区域 (spinner + 工具信息)
+	if m.mode != ModeIdle {
+		liveStatus := m.renderLiveStatus()
+		if liveStatus != "" {
+			sections = append(sections, liveStatus)
+		}
+	}
+
+	// 3. 输入区域
+	sections = append(sections, m.input.View())
+
+	// 4. 状态栏
+	statusBar := m.renderStatusBar()
+	if statusBar != "" {
+		sections = append(sections, statusBar)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+// handleKeyPress 处理键盘输入。
+func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 全局快捷键
+	switch msg.String() {
+	case "ctrl+c", "ctrl+d":
+		if m.mode == ModeIdle {
+			return m, tea.Quit
+		}
+		// 如果正在运行，发送中断信号
+		return m, nil
+
+	case "ctrl+l":
+		// 清屏
+		m.output = m.output.Clear()
+		return m, nil
+	}
+
+	// 如果正在处理，忽略大部分输入
+	if m.mode != ModeIdle {
+		return m, nil
+	}
+
+	// 转发给输入模型处理
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg, m.width)
+	return m, cmd
+}
+
+// handleSubmit 处理用户提交的 prompt。
+func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return m, nil
+	}
+
+	// 处理 slash 命令
+	if strings.HasPrefix(text, "/") {
+		return m.handleCommand(text)
+	}
+
+	// 追加到 transcript
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeUser,
+		Content: text,
+	})
+
+	// 保存历史
+	if m.history != nil {
+		_ = m.history.Append(text)
+	}
+	m.input.AppendHistory(text)
+
+	// 清空输入并进入 thinking 模式
+	m.input = m.input.Clear()
+	m.mode = ModeThinking
+
+	// 启动 runtime 执行
+	return m, tea.Batch(
+		m.runtime.SpinnerCmd(),
+		m.startRuntimeExecution(text),
+	)
+}
+
+// handleCommand 处理 slash 命令。
+func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
+	switch cmd {
+	case "/exit", "/quit":
+		return m, tea.Quit
+	case "/help":
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: helpText(),
+		})
+		return m, nil
+	case "/clear":
+		m.output = m.output.Clear()
+		return m, nil
+	default:
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("Unknown command: %s", cmd),
+		})
+		return m, nil
+	}
+}
+
+// startRuntimeExecution 返回一个启动 runtime 执行的命令。
+func (m Model) startRuntimeExecution(prompt string) tea.Cmd {
+	return func() tea.Msg {
+		// 创建事件通道
+		eventsCh := make(chan runtimeevents.Event, 32)
+
+		// 创建事件 sink
+		sink := runtimeevents.SinkFunc(func(ctx context.Context, event runtimeevents.Event) error {
+			select {
+			case eventsCh <- event:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+
+		// 执行 runtime
+		result, err := m.deps.Runner.(eventSinkCapableRunner).
+			WithEventSink(sink).
+			Run(context.Background(), m.deps.Store, runtime.Input{
+				Prompt:       prompt,
+				Model:        m.deps.ModelName,
+				SystemPrompt: m.deps.SystemPrompt,
+			})
+
+		close(eventsCh)
+
+		return RuntimeCompleteMsg{Result: result, Err: err}
+	}
+}
+
+// renderLiveStatus 渲染实时状态区域。
+func (m Model) renderLiveStatus() string {
+	var parts []string
+
+	// Spinner
+	spinner := m.runtime.SpinnerView()
+	if spinner != "" {
+		parts = append(parts, spinner)
+	}
+
+	// 步骤指示器
+	if m.runtime.Step > 0 {
+		stepText := styles.StepStyle.Render(fmt.Sprintf("Step %d", m.runtime.Step))
+		parts = append(parts, stepText)
+	}
+
+	// 工具信息
+	if toolCard := m.runtime.ToolCardView(m.width - 4); toolCard != "" {
+		parts = append(parts, toolCard)
+	}
+
+	// 流式助手文本
+	if m.runtime.AssistantText != "" {
+		parts = append(parts, m.runtime.AssistantText)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// renderStatusBar 渲染状态栏。
+func (m Model) renderStatusBar() string {
+	var parts []string
+
+	// 上下文使用率
+	if m.runtime.ContextUsage > 0 {
+		pct := int(m.runtime.ContextUsage * 100)
+		ctxText := styles.ContextStyle(pct).Render(fmt.Sprintf("Context: %d%%", pct))
+		parts = append(parts, ctxText)
+	}
+
+	// 模式指示器
+	switch m.mode {
+	case ModeThinking:
+		parts = append(parts, styles.SystemStyle.Render("Thinking..."))
+	case ModeStreaming:
+		parts = append(parts, styles.SystemStyle.Render("Streaming..."))
+	}
+
+	// 模型名称
+	if m.deps.ModelName != "" {
+		parts = append(parts, styles.ModelStyle.Render(m.deps.ModelName))
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+}

@@ -11,6 +11,8 @@ import (
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/ui"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const (
@@ -52,7 +54,8 @@ type StartupInfo struct {
 	LastSummary    string
 }
 
-// Run 启动最小交互式 shell。
+// Run 启动交互式 shell。
+// 在 TTY 模式下使用 Bubble Tea UI，否则使用简单的 transcript 模式。
 func Run(ctx context.Context, deps Dependencies) error {
 	if deps.Runner == nil {
 		return fmt.Errorf("shell runner is required")
@@ -69,23 +72,71 @@ func Run(ctx context.Context, deps Dependencies) error {
 	}
 
 	interactiveTTY := supportsInteractiveTTY(input, output)
-	display := newDisplay(output, interactiveTTY)
+
+	// 加载历史记录
 	history, err := loadHistoryStore(deps.HistoryFile)
 	if err != nil {
-		if appendErr := display.AppendTranscriptLines([]string{
-			fmt.Sprintf("shell history unavailable: %v", err),
-		}); appendErr != nil {
-			return appendErr
-		}
+		fmt.Fprintf(output, "shell history unavailable: %v\n", err)
 	}
+
+	// 在 TTY 模式下使用 Bubble Tea UI
+	if interactiveTTY {
+		return runBubbleTeaMode(ctx, deps, &history)
+	}
+
+	// 非交互模式使用传统的 liner/transcript
+	return runLinerMode(ctx, deps, &history)
+}
+
+// runBubbleTeaMode 使用 Bubble Tea 框架运行 shell。
+func runBubbleTeaMode(ctx context.Context, deps Dependencies, history *historyStore) error {
+	// 显示启动横幅
+	fmt.Fprintln(deps.Output, strings.Join(startupBannerLines(deps.StartupInfo), "\n"))
+	fmt.Fprintln(deps.Output)
+
+	// 创建 Bubble Tea 模型
+	model := NewModel(deps, history)
+
+	// 创建 Bubble Tea 程序
+	p := tea.NewProgram(
+		model,
+		tea.WithInput(deps.Input),
+		tea.WithOutput(deps.Output),
+	)
+
+	// 在 goroutine 中运行，以便处理 context 取消
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Run()
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		p.Quit()
+		return ctx.Err()
+	}
+}
+
+// runLinerMode 使用传统的 liner-based UI 运行 shell（非交互模式）。
+func runLinerMode(ctx context.Context, deps Dependencies, history *historyStore) error {
+	input := deps.Input
+	if input == nil {
+		input = strings.NewReader("")
+	}
+
+	output := deps.Output
+	if output == nil {
+		output = io.Discard
+	}
+
+	display := newDisplay(output, false)
 
 	editorFactory := deps.EditorFactory
 	if editorFactory == nil {
-		if interactiveTTY {
-			editorFactory = newLinerEditor
-		} else {
-			editorFactory = newScannerEditor
-		}
+		editorFactory = newScannerEditor
 	}
 	editor, err := editorFactory(input, output, history.Entries())
 	if err != nil {
@@ -97,7 +148,7 @@ func Run(ctx context.Context, deps Dependencies) error {
 		return err
 	}
 
-	if err := runPrompt(ctx, deps, display, editor, &history, interactiveTTY, strings.TrimSpace(deps.InitialPrompt)); err != nil {
+	if err := runPrompt(ctx, deps, display, editor, history, false, strings.TrimSpace(deps.InitialPrompt)); err != nil {
 		return err
 	}
 
@@ -124,7 +175,7 @@ func Run(ctx context.Context, deps Dependencies) error {
 			continue
 		}
 
-		exit, err := dispatchCommand(ctx, deps, display, editor, &history, interactiveTTY, line)
+		exit, err := dispatchCommand(ctx, deps, display, editor, history, false, line)
 		if err != nil {
 			return err
 		}
