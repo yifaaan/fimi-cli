@@ -10,7 +10,7 @@ import (
 type MetaCommand struct {
 	Name        string
 	Description string
-	Execute     func(m interface{}) tea.Cmd
+	Execute     func(m *Model) tea.Cmd
 }
 
 // metaCommands holds all available meta commands.
@@ -48,12 +48,12 @@ func isMetaCommand(input string) (string, bool) {
 }
 
 // cmdExit returns tea.Quit to terminate the program.
-func cmdExit(m interface{}) tea.Cmd {
+func cmdExit(m *Model) tea.Cmd {
 	return tea.Quit
 }
 
 // cmdHelp sets showHelp to true via a command.
-func cmdHelp(m interface{}) tea.Cmd {
+func cmdHelp(m *Model) tea.Cmd {
 	return func() tea.Msg {
 		return showHelpMsg{}
 	}
