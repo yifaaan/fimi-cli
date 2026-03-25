@@ -288,6 +288,7 @@ func TestHelpText(t *testing.T) {
 		"Flags:\n" +
 		"  --continue, -C   Continue the previous session for this work dir\n" +
 		"  --new-session    Explicitly start a fresh session for this run\n" +
+		"  --shell, -i      Start interactive shell mode\n" +
 		"  --model <alias>  Override the configured model for this run\n" +
 		"  -h, --help       Show this help message\n" +
 		"\n" +
