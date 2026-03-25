@@ -11,7 +11,6 @@ import (
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/ui"
-	"fimi-cli/internal/ui/printui"
 )
 
 const (
@@ -166,7 +165,7 @@ func runPrompt(
 				SystemPrompt: deps.SystemPrompt,
 			})
 		},
-		printui.VisualizeText(output),
+		visualizeLive(output),
 	)
 	if err != nil {
 		return err
