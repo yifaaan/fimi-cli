@@ -134,6 +134,11 @@ func (m InputModel) View() string {
 	// 组合
 	inputLine := lipgloss.JoinHorizontal(lipgloss.Top, prompt, inputValue, cursor)
 
+	// 如果没有宽度信息，直接返回输入行
+	if m.width <= 2 {
+		return inputLine
+	}
+
 	// 输入框容器
 	inputBox := styles.BorderStyle.
 		Width(m.width - 2).

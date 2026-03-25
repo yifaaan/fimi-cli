@@ -90,18 +90,17 @@ func Run(ctx context.Context, deps Dependencies) error {
 
 // runBubbleTeaMode 使用 Bubble Tea 框架运行 shell。
 func runBubbleTeaMode(ctx context.Context, deps Dependencies, history *historyStore) error {
-	// 显示启动横幅
-	fmt.Fprintln(deps.Output, strings.Join(startupBannerLines(deps.StartupInfo), "\n"))
-	fmt.Fprintln(deps.Output)
-
 	// 创建 Bubble Tea 模型
 	model := NewModel(deps, history)
 
 	// 创建 Bubble Tea 程序
+	// 使用 WithAltScreen 让 Bubble Tea 使用备用屏幕缓冲区
+	// 这样退出时会恢复之前的终端内容
 	p := tea.NewProgram(
 		model,
 		tea.WithInput(deps.Input),
 		tea.WithOutput(deps.Output),
+		tea.WithAltScreen(),
 	)
 
 	// 在 goroutine 中运行，以便处理 context 取消
