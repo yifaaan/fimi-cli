@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"fimi-cli/internal/contextstore"
@@ -64,9 +65,21 @@ func (e Engine) Reply(ctx context.Context, input runtime.ReplyInput) (runtime.As
 		Tools:        e.tools,
 	}
 
+	// DEBUG: 打印发送的工具数量
+	fmt.Fprintf(os.Stderr, "[DEBUG] Sending %d tools to LLM\n", len(e.tools))
+	for _, tool := range e.tools {
+		fmt.Fprintf(os.Stderr, "[DEBUG]   - %s\n", tool.Name)
+	}
+
 	response, err := e.client.Reply(request)
 	if err != nil {
 		return runtime.AssistantReply{}, fmt.Errorf("llm client reply: %w", err)
+	}
+
+	// DEBUG: 打印返回的工具调用数量
+	fmt.Fprintf(os.Stderr, "[DEBUG] LLM returned %d tool calls\n", len(response.ToolCalls))
+	for _, tc := range response.ToolCalls {
+		fmt.Fprintf(os.Stderr, "[DEBUG]   - %s: %s\n", tc.Name, tc.Arguments)
 	}
 
 	return runtime.AssistantReply{
@@ -102,6 +115,12 @@ func (e Engine) ReplyStream(
 		Tools:        e.tools,
 	}
 
+	// DEBUG: 打印发送的工具数量
+	fmt.Fprintf(os.Stderr, "[DEBUG STREAM] Sending %d tools to LLM\n", len(e.tools))
+	for _, tool := range e.tools {
+		fmt.Fprintf(os.Stderr, "[DEBUG STREAM]   - %s\n", tool.Name)
+	}
+
 	// 适配 events.Sink 为 StreamHandler
 	// 这是一个适配器模式：将一个接口转换为另一个接口
 	handler := StreamHandlerFunc(func(ctx context.Context, event StreamEvent) error {
@@ -120,6 +139,12 @@ func (e Engine) ReplyStream(
 	response, err := streamingClient.ReplyStream(ctx, request, handler)
 	if err != nil {
 		return runtime.AssistantReply{}, fmt.Errorf("llm client stream reply: %w", err)
+	}
+
+	// DEBUG: 打印返回的工具调用数量
+	fmt.Fprintf(os.Stderr, "[DEBUG STREAM] LLM returned %d tool calls\n", len(response.ToolCalls))
+	for _, tc := range response.ToolCalls {
+		fmt.Fprintf(os.Stderr, "[DEBUG STREAM]   - %s: %s\n", tc.Name, tc.Arguments)
 	}
 
 	return runtime.AssistantReply{

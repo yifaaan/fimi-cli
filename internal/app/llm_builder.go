@@ -118,9 +118,16 @@ func buildOpenAIClient(
 		return nil, fmt.Errorf("openai api_key is required; set providers.%s.api_key in your config", providerName)
 	}
 
+	wireAPI := providerCfg.WireAPI
+	if wireAPI == "" {
+		// OpenAI 官方 provider 默认走 Responses API。
+		wireAPI = config.ProviderWireAPIResponses
+	}
+
 	return openai.NewClient(openai.Config{
 		APIKey:  providerCfg.APIKey,
 		BaseURL: providerCfg.BaseURL,
 		Model:   modelCfg.Model,
+		WireAPI: wireAPI,
 	}), nil
 }

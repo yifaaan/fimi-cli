@@ -35,6 +35,9 @@ func TestDefaultIncludesHistoryWindow(t *testing.T) {
 	if qwenProvider.Type != ProviderTypeQWEN {
 		t.Fatalf("Default().Providers[\"qwen\"].Type = %q, want %q", qwenProvider.Type, ProviderTypeQWEN)
 	}
+	if qwenProvider.WireAPI != "" {
+		t.Fatalf("Default().Providers[\"qwen\"].WireAPI = %q, want empty string", qwenProvider.WireAPI)
+	}
 }
 
 func TestLoadFileReturnsDefaultWhenMissing(t *testing.T) {
@@ -280,6 +283,25 @@ func TestLoadFileReturnsValidationErrors(t *testing.T) {
 			}`,
 			wantErrText: `models.custom-model.context_window_tokens must be >= 0`,
 		},
+		{
+			name: "invalid wire api rejected",
+			content: `{
+				"default_model": "gpt-5",
+				"models": {
+					"gpt-5": {
+						"provider": "openai-prod",
+						"model": "gpt-5"
+					}
+				},
+				"providers": {
+					"openai-prod": {
+						"type": "openai",
+						"wire_api": "legacy"
+					}
+				}
+			}`,
+			wantErrText: `providers.openai-prod.wire_api must be one of "chat_completions" or "responses"`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -333,5 +355,36 @@ func TestLoadFileAllowsEmptyModelNameToFallBackToAlias(t *testing.T) {
 	}
 	if cfg.Models["placeholder-worker"].Model != "" {
 		t.Fatalf("LoadFile().Models[\"placeholder-worker\"].Model = %q, want empty string", cfg.Models["placeholder-worker"].Model)
+	}
+}
+
+func TestLoadFileParsesProviderWireAPI(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configFile, []byte(`{
+		"default_model": "gpt-5",
+		"models": {
+			"gpt-5": {
+				"provider": "openai-prod",
+				"model": "gpt-5"
+			}
+		},
+		"providers": {
+			"openai-prod": {
+				"type": "openai",
+				"api_key": "sk-test-key",
+				"wire_api": "responses"
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", configFile, err)
+	}
+
+	cfg, err := LoadFile(configFile)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+
+	if got := cfg.Providers["openai-prod"].WireAPI; got != ProviderWireAPIResponses {
+		t.Fatalf("LoadFile().Providers[\"openai-prod\"].WireAPI = %q, want %q", got, ProviderWireAPIResponses)
 	}
 }

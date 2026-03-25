@@ -13,6 +13,7 @@ type ProviderConfig struct {
 	Type    string `json:"type"`
 	APIKey  string `json:"api_key"`
 	BaseURL string `json:"base_url"`
+	WireAPI string `json:"wire_api,omitempty"`
 }
 
 // ModelConfig 描述一个逻辑模型名如何映射到 provider 和真实模型名。
@@ -59,6 +60,11 @@ const (
 	ProviderTypeQWEN        = "qwen"
 	ProviderTypeOpenAI      = "openai"
 	DefaultProviderName     = ProviderTypePlaceholder
+)
+
+const (
+	ProviderWireAPIChatCompletions = "chat_completions"
+	ProviderWireAPIResponses       = "responses"
 )
 
 // Default 返回内建默认配置。
@@ -182,6 +188,16 @@ func validateModelConfig(
 	}
 	if providerCfg.Type == "" {
 		return fmt.Errorf("providers.%s.type is required", modelCfg.Provider)
+	}
+	if providerCfg.WireAPI != "" &&
+		providerCfg.WireAPI != ProviderWireAPIChatCompletions &&
+		providerCfg.WireAPI != ProviderWireAPIResponses {
+		return fmt.Errorf(
+			"providers.%s.wire_api must be one of %q or %q",
+			modelCfg.Provider,
+			ProviderWireAPIChatCompletions,
+			ProviderWireAPIResponses,
+		)
 	}
 
 	// model 允许留空；消费方会把 alias 当作真实模型名兜底。
