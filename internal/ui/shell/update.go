@@ -34,6 +34,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case interruptMsg:
 		return m.handleInterrupt()
+
+	case showHelpMsg:
+		m.showHelp = true
+		return m, nil
 	}
 
 	return m, nil
@@ -110,6 +114,8 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 
 	// Start runtime
 	m.running = true
+	m.status.reset()
+	m.appendUserTurn(input)
 	m.prompt = "" // Clear input after submission
 
 	return m, m.runPromptCmd(input)
@@ -118,6 +124,8 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 // handlePromptInput starts the runtime with the given prompt text.
 func (m Model) handlePromptInput(msg promptInputMsg) (tea.Model, tea.Cmd) {
 	m.running = true
+	m.status.reset()
+	m.appendUserTurn(strings.TrimSpace(msg.text))
 	return m, m.runPromptCmd(msg.text)
 }
 
@@ -140,6 +148,7 @@ func (m Model) runPromptCmd(prompt string) tea.Cmd {
 
 // handleRuntimeEvent appends event output to the output buffer.
 func (m Model) handleRuntimeEvent(msg runtimeEventMsg) (tea.Model, tea.Cmd) {
+	m.applyRuntimeStatus(msg.event)
 	m.appendToOutput(msg.event)
 	return m, nil
 }
@@ -156,24 +165,26 @@ func (m Model) handleRuntimeDone(msg runtimeDoneMsg) (tea.Model, tea.Cmd) {
 	// Process result records into output buffer
 	// This handles the case when event streaming wasn't connected
 	for _, step := range msg.result.Steps {
+		if step.TextStreamed {
+			continue
+		}
 		for _, record := range step.AppendedRecords {
-			m.appendToRecord(&m.output, record)
+			m.appendToRecord(record)
 		}
 	}
+	m.closeAssistantLine()
 
 	return m, nil
 }
 
 // appendToRecord appends a contextstore.TextRecord to the output buffer.
-func (m *Model) appendToRecord(sb *strings.Builder, record contextstore.TextRecord) {
+func (m *Model) appendToRecord(record contextstore.TextRecord) {
 	switch record.Role {
 	case "assistant":
-		sb.WriteString(record.Content)
-		sb.WriteString("\n")
+		m.appendAssistantText(record.Content)
+		m.closeAssistantLine()
 	case "tool":
-		sb.WriteString("[tool result] ")
-		sb.WriteString(record.Content)
-		sb.WriteString("\n")
+		m.appendAssistantMetaLine("tool result:", record.Content)
 	}
 }
 
@@ -183,6 +194,7 @@ func (m Model) handleInterrupt() (tea.Model, tea.Cmd) {
 		m.running = false
 		m.err = fmt.Errorf("interrupted")
 	}
+	m.closeAssistantLine()
 	return m, nil
 }
 
@@ -191,11 +203,18 @@ func (m Model) handleInterrupt() (tea.Model, tea.Cmd) {
 func (m *Model) appendToOutput(event runtimeevents.Event) {
 	switch e := event.(type) {
 	case runtimeevents.TextPart:
-		m.output.WriteString(e.Text)
+		m.appendAssistantText(e.Text)
 
 	case runtimeevents.ToolCall:
 		summary := toolCallSummary(e)
-		m.output.WriteString(fmt.Sprintf("\n[tool] %s %s\n", e.Name, summary))
+		m.appendAssistantMetaLine("tool:", strings.TrimSpace(strings.Join([]string{e.Name, summary}, " ")))
+
+	case runtimeevents.ToolCallPart:
+		delta := strings.TrimSpace(e.Delta)
+		if delta == "" {
+			return
+		}
+		m.appendAssistantMetaLine("tool args:", strings.TrimSpace(strings.Join([]string{e.ToolCallID, clampLine(delta, 60)}, " ")))
 
 	case runtimeevents.ToolResult:
 		prefix := "[result]"
@@ -204,21 +223,141 @@ func (m *Model) appendToOutput(event runtimeevents.Event) {
 		}
 		output := strings.TrimSpace(e.Output)
 		if output == "" {
-			m.output.WriteString(fmt.Sprintf("%s %s\n", prefix, e.ToolName))
+			m.appendAssistantMetaLine(strings.Trim(prefix, "[]")+":", e.ToolName)
 		} else if strings.Contains(output, "\n") {
-			m.output.WriteString(fmt.Sprintf("%s %s\n%s\n", prefix, e.ToolName, output))
+			m.appendAssistantMetaLine(strings.Trim(prefix, "[]")+":", e.ToolName)
+			for _, line := range strings.Split(output, "\n") {
+				line = strings.TrimRight(line, "\r")
+				if line == "" {
+					m.output.WriteString("    \n")
+					continue
+				}
+				m.output.WriteString("    ")
+				m.output.WriteString(line)
+				m.output.WriteString("\n")
+			}
 		} else {
-			m.output.WriteString(fmt.Sprintf("%s %s %s\n", prefix, e.ToolName, output))
+			m.appendAssistantMetaLine(strings.Trim(prefix, "[]")+":", strings.TrimSpace(strings.Join([]string{e.ToolName, output}, " ")))
 		}
 
 	case runtimeevents.StepBegin:
 		// No output for step begin in minimal version
 
 	case runtimeevents.StepInterrupted:
-		m.output.WriteString("\n[interrupted]\n")
+		m.appendAssistantMetaLine("status:", "interrupted")
 
 	case runtimeevents.StatusUpdate:
 		// No output for status in minimal version
+	}
+}
+
+func (m *Model) appendUserTurn(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+
+	m.closeAssistantLine()
+	m.assistantTurnOpen = false
+	m.ensureTurnSeparator()
+	m.output.WriteString("user: ")
+	m.output.WriteString(text)
+	m.output.WriteString("\n")
+}
+
+func (m *Model) appendAssistantText(text string) {
+	if text == "" {
+		return
+	}
+
+	if !m.assistantLineOpen {
+		if !m.assistantTurnOpen {
+			m.output.WriteString("assistant: ")
+			m.assistantTurnOpen = true
+		} else {
+			m.output.WriteString("assistant: ")
+		}
+		m.assistantLineOpen = true
+	}
+	m.output.WriteString(text)
+}
+
+func (m *Model) closeAssistantLine() {
+	if !m.assistantLineOpen {
+		return
+	}
+
+	m.output.WriteString("\n")
+	m.assistantLineOpen = false
+}
+
+func (m *Model) ensureAssistantTurnBlock() {
+	if m.assistantTurnOpen {
+		return
+	}
+
+	if m.output.Len() > 0 && !strings.HasSuffix(m.output.String(), "\n") {
+		m.output.WriteString("\n")
+	}
+	m.output.WriteString("assistant:\n")
+	m.assistantTurnOpen = true
+}
+
+func (m *Model) appendAssistantMetaLine(label, text string) {
+	m.closeAssistantLine()
+	m.ensureAssistantTurnBlock()
+	m.output.WriteString("  ")
+	m.output.WriteString(strings.TrimSpace(label))
+	if trimmed := strings.TrimSpace(text); trimmed != "" {
+		m.output.WriteString(" ")
+		m.output.WriteString(trimmed)
+	}
+	m.output.WriteString("\n")
+}
+
+func (m *Model) ensureTurnSeparator() {
+	if m.output.Len() == 0 {
+		return
+	}
+
+	output := m.output.String()
+	if !strings.HasSuffix(output, "\n") {
+		m.output.WriteString("\n")
+		output = m.output.String()
+	}
+	if !strings.HasSuffix(output, "\n\n") {
+		m.output.WriteString("\n")
+	}
+}
+
+// applyRuntimeStatus folds raw runtime events into a compact UI state.
+func (m *Model) applyRuntimeStatus(event runtimeevents.Event) {
+	switch e := event.(type) {
+	case runtimeevents.StepBegin:
+		m.status.Step = e.Number
+		m.status.ActiveTool = ""
+		m.status.ActiveToolDetail = ""
+		m.status.LastToolResult = ""
+		m.status.LastToolError = false
+	case runtimeevents.ToolCall:
+		m.status.ActiveTool = e.Name
+		m.status.ActiveToolDetail = toolCallSummary(e)
+	case runtimeevents.ToolResult:
+		m.status.ActiveTool = ""
+		m.status.ActiveToolDetail = ""
+		m.status.LastToolError = e.IsError
+		if strings.TrimSpace(e.Output) == "" {
+			m.status.LastToolResult = e.ToolName
+			return
+		}
+		m.status.LastToolResult = fmt.Sprintf("%s %s", e.ToolName, clampLine(e.Output, 60))
+	case runtimeevents.StepInterrupted:
+		m.status.ActiveTool = ""
+		m.status.ActiveToolDetail = ""
+		m.status.LastToolError = true
+		m.status.LastToolResult = "interrupted"
+	case runtimeevents.StatusUpdate:
+		m.status.ContextUsage = e.Status.ContextUsage
 	}
 }
 

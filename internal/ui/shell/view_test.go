@@ -103,3 +103,81 @@ func TestViewCombinesOutputAndPrompt(t *testing.T) {
 		t.Fatalf("expected output before prompt, got: %s", view)
 	}
 }
+
+func TestViewSeparatesPromptFromUnfinishedAssistantLine(t *testing.T) {
+	m := Model{
+		running: true,
+		prompt:  "test",
+	}
+	m.output.WriteString("assistant: hello")
+	m.assistantTurnOpen = true
+	m.assistantLineOpen = true
+
+	view := m.View()
+
+	if !strings.Contains(view, "assistant: hello\n● > test") {
+		t.Fatalf("expected prompt to render on a new line, got: %s", view)
+	}
+}
+
+func TestViewShowsRunStatusBlock(t *testing.T) {
+	m := Model{
+		running: true,
+		prompt:  "test",
+		status: runStatus{
+			Step:             3,
+			ActiveTool:       "bash",
+			ActiveToolDetail: `ls -la`,
+			LastToolResult:   "bash ok",
+			ContextUsage:     0.25,
+		},
+	}
+
+	view := m.View()
+
+	if !strings.Contains(view, "step: running #3") {
+		t.Fatalf("expected step status in view, got: %s", view)
+	}
+	if !strings.Contains(view, "tool: bash ls -la") {
+		t.Fatalf("expected tool status in view, got: %s", view)
+	}
+	if !strings.Contains(view, "result: bash ok") {
+		t.Fatalf("expected result status in view, got: %s", view)
+	}
+	if !strings.Contains(view, "context: 25%") {
+		t.Fatalf("expected context status in view, got: %s", view)
+	}
+}
+
+func TestViewShowsFinishedStepStatus(t *testing.T) {
+	m := Model{
+		running: false,
+		prompt:  "test",
+		status: runStatus{
+			Step: 2,
+		},
+	}
+
+	view := m.View()
+
+	if !strings.Contains(view, "step: finished #2") {
+		t.Fatalf("expected finished step status in view, got: %s", view)
+	}
+}
+
+func TestViewSkipsZeroContextUsage(t *testing.T) {
+	m := Model{
+		running: true,
+		prompt:  "test",
+		status: runStatus{
+			Step:         1,
+			ContextUsage: 0,
+		},
+	}
+
+	view := m.View()
+
+	if strings.Contains(view, "context:") {
+		t.Fatalf("expected zero context usage to be hidden, got: %s", view)
+	}
+}

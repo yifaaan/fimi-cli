@@ -5,6 +5,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"fimi-cli/internal/contextstore"
+	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
@@ -44,6 +46,9 @@ func TestUpdateHandlesEnter(t *testing.T) {
 	if newModel.running != true {
 		t.Errorf("running = %v, want true", newModel.running)
 	}
+	if newModel.output.String() != "user: hello world\n" {
+		t.Errorf("output buffer = %q, want %q", newModel.output.String(), "user: hello world\n")
+	}
 	if cmd == nil {
 		t.Error("expected non-nil command after Enter")
 	}
@@ -58,8 +63,27 @@ func TestUpdateHandlesRuntimeEvent(t *testing.T) {
 	updated, _ := m.Update(eventMsg)
 
 	newModel := updated.(Model)
-	if newModel.output.String() != "hello" {
-		t.Errorf("output buffer = %q, want %q", newModel.output.String(), "hello")
+	if newModel.output.String() != "assistant: hello" {
+		t.Errorf("output buffer = %q, want %q", newModel.output.String(), "assistant: hello")
+	}
+	if newModel.status.Step != 0 {
+		t.Errorf("status.Step = %d, want 0", newModel.status.Step)
+	}
+}
+
+func TestUpdateTracksStatusUpdateContextUsage(t *testing.T) {
+	m := Model{running: true}
+
+	eventMsg := runtimeEventMsg{
+		event: runtimeevents.StatusUpdate{
+			Status: runtimeevents.StatusSnapshot{ContextUsage: 0.25},
+		},
+	}
+	updated, _ := m.Update(eventMsg)
+
+	newModel := updated.(Model)
+	if newModel.status.ContextUsage != 0.25 {
+		t.Errorf("status.ContextUsage = %v, want 0.25", newModel.status.ContextUsage)
 	}
 }
 
@@ -187,6 +211,17 @@ func TestUpdateHandlesMetaCommandHelp(t *testing.T) {
 	}
 }
 
+func TestUpdateHandlesShowHelpMsg(t *testing.T) {
+	m := Model{showHelp: false}
+
+	updated, _ := m.Update(showHelpMsg{})
+
+	newModel := updated.(Model)
+	if !newModel.showHelp {
+		t.Error("showHelp should be true after showHelpMsg")
+	}
+}
+
 func TestUpdateRuntimeDoneWithError(t *testing.T) {
 	m := Model{running: true}
 
@@ -202,8 +237,57 @@ func TestUpdateRuntimeDoneWithError(t *testing.T) {
 	}
 }
 
+func TestUpdateRuntimeDoneSkipsAlreadyStreamedAssistantText(t *testing.T) {
+	m := Model{running: true}
+	m.output.WriteString("assistant: streamed hello")
+	m.assistantLineOpen = true
+
+	doneMsg := runtimeDoneMsg{
+		result: runtime.Result{
+			Steps: []runtime.StepResult{
+				{
+					TextStreamed: true,
+					AppendedRecords: []contextstore.TextRecord{
+						contextstore.NewAssistantTextRecord("streamed hello"),
+					},
+				},
+			},
+		},
+	}
+	updated, _ := m.Update(doneMsg)
+
+	newModel := updated.(Model)
+	if newModel.output.String() != "assistant: streamed hello\n" {
+		t.Errorf("output buffer = %q, want %q", newModel.output.String(), "assistant: streamed hello\n")
+	}
+}
+
+func TestUpdateRuntimeDoneAppendsAssistantFallbackIntoTranscript(t *testing.T) {
+	m := Model{running: true}
+	m.appendUserTurn("hello")
+
+	doneMsg := runtimeDoneMsg{
+		result: runtime.Result{
+			Steps: []runtime.StepResult{
+				{
+					AppendedRecords: []contextstore.TextRecord{
+						contextstore.NewAssistantTextRecord("done"),
+					},
+				},
+			},
+		},
+	}
+	updated, _ := m.Update(doneMsg)
+
+	newModel := updated.(Model)
+	if newModel.output.String() != "user: hello\nassistant: done\n" {
+		t.Errorf("output buffer = %q, want %q", newModel.output.String(), "user: hello\nassistant: done\n")
+	}
+}
+
 func TestUpdateAppendsToolCallToOutput(t *testing.T) {
 	m := Model{running: true}
+	m.appendUserTurn("inspect")
 
 	eventMsg := runtimeEventMsg{
 		event: runtimeevents.ToolCall{
@@ -219,13 +303,17 @@ func TestUpdateAppendsToolCallToOutput(t *testing.T) {
 	if output == "" {
 		t.Error("output buffer should not be empty after tool call event")
 	}
-	if !contains(output, "bash") {
-		t.Errorf("output buffer = %q, want to contain 'bash'", output)
+	if !contains(output, "\nassistant:\n  tool: bash") {
+		t.Errorf("output buffer = %q, want indented tool line", output)
+	}
+	if newModel.status.ActiveTool != "bash" {
+		t.Errorf("status.ActiveTool = %q, want %q", newModel.status.ActiveTool, "bash")
 	}
 }
 
 func TestUpdateAppendsToolResultToOutput(t *testing.T) {
 	m := Model{running: true}
+	m.appendUserTurn("inspect")
 
 	eventMsg := runtimeEventMsg{
 		event: runtimeevents.ToolResult{
@@ -239,13 +327,20 @@ func TestUpdateAppendsToolResultToOutput(t *testing.T) {
 
 	newModel := updated.(Model)
 	output := newModel.output.String()
-	if !contains(output, "hello world") {
-		t.Errorf("output buffer = %q, want to contain 'hello world'", output)
+	if !contains(output, "  result: bash hello world") {
+		t.Errorf("output buffer = %q, want indented result line", output)
+	}
+	if newModel.status.LastToolResult == "" {
+		t.Error("status.LastToolResult should be populated after tool result")
+	}
+	if newModel.status.ActiveTool != "" {
+		t.Errorf("status.ActiveTool = %q, want empty after tool result", newModel.status.ActiveTool)
 	}
 }
 
 func TestUpdateAppendsErrorToolResultToOutput(t *testing.T) {
 	m := Model{running: true}
+	m.appendUserTurn("inspect")
 
 	eventMsg := runtimeEventMsg{
 		event: runtimeevents.ToolResult{
@@ -259,8 +354,68 @@ func TestUpdateAppendsErrorToolResultToOutput(t *testing.T) {
 
 	newModel := updated.(Model)
 	output := newModel.output.String()
-	if !contains(output, "[error]") {
-		t.Errorf("output buffer = %q, want to contain '[error]'", output)
+	if !contains(output, "  error: bash command not found") {
+		t.Errorf("output buffer = %q, want indented error line", output)
+	}
+	if !newModel.status.LastToolError {
+		t.Error("status.LastToolError should be true for error result")
+	}
+}
+
+func TestUpdateTracksStepBeginStatus(t *testing.T) {
+	m := Model{running: true}
+
+	eventMsg := runtimeEventMsg{
+		event: runtimeevents.StepBegin{Number: 2},
+	}
+	updated, _ := m.Update(eventMsg)
+
+	newModel := updated.(Model)
+	if newModel.status.Step != 2 {
+		t.Errorf("status.Step = %d, want 2", newModel.status.Step)
+	}
+}
+
+func TestUpdateAppendsToolCallPartToOutput(t *testing.T) {
+	m := Model{running: true}
+	m.appendUserTurn("inspect")
+
+	eventMsg := runtimeEventMsg{
+		event: runtimeevents.ToolCallPart{
+			ToolCallID: "call_123",
+			Delta:      `{"path":"main.go"}`,
+		},
+	}
+	updated, _ := m.Update(eventMsg)
+
+	newModel := updated.(Model)
+	output := newModel.output.String()
+	if !contains(output, "  tool args: call_123") {
+		t.Errorf("output buffer = %q, want indented tool args line", output)
+	}
+	if !contains(output, `{"path":"main.go"}`) {
+		t.Errorf("output buffer = %q, want to contain tool delta", output)
+	}
+}
+
+func TestUpdateAppendsMultilineToolResultUnderAssistantTurn(t *testing.T) {
+	m := Model{running: true}
+	m.appendUserTurn("inspect")
+
+	eventMsg := runtimeEventMsg{
+		event: runtimeevents.ToolResult{
+			ToolCallID: "call_123",
+			ToolName:   "bash",
+			Output:     "line1\nline2",
+			IsError:    false,
+		},
+	}
+	updated, _ := m.Update(eventMsg)
+
+	newModel := updated.(Model)
+	output := newModel.output.String()
+	if !contains(output, "assistant:\n  result: bash\n    line1\n    line2\n") {
+		t.Errorf("output buffer = %q, want multiline tool result block", output)
 	}
 }
 
