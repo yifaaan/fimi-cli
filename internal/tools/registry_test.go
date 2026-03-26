@@ -111,6 +111,21 @@ func TestBuiltinRegistryIncludesSetTodoListTool(t *testing.T) {
 	}
 }
 
+func TestBuiltinRegistryIncludesSearchWebTool(t *testing.T) {
+	registry := BuiltinRegistry()
+
+	got, err := registry.Resolve(ToolSearchWeb)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.Name != ToolSearchWeb {
+		t.Fatalf("Resolve().Name = %q, want %q", got.Name, ToolSearchWeb)
+	}
+	if got.Kind != KindUtility {
+		t.Fatalf("Resolve().Kind = %q, want %q", got.Kind, KindUtility)
+	}
+}
+
 func TestRegistryReturnsStructuredErrors(t *testing.T) {
 	registry := BuiltinRegistry()
 

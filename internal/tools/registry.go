@@ -26,6 +26,7 @@ const (
 	ToolAgent       = "agent"
 	ToolThink       = "think"
 	ToolSetTodoList = "set_todo_list"
+	ToolSearchWeb   = "search_web"
 	ToolReadFile    = "read_file"
 	ToolGlob        = "glob"
 	ToolGrep        = "grep"
@@ -94,6 +95,11 @@ func BuiltinRegistry() Registry {
 			Name:        ToolBash,
 			Kind:        KindCommand,
 			Description: "Run a shell command inside the workspace.",
+		},
+		Definition{
+			Name:        ToolSearchWeb,
+			Kind:        KindUtility,
+			Description: "Search the web for recent information and relevant pages.",
 		},
 		Definition{
 			Name:        ToolReadFile,

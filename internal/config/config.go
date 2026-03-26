@@ -23,6 +23,20 @@ type ModelConfig struct {
 	ContextWindowTokens int    `json:"context_window_tokens,omitempty"`
 }
 
+// ServicesConfig 预留外部服务扩展点；当前不内建具体服务配置。
+type ServicesConfig struct{}
+
+type DuckDuckGoConfig struct {
+	BaseURL   string `json:"base_url"`
+	UserAgent string `json:"user_agent"`
+}
+
+type WebConfig struct {
+	Enabled       bool             `json:"enabled"`
+	SearchBackend string           `json:"search_backend"`
+	DuckDuckGo    DuckDuckGoConfig `json:"duckduckgo"`
+}
+
 // Config 表示应用当前最小可用的配置集合。
 // 现在只保留后续 runtime 一定会依赖的基础字段。
 type Config struct {
@@ -31,6 +45,8 @@ type Config struct {
 	HistoryWindow HistoryWindow             `json:"history_window"`
 	Models        map[string]ModelConfig    `json:"models"`
 	Providers     map[string]ProviderConfig `json:"providers"`
+	Services      ServicesConfig            `json:"services"`
+	Web           WebConfig                 `json:"web"`
 }
 
 // LoopControl 对应 Python 版本里的 agent loop 控制参数。
@@ -67,6 +83,12 @@ const (
 	ProviderWireAPIResponses       = "responses"
 )
 
+const (
+	DefaultWebSearchBackend    = "duckduckgo"
+	DefaultDuckDuckGoBaseURL   = "https://duckduckgo.com/html/"
+	DefaultDuckDuckGoUserAgent = "fimi-cli/0.1"
+)
+
 // Default 返回内建默认配置。
 func Default() Config {
 	return Config{
@@ -85,12 +107,18 @@ func Default() Config {
 				Model:    DefaultModelName,
 			},
 		},
-		// 提供示例 provider 配置结构，方便用户参考
 		Providers: map[string]ProviderConfig{
 			"qwen": {
 				Type: ProviderTypeQWEN,
-				// APIKey 留空，用户需要自己填写
 				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+			},
+		},
+		Web: WebConfig{
+			Enabled:       false,
+			SearchBackend: DefaultWebSearchBackend,
+			DuckDuckGo: DuckDuckGoConfig{
+				BaseURL:   DefaultDuckDuckGoBaseURL,
+				UserAgent: DefaultDuckDuckGoUserAgent,
 			},
 		},
 	}
@@ -163,6 +191,9 @@ func validate(cfg Config) error {
 			return err
 		}
 	}
+	if err := validateWebConfig(cfg.Web); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -179,7 +210,6 @@ func validateModelConfig(
 		return fmt.Errorf("models.%s.provider is required", modelAlias)
 	}
 	if modelCfg.Provider == DefaultProviderName {
-		// placeholder 是内建 provider，不要求 users 在 providers 里重复声明。
 		return nil
 	}
 	providerCfg, ok := providers[modelCfg.Provider]
@@ -200,6 +230,25 @@ func validateModelConfig(
 		)
 	}
 
-	// model 允许留空；消费方会把 alias 当作真实模型名兜底。
+	return nil
+}
+
+func validateWebConfig(cfg WebConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.SearchBackend == "" {
+		return errors.New("web.search_backend is required when web.enabled is true")
+	}
+	if cfg.SearchBackend != DefaultWebSearchBackend {
+		return fmt.Errorf("web.search_backend %q is not supported", cfg.SearchBackend)
+	}
+	if cfg.DuckDuckGo.BaseURL == "" {
+		return errors.New("web.duckduckgo.base_url is required when web.enabled is true")
+	}
+	if cfg.DuckDuckGo.UserAgent == "" {
+		return errors.New("web.duckduckgo.user_agent is required when web.enabled is true")
+	}
+
 	return nil
 }

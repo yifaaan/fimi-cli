@@ -19,6 +19,7 @@ import (
 	"fimi-cli/internal/ui"
 	"fimi-cli/internal/ui/printui"
 	"fimi-cli/internal/ui/shell"
+	"fimi-cli/internal/websearch"
 )
 
 const (
@@ -322,6 +323,30 @@ func toolParametersSchema(name string) map[string]any {
 		return objectSchema(requiredProperties(
 			schemaProperty("command", "string", "Shell command to run inside the workspace."),
 		))
+	case tools.ToolSearchWeb:
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Search query to run on the web.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of results to return.",
+					"minimum":     1,
+					"maximum":     20,
+					"default":     5,
+				},
+				"include_content": map[string]any{
+					"type":        "boolean",
+					"description": "Include fetched page content when the backend can provide it.",
+					"default":     false,
+				},
+			},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		}
 	case tools.ToolReadFile:
 		return objectSchema(requiredProperties(
 			schemaProperty("path", "string", "Workspace-relative file path to read."),
@@ -490,16 +515,26 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 	}
 
 	registry := d.resolveToolRegistry()
+	toolHandlers := map[string]tools.HandlerFunc{
+		tools.ToolAgent: d.newAgentToolHandler(cfg, agent, workDir, registry),
+	}
+	if containsTool(agent.Tools, tools.ToolSearchWeb) {
+		searcher, err := buildWebSearcher(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("build web searcher: %w", err)
+		}
+		toolHandlers[tools.ToolSearchWeb] = tools.NewSearchWebHandler(searcher, tools.NewOutputShaper())
+	}
+
 	toolExecutor := tools.NewBuiltinExecutorWithExtraHandlers(
 		agent.Tools,
 		workDir,
-		map[string]tools.HandlerFunc{
-			tools.ToolAgent: d.newAgentToolHandler(cfg, agent, workDir, registry),
-		},
+		toolHandlers,
 	)
 
 	return runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent)), nil
 }
+
 
 func buildEngine(cfg config.Config) (llm.Engine, error) {
 	return defaultDependencies().buildEngine(cfg)
@@ -507,6 +542,20 @@ func buildEngine(cfg config.Config) (llm.Engine, error) {
 
 func buildRunner(cfg config.Config) (runtimeRunner, error) {
 	return defaultDependencies().buildRunner(cfg)
+}
+
+func buildWebSearcher(cfg config.Config) (tools.WebSearcher, error) {
+	if !cfg.Web.Enabled {
+		return nil, nil
+	}
+	if cfg.Web.SearchBackend != config.DefaultWebSearchBackend {
+		return nil, fmt.Errorf("unsupported web search backend: %s", cfg.Web.SearchBackend)
+	}
+
+	return websearch.NewDuckDuckGoSearcher(websearch.DuckDuckGoConfig{
+		BaseURL:   cfg.Web.DuckDuckGo.BaseURL,
+		UserAgent: cfg.Web.DuckDuckGo.UserAgent,
+	})
 }
 
 type eventSinkCapableRunner interface {
@@ -540,8 +589,19 @@ func (d dependencies) runRuntime(
 	)
 }
 
+
 func defaultRuntimeVisualizer() ui.VisualizeFunc {
 	return printui.VisualizeText(os.Stdout)
+}
+
+func containsTool(definitions []tools.Definition, name string) bool {
+	for _, definition := range definitions {
+		if definition.Name == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (d dependencies) runShell(

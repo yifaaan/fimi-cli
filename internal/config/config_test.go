@@ -40,6 +40,23 @@ func TestDefaultIncludesHistoryWindow(t *testing.T) {
 	}
 }
 
+func TestDefaultIncludesWebConfig(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Web.Enabled {
+		t.Fatalf("Default().Web.Enabled = true, want false")
+	}
+	if cfg.Web.SearchBackend != DefaultWebSearchBackend {
+		t.Fatalf("Default().Web.SearchBackend = %q, want %q", cfg.Web.SearchBackend, DefaultWebSearchBackend)
+	}
+	if cfg.Web.DuckDuckGo.BaseURL != DefaultDuckDuckGoBaseURL {
+		t.Fatalf("Default().Web.DuckDuckGo.BaseURL = %q, want %q", cfg.Web.DuckDuckGo.BaseURL, DefaultDuckDuckGoBaseURL)
+	}
+	if cfg.Web.DuckDuckGo.UserAgent != DefaultDuckDuckGoUserAgent {
+		t.Fatalf("Default().Web.DuckDuckGo.UserAgent = %q, want %q", cfg.Web.DuckDuckGo.UserAgent, DefaultDuckDuckGoUserAgent)
+	}
+}
+
 func TestLoadFileReturnsDefaultWhenMissing(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "missing.json")
 
@@ -284,23 +301,80 @@ func TestLoadFileReturnsValidationErrors(t *testing.T) {
 			wantErrText: `models.custom-model.context_window_tokens must be >= 0`,
 		},
 		{
-			name: "invalid wire api rejected",
+			name: "web backend required when enabled",
 			content: `{
-				"default_model": "gpt-5",
+				"default_model": "custom-model",
 				"models": {
-					"gpt-5": {
-						"provider": "openai-prod",
-						"model": "gpt-5"
+					"custom-model": {
+						"provider": "placeholder",
+						"model": "custom-model"
 					}
 				},
-				"providers": {
-					"openai-prod": {
-						"type": "openai",
-						"wire_api": "legacy"
+				"web": {
+					"enabled": true,
+					"search_backend": ""
+				}
+			}`,
+			wantErrText: `web.search_backend is required when web.enabled is true`,
+		},
+		{
+			name: "unsupported web backend rejected",
+			content: `{
+				"default_model": "custom-model",
+				"models": {
+					"custom-model": {
+						"provider": "placeholder",
+						"model": "custom-model"
+					}
+				},
+				"web": {
+					"enabled": true,
+					"search_backend": "bing"
+				}
+			}`,
+			wantErrText: `web.search_backend "bing" is not supported`,
+		},
+		{
+			name: "duckduckgo base url required when enabled",
+			content: `{
+				"default_model": "custom-model",
+				"models": {
+					"custom-model": {
+						"provider": "placeholder",
+						"model": "custom-model"
+					}
+				},
+				"web": {
+					"enabled": true,
+					"search_backend": "duckduckgo",
+					"duckduckgo": {
+						"base_url": "",
+						"user_agent": "fimi-test/1.0"
 					}
 				}
 			}`,
-			wantErrText: `providers.openai-prod.wire_api must be one of "chat_completions" or "responses"`,
+			wantErrText: `web.duckduckgo.base_url is required when web.enabled is true`,
+		},
+		{
+			name: "duckduckgo user agent required when enabled",
+			content: `{
+				"default_model": "custom-model",
+				"models": {
+					"custom-model": {
+						"provider": "placeholder",
+						"model": "custom-model"
+					}
+				},
+				"web": {
+					"enabled": true,
+					"search_backend": "duckduckgo",
+					"duckduckgo": {
+						"base_url": "https://duckduckgo.example/html/",
+						"user_agent": ""
+					}
+				}
+			}`,
+			wantErrText: `web.duckduckgo.user_agent is required when web.enabled is true`,
 		},
 	}
 
@@ -358,21 +432,23 @@ func TestLoadFileAllowsEmptyModelNameToFallBackToAlias(t *testing.T) {
 	}
 }
 
-func TestLoadFileParsesProviderWireAPI(t *testing.T) {
+
+func TestLoadFileParsesEnabledWebConfig(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configFile, []byte(`{
-		"default_model": "gpt-5",
+		"default_model": "custom-model",
 		"models": {
-			"gpt-5": {
-				"provider": "openai-prod",
-				"model": "gpt-5"
+			"custom-model": {
+				"provider": "placeholder",
+				"model": "custom-model"
 			}
 		},
-		"providers": {
-			"openai-prod": {
-				"type": "openai",
-				"api_key": "sk-test-key",
-				"wire_api": "responses"
+		"web": {
+			"enabled": true,
+			"search_backend": "duckduckgo",
+			"duckduckgo": {
+				"base_url": "https://duckduckgo.example/html/",
+				"user_agent": "fimi-test/1.0"
 			}
 		}
 	}`), 0o644); err != nil {
@@ -384,7 +460,16 @@ func TestLoadFileParsesProviderWireAPI(t *testing.T) {
 		t.Fatalf("LoadFile() error = %v", err)
 	}
 
-	if got := cfg.Providers["openai-prod"].WireAPI; got != ProviderWireAPIResponses {
-		t.Fatalf("LoadFile().Providers[\"openai-prod\"].WireAPI = %q, want %q", got, ProviderWireAPIResponses)
+	if !cfg.Web.Enabled {
+		t.Fatalf("LoadFile().Web.Enabled = false, want true")
+	}
+	if cfg.Web.SearchBackend != DefaultWebSearchBackend {
+		t.Fatalf("LoadFile().Web.SearchBackend = %q, want %q", cfg.Web.SearchBackend, DefaultWebSearchBackend)
+	}
+	if cfg.Web.DuckDuckGo.BaseURL != "https://duckduckgo.example/html/" {
+		t.Fatalf("LoadFile().Web.DuckDuckGo.BaseURL = %q, want %q", cfg.Web.DuckDuckGo.BaseURL, "https://duckduckgo.example/html/")
+	}
+	if cfg.Web.DuckDuckGo.UserAgent != "fimi-test/1.0" {
+		t.Fatalf("LoadFile().Web.DuckDuckGo.UserAgent = %q, want %q", cfg.Web.DuckDuckGo.UserAgent, "fimi-test/1.0")
 	}
 }

@@ -129,6 +129,25 @@ func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 	}
 }
 
+type stubWebSearcher struct {
+	gotQuery          string
+	gotLimit          int
+	gotIncludeContent bool
+	results           []WebSearchResult
+	err               error
+}
+
+func (s *stubWebSearcher) Search(ctx context.Context, query string, limit int, includeContent bool) ([]WebSearchResult, error) {
+	s.gotQuery = query
+	s.gotLimit = limit
+	s.gotIncludeContent = includeContent
+	if s.err != nil {
+		return nil, s.err
+	}
+
+	return s.results, nil
+}
+
 func TestNewBuiltinExecutorWithExtraHandlersUsesInjectedHandler(t *testing.T) {
 	ctx := context.Background()
 	executor := NewBuiltinExecutorWithExtraHandlers(
@@ -197,6 +216,69 @@ func TestNewBuiltinExecutorThinkRejectsEmptyThought(t *testing.T) {
 	})
 	if !errors.Is(err, ErrToolThoughtRequired) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolThoughtRequired)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
+}
+
+func TestNewSearchWebHandlerUsesInjectedSearcher(t *testing.T) {
+	ctx := context.Background()
+	searcher := &stubWebSearcher{
+		results: []WebSearchResult{
+			{
+				Title:   "DuckDuckGo result",
+				URL:     "https://example.com/result",
+				Snippet: "Relevant summary",
+				Content: "Fetched page content",
+			},
+		},
+	}
+	handler := NewSearchWebHandler(searcher, NewOutputShaperWithLimits(1000, 1000))
+
+	got, err := handler(ctx, runtime.ToolCall{
+		Name:      ToolSearchWeb,
+		Arguments: `{"query":"duckduckgo api","limit":3,"include_content":true}`,
+	}, Definition{Name: ToolSearchWeb, Kind: KindUtility})
+	if err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+	if searcher.gotQuery != "duckduckgo api" {
+		t.Fatalf("searcher query = %q, want %q", searcher.gotQuery, "duckduckgo api")
+	}
+	if searcher.gotLimit != 3 {
+		t.Fatalf("searcher limit = %d, want %d", searcher.gotLimit, 3)
+	}
+	if !searcher.gotIncludeContent {
+		t.Fatalf("searcher includeContent = false, want true")
+	}
+	for _, want := range []string{"DuckDuckGo result", "URL: https://example.com/result", "Snippet: Relevant summary", "Content: Fetched page content"} {
+		if !strings.Contains(got.Output, want) {
+			t.Fatalf("handler output %q missing %q", got.Output, want)
+		}
+	}
+}
+
+func TestDecodeSearchWebArgumentsDefaultsLimit(t *testing.T) {
+	got, err := decodeSearchWebArguments(`{"query":" latest go release "}`)
+	if err != nil {
+		t.Fatalf("decodeSearchWebArguments() error = %v", err)
+	}
+	if got.Query != "latest go release" {
+		t.Fatalf("Query = %q, want %q", got.Query, "latest go release")
+	}
+	if got.Limit != 5 {
+		t.Fatalf("Limit = %d, want %d", got.Limit, 5)
+	}
+	if got.IncludeContent {
+		t.Fatalf("IncludeContent = true, want false")
+	}
+}
+
+func TestDecodeSearchWebArgumentsRejectsInvalidLimit(t *testing.T) {
+	_, err := decodeSearchWebArguments(`{"query":"go","limit":21}`)
+	if !errors.Is(err, ErrToolSearchLimitInvalid) {
+		t.Fatalf("decodeSearchWebArguments() error = %v, want wrapped %v", err, ErrToolSearchLimitInvalid)
 	}
 	if !runtime.IsRefused(err) {
 		t.Fatalf("runtime.IsRefused(error) = false, want true")
@@ -288,12 +370,10 @@ func TestNewBuiltinExecutorGlobMatchesWorkspacePaths(t *testing.T) {
 		t.Fatalf("WriteFile(README.md) error = %v", err)
 	}
 
-	executor := NewBuiltinExecutor([]Definition{
-		{
-			Name: ToolGlob,
-			Kind: KindFile,
-		},
-	}, workDir)
+	executor := NewBuiltinExecutor([]Definition{{
+		Name: ToolGlob,
+		Kind: KindFile,
+	}}, workDir)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGlob,
@@ -309,12 +389,10 @@ func TestNewBuiltinExecutorGlobMatchesWorkspacePaths(t *testing.T) {
 
 func TestNewBuiltinExecutorGlobRejectsPatternOutsideWorkspace(t *testing.T) {
 	ctx := context.Background()
-	executor := NewBuiltinExecutor([]Definition{
-		{
-			Name: ToolGlob,
-			Kind: KindFile,
-		},
-	}, t.TempDir())
+	executor := NewBuiltinExecutor([]Definition{{
+		Name: ToolGlob,
+		Kind: KindFile,
+	}}, t.TempDir())
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGlob,
@@ -338,12 +416,10 @@ func TestNewBuiltinExecutorGrepSearchesDirectoryRecursively(t *testing.T) {
 		t.Fatalf("WriteFile(executor.go) error = %v", err)
 	}
 
-	executor := NewBuiltinExecutor([]Definition{
-		{
-			Name: ToolGrep,
-			Kind: KindFile,
-		},
-	}, workDir)
+	executor := NewBuiltinExecutor([]Definition{{
+		Name: ToolGrep,
+		Kind: KindFile,
+	}}, workDir)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
@@ -359,12 +435,10 @@ func TestNewBuiltinExecutorGrepSearchesDirectoryRecursively(t *testing.T) {
 
 func TestNewBuiltinExecutorGrepRejectsPathOutsideWorkspace(t *testing.T) {
 	ctx := context.Background()
-	executor := NewBuiltinExecutor([]Definition{
-		{
-			Name: ToolGrep,
-			Kind: KindFile,
-		},
-	}, t.TempDir())
+	executor := NewBuiltinExecutor([]Definition{{
+		Name: ToolGrep,
+		Kind: KindFile,
+	}}, t.TempDir())
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,

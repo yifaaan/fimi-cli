@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"fimi-cli/internal/agentspec"
@@ -147,6 +148,56 @@ func TestBuildLLMToolDefinitionsForSetTodoListTool(t *testing.T) {
 	}
 	if _, ok := properties["todos"]; !ok {
 		t.Fatalf("tool parameters missing %q property", "todos")
+	}
+}
+
+func TestBuildLLMToolDefinitionsForSearchWebTool(t *testing.T) {
+	got := buildLLMToolDefinitions([]tools.Definition{{
+		Name:        tools.ToolSearchWeb,
+		Description: "Search the web for recent information and relevant pages.",
+	}})
+
+	if len(got) != 1 {
+		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
+	}
+	properties, ok := got[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
+	}
+	for _, name := range []string{"query", "limit", "include_content"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("tool parameters missing %q property", name)
+		}
+	}
+	required, ok := got[0].Parameters["required"].([]string)
+	if !ok {
+		t.Fatalf("tool parameters required type = %T, want []string", got[0].Parameters["required"])
+	}
+	if len(required) != 1 || required[0] != "query" {
+		t.Fatalf("tool parameters required = %#v, want []string{\"query\"}", required)
+	}
+}
+
+func TestBuildWebSearcherReturnsNilWhenDisabled(t *testing.T) {
+	searcher, err := buildWebSearcher(config.Default())
+	if err != nil {
+		t.Fatalf("buildWebSearcher() error = %v", err)
+	}
+	if searcher != nil {
+		t.Fatalf("buildWebSearcher() = %#v, want nil", searcher)
+	}
+}
+
+func TestBuildWebSearcherBuildsDuckDuckGoSearcherWhenEnabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.Web.Enabled = true
+
+	searcher, err := buildWebSearcher(cfg)
+	if err != nil {
+		t.Fatalf("buildWebSearcher() error = %v", err)
+	}
+	if searcher == nil {
+		t.Fatalf("buildWebSearcher() = nil, want non-nil")
 	}
 }
 
@@ -1999,6 +2050,81 @@ func (r *stubRunner) Run(_ context.Context, store contextstore.Context, input ru
 	}
 
 	return r.result, nil
+}
+
+type fakeToolCallClient struct {
+	replies int
+}
+
+func (c *fakeToolCallClient) Reply(request llm.Request) (llm.Response, error) {
+	if c.replies == 0 {
+		c.replies++
+		return llm.Response{
+			Text: "I will search the web.",
+			ToolCalls: []llm.ToolCall{{
+				ID:        "call_search",
+				Name:      tools.ToolSearchWeb,
+				Arguments: `{"query":"golang duckduckgo","limit":2}`,
+			}},
+		}, nil
+	}
+
+	if len(request.Messages) == 0 {
+		return llm.Response{}, errors.New("missing request messages")
+	}
+	last := request.Messages[len(request.Messages)-1]
+	if last.Role != llm.RoleTool {
+		return llm.Response{}, fmt.Errorf("last message role = %q, want %q", last.Role, llm.RoleTool)
+	}
+	if !strings.Contains(last.Content, "temporary") {
+		return llm.Response{}, fmt.Errorf("tool result content = %q, want temporary failure", last.Content)
+	}
+
+	return llm.Response{Text: "done"}, nil
+}
+
+func TestDependenciesBuildRunnerForAgentSearchWebUsesConfiguredBackend(t *testing.T) {
+	deps := dependencies{
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			return &fakeToolCallClient{}, nil
+		},
+	}
+	cfg := config.Default()
+	cfg.Web.Enabled = true
+	cfg.Web.DuckDuckGo.BaseURL = "https://duckduckgo.invalid/html/"
+	cfg.DefaultModel = "custom-model"
+	cfg.Models = map[string]config.ModelConfig{
+		"custom-model": {
+			Provider: config.ProviderTypePlaceholder,
+			Model:    "custom-model",
+		},
+	}
+
+	runner, err := deps.buildRunnerForAgent(cfg, loadedAgent{
+		Tools: []tools.Definition{{
+			Name: tools.ToolSearchWeb,
+			Kind: tools.KindUtility,
+		}},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildRunnerForAgent() error = %v", err)
+	}
+
+	_, err = runner.Run(
+		context.Background(),
+		contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		runtime.Input{
+			Prompt:       "search the web",
+			Model:        "custom-model",
+			SystemPrompt: "You are the configured agent.",
+		},
+	)
+	if err == nil {
+		t.Fatalf("Run() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), `execute tool call "search_web"`) {
+		t.Fatalf("Run() error = %q, want search_web tool execution error", err.Error())
+	}
 }
 
 type fakeRuntimeEngine struct {

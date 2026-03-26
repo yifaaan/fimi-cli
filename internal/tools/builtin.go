@@ -27,6 +27,8 @@ var ErrToolCommandRequired = errors.New("tool command is required")
 var ErrToolCommandTimedOut = errors.New("tool command timed out")
 var ErrToolPathRequired = errors.New("tool path is required")
 var ErrToolPatternRequired = errors.New("tool pattern is required")
+var ErrToolSearchQueryRequired = errors.New("tool search query is required")
+var ErrToolSearchLimitInvalid = errors.New("tool search limit is invalid")
 var ErrToolReplaceOldRequired = errors.New("tool replace old text is required")
 var ErrToolReplaceTargetMissing = errors.New("tool replace target not found")
 var ErrToolReplaceTargetNotUnique = errors.New("tool replace target is not unique")
@@ -54,6 +56,23 @@ type todoItemArguments struct {
 
 type setTodoListArguments struct {
 	Todos []todoItemArguments `json:"todos"`
+}
+
+type searchWebArguments struct {
+	Query          string `json:"query"`
+	Limit          int    `json:"limit"`
+	IncludeContent bool   `json:"include_content"`
+}
+
+type WebSearchResult struct {
+	Title   string
+	URL     string
+	Snippet string
+	Content string
+}
+
+type WebSearcher interface {
+	Search(ctx context.Context, query string, limit int, includeContent bool) ([]WebSearchResult, error)
 }
 
 type globArguments struct {
@@ -303,11 +322,8 @@ func newGlobHandler(workDir string, shaper OutputShaper) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
-		// 对匹配结果进行塑形
 		rawOutput := strings.Join(matches, "\n")
 		shaped := shaper.Shape(rawOutput)
-
-		// 构建最终输出
 		output := shaped.Output
 		if shaped.Message != "" {
 			output += "\n\n[" + shaped.Message + "]"
@@ -346,11 +362,8 @@ func newGrepHandler(workDir string, shaper OutputShaper) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
-		// 对匹配结果进行塑形
 		rawOutput := strings.Join(matches, "\n")
 		shaped := shaper.Shape(rawOutput)
-
-		// 构建最终输出
 		output := shaped.Output
 		if shaped.Message != "" {
 			output += "\n\n[" + shaped.Message + "]"
@@ -383,7 +396,6 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
-		// 写工具先采用"覆盖写入"语义，并自动补父目录，后面再单独引入 replace 这类更细粒度操作。
 		if err := os.MkdirAll(filepath.Dir(targetAbs), 0o755); err != nil {
 			return runtime.ToolExecution{}, fmt.Errorf("create parent dir for %q: %w", targetAbs, err)
 		}
@@ -396,6 +408,85 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 			Output: fmt.Sprintf("wrote %d bytes to %s", len([]byte(args.Content)), targetRel),
 		}, nil
 	}
+}
+
+
+func newSearchWebHandler(searcher WebSearcher, shaper OutputShaper) HandlerFunc {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeSearchWebArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		if searcher == nil {
+			return runtime.ToolExecution{}, markTemporary(errors.New("web search backend is not configured"))
+		}
+
+		results, err := searcher.Search(ctx, args.Query, args.Limit, args.IncludeContent)
+		if err != nil {
+			return runtime.ToolExecution{}, markTemporary(fmt.Errorf("search web: %w", err))
+		}
+
+		shaped := shaper.Shape(formatWebSearchResults(results, args.IncludeContent))
+		output := shaped.Output
+		if shaped.Message != "" {
+			output += "\n\n[" + shaped.Message + "]"
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: output,
+		}, nil
+	}
+}
+
+func NewSearchWebHandler(searcher WebSearcher, shaper OutputShaper) HandlerFunc {
+	return newSearchWebHandler(searcher, shaper)
+}
+
+func formatWebSearchResults(results []WebSearchResult, includeContent bool) string {
+	if len(results) == 0 {
+		return "No web results found."
+	}
+
+	var builder strings.Builder
+	for i, result := range results {
+		if i > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(strconv.Itoa(i + 1))
+		builder.WriteString(". ")
+
+		title := strings.TrimSpace(result.Title)
+		if title == "" {
+			title = strings.TrimSpace(result.URL)
+		}
+		if title == "" {
+			title = "Untitled result"
+		}
+		builder.WriteString(title)
+
+		url := strings.TrimSpace(result.URL)
+		if url != "" {
+			builder.WriteString("\nURL: ")
+			builder.WriteString(url)
+		}
+
+		snippet := strings.TrimSpace(result.Snippet)
+		if snippet != "" {
+			builder.WriteString("\nSnippet: ")
+			builder.WriteString(snippet)
+		}
+
+		if includeContent {
+			content := strings.TrimSpace(result.Content)
+			if content != "" {
+				builder.WriteString("\nContent: ")
+				builder.WriteString(content)
+			}
+		}
+	}
+
+	return builder.String()
 }
 
 func newReplaceFileHandler(workDir string) HandlerFunc {
@@ -468,30 +559,25 @@ func newPatchFileHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
-		// 检查文件存在
 		info, err := os.Stat(targetAbs)
 		if err != nil {
 			return runtime.ToolExecution{}, fmt.Errorf("stat file %q for patch: %w", targetAbs, err)
 		}
 
-		// 读取原始内容
 		originalData, err := os.ReadFile(targetAbs)
 		if err != nil {
 			return runtime.ToolExecution{}, fmt.Errorf("read file %q for patch: %w", targetAbs, err)
 		}
 
-		// 解析并应用 patch
 		patchedContent, hunksApplied, err := applyUnifiedDiff(string(originalData), args.Diff)
 		if err != nil {
 			return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %v", ErrToolPatchFailed, err))
 		}
 
-		// 检查是否有实际变化
 		if patchedContent == string(originalData) {
 			return runtime.ToolExecution{}, markRefused(errors.New("no changes were made by the patch"))
 		}
 
-		// 写入修改后的内容
 		if err := os.WriteFile(targetAbs, []byte(patchedContent), info.Mode().Perm()); err != nil {
 			return runtime.ToolExecution{}, fmt.Errorf("write patched file %q: %w", targetAbs, err)
 		}
@@ -546,6 +632,26 @@ func decodeSetTodoListArguments(raw string) (setTodoListArguments, error) {
 		if !isAllowedTodoStatus(args.Todos[i].Status) {
 			return setTodoListArguments{}, markRefused(fmt.Errorf("%w: %s", ErrToolTodoStatusInvalid, args.Todos[i].Status))
 		}
+	}
+
+	return args, nil
+}
+
+func decodeSearchWebArguments(raw string) (searchWebArguments, error) {
+	var args searchWebArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return searchWebArguments{}, markRefused(fmt.Errorf("%w: decode search_web arguments: %v", ErrToolArgumentsInvalid, err))
+	}
+
+	args.Query = strings.TrimSpace(args.Query)
+	if args.Query == "" {
+		return searchWebArguments{}, markRefused(ErrToolSearchQueryRequired)
+	}
+	if args.Limit == 0 {
+		args.Limit = 5
+	}
+	if args.Limit < 1 || args.Limit > 20 {
+		return searchWebArguments{}, markRefused(fmt.Errorf("%w: %d", ErrToolSearchLimitInvalid, args.Limit))
 	}
 
 	return args, nil
