@@ -57,9 +57,10 @@ type Model struct {
 	pendingCompletion *RuntimeCompleteMsg
 
 	// Session 选择相关状态
-	sessionList       []session.SessionInfo
-	selectedSession   int
-	inSessionSelect   bool
+	sessionList         []session.SessionInfo
+	selectedSession     int
+	sessionScrollOffset int // 滚动偏移量
+	inSessionSelect     bool
 }
 
 // NewModel 创建一个新的 Bubble Tea 模型。
@@ -501,17 +502,40 @@ func (m Model) handleResumeListResult(msg ResumeListMsg) (tea.Model, tea.Cmd) {
 
 // handleSessionSelectKeyPress 处理 session 选择模式的键盘输入。
 func (m Model) handleSessionSelectKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	keyStr := msg.String()
+
+	// 计算可见区域大小
+	availableHeight := m.height - 8 // 预留标题、状态、帮助等
+	if availableHeight < 6 {
+		availableHeight = 6
+	}
+	linesPerSession := 2
+	maxVisible := availableHeight / linesPerSession
+	if maxVisible < 1 {
+		maxVisible = 1
+	}
+
+	// 计算当前可见范围
+	total := len(m.sessionList)
+	oldScrollOffset := m.sessionScrollOffset
+
+	switch keyStr {
 	case "up", "k":
 		if m.selectedSession > 0 {
 			m.selectedSession--
+			// 如果选中项在当前视口上方，向上滚动
+			if m.selectedSession < m.sessionScrollOffset {
+				m.sessionScrollOffset = m.selectedSession
+			}
 		}
-		return m, nil
 	case "down", "j":
-		if m.selectedSession < len(m.sessionList)-1 {
+		if m.selectedSession < total-1 {
 			m.selectedSession++
+			// 如果选中项在当前视口下方，向下滚动
+			if m.selectedSession >= m.sessionScrollOffset+maxVisible {
+				m.sessionScrollOffset = m.selectedSession - maxVisible + 1
+			}
 		}
-		return m, nil
 	case "enter":
 		// 切换到选中的 session
 		return m.handleResumeSwitch(m.sessionList[m.selectedSession].ID)
@@ -520,7 +544,13 @@ func (m Model) handleSessionSelectKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		m.mode = ModeIdle
 		m.sessionList = nil
 		m.selectedSession = 0
+		m.sessionScrollOffset = 0
 		return m, nil
+	}
+
+	// 只有滚动位置变化时才需要清屏（翻页）
+	if m.sessionScrollOffset != oldScrollOffset {
+		return m, tea.ClearScreen
 	}
 	return m, nil
 }
@@ -536,8 +566,47 @@ func (m Model) renderSessionSelectView() string {
 	sections = append(sections, titleStyle.Render("Select a session to resume"))
 	sections = append(sections, "")
 
+	// 计算可见区域
+	// 每个session占用2行，预留标题(2行) + 状态(1行) + 帮助(1行) + 边距(2行) = 6行
+	availableHeight := m.height - 6
+	if availableHeight < 6 {
+		availableHeight = 6
+	}
+	linesPerSession := 2
+	maxVisibleSessions := availableHeight / linesPerSession
+	if maxVisibleSessions < 1 {
+		maxVisibleSessions = 1
+	}
+
+	totalSessions := len(m.sessionList)
+
+	// 使用模型中的滚动偏移量
+	scrollOffset := m.sessionScrollOffset
+	// 确保滚动偏移量在有效范围内
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+	if scrollOffset > totalSessions-maxVisibleSessions && totalSessions > maxVisibleSessions {
+		scrollOffset = totalSessions - maxVisibleSessions
+	}
+
+	// 计算实际渲染的session范围
+	startIdx := scrollOffset
+	endIdx := scrollOffset + maxVisibleSessions
+	if endIdx > totalSessions {
+		endIdx = totalSessions
+	}
+
+	// 淡蓝色样式（用于选中项）
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("14")). // bright cyan = 淡蓝色
+		Bold(true)
+	selectedMetaStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("14")) // bright cyan
+
 	// Session 列表
-	for i, s := range m.sessionList {
+	for i := startIdx; i < endIdx; i++ {
+		s := m.sessionList[i]
 		// 获取第一条用户消息作为预览
 		preview := m.getSessionPreview(s.HistoryFile)
 
@@ -553,47 +622,34 @@ func (m Model) renderSessionSelectView() string {
 
 		// 第一行：session id + preview
 		idPreview := fmt.Sprintf("%s  %s", shortID, preview)
-		// 第二行：时间 + 大小（放到该 session 下面显示）
+		// 第二行：时间 + 大小
 		metaLine := fmt.Sprintf("    %s  %s", timeAgo, fileSize)
 
-		// 选中项和普通项的不同样式
 		var block string
-		width := m.width
-		if width > 80 {
-			width = 80
-		}
-		// 选中标记
-		prefix := "  "
+		displayNum := i + 1
 		if i == m.selectedSession {
-			prefix = "▶ "
-		}
-		if i == m.selectedSession {
-			// 选中项：使用 256 色背景，更明显
-			selectedStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("0")).   // 黑色前景
-				Background(lipgloss.Color("51")).  // 亮青色背景 (256色)
-				Bold(true).
-				Padding(0, 1)
-			selectedMetaStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("0")).   // 黑色前景
-				Background(lipgloss.Color("45")).  // 青色背景 (256色)
-				Padding(0, 1)
-			line1 := selectedStyle.Render(prefix + idPreview)
-			line2 := selectedMetaStyle.Render("  " + metaLine)
-			block = lipgloss.JoinVertical(lipgloss.Left, line1, line2)
+			// 选中项：淡蓝色 + 粗体
+			line1 := selectedStyle.Render(fmt.Sprintf("[%d] > %s", displayNum, idPreview))
+			line2 := selectedMetaStyle.Render(fmt.Sprintf("      %s", metaLine))
+			block = fmt.Sprintf("%s\n%s", line1, line2)
 		} else {
 			// 普通项
-			normalStyle := lipgloss.NewStyle().
-				Foreground(styles.ColorMuted).
-				Padding(0, 1)
-			line1 := normalStyle.Render(prefix + idPreview)
-			line2 := normalStyle.Render("  " + metaLine)
-			block = lipgloss.JoinVertical(lipgloss.Left, line1, line2)
+			block = fmt.Sprintf("[%d] %s\n    %s", displayNum, idPreview, metaLine)
 		}
 		sections = append(sections, block)
 	}
 
 	sections = append(sections, "")
+
+	// 状态提示：显示当前位置和总数
+	statusText := fmt.Sprintf("Session %d/%d", m.selectedSession+1, totalSessions)
+	if totalSessions > maxVisibleSessions {
+		statusText += fmt.Sprintf(" (showing %d-%d)", startIdx+1, endIdx)
+	}
+	statusStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted).
+		Italic(true)
+	sections = append(sections, statusStyle.Render(statusText))
 
 	// 帮助提示
 	helpStyle := lipgloss.NewStyle().
