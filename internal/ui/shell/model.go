@@ -558,21 +558,35 @@ func (m Model) renderSessionSelectView() string {
 
 		// 选中项和普通项的不同样式
 		var block string
+		width := m.width
+		if width > 80 {
+			width = 80
+		}
+		// 选中标记
+		prefix := "  "
 		if i == m.selectedSession {
-			// 选中项：使用反色效果，最可靠的高亮方式
+			prefix = "▶ "
+		}
+		if i == m.selectedSession {
+			// 选中项：使用 256 色背景，更明显
 			selectedStyle := lipgloss.NewStyle().
-				Reverse(true).
-				Bold(true)
+				Foreground(lipgloss.Color("0")).   // 黑色前景
+				Background(lipgloss.Color("51")).  // 亮青色背景 (256色)
+				Bold(true).
+				Padding(0, 1)
 			selectedMetaStyle := lipgloss.NewStyle().
-				Reverse(true)
-			line1 := selectedStyle.Render("▶ " + idPreview)
+				Foreground(lipgloss.Color("0")).   // 黑色前景
+				Background(lipgloss.Color("45")).  // 青色背景 (256色)
+				Padding(0, 1)
+			line1 := selectedStyle.Render(prefix + idPreview)
 			line2 := selectedMetaStyle.Render("  " + metaLine)
 			block = lipgloss.JoinVertical(lipgloss.Left, line1, line2)
 		} else {
 			// 普通项
 			normalStyle := lipgloss.NewStyle().
-				Foreground(styles.ColorMuted)
-			line1 := normalStyle.Render("  " + idPreview)
+				Foreground(styles.ColorMuted).
+				Padding(0, 1)
+			line1 := normalStyle.Render(prefix + idPreview)
 			line2 := normalStyle.Render("  " + metaLine)
 			block = lipgloss.JoinVertical(lipgloss.Left, line1, line2)
 		}
