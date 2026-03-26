@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -134,6 +135,223 @@ func TestLiveStateBuildsRenderableLines(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("rendered lines = %q, want substring %q", rendered, want)
 		}
+	}
+}
+
+func TestLiveStateUsesToolSubtitleForThinkCalls(t *testing.T) {
+	state := liveState{}
+	state.Apply(runtimeevents.ToolCall{
+		Name:      "think",
+		Subtitle:  "compare parser branch behavior",
+		Arguments: `{"thought":"compare parser branch behavior"}`,
+	})
+
+	rendered := strings.Join(state.Lines(), "\n")
+	if !strings.Contains(rendered, "[tool] think compare parser branch behavior") {
+		t.Fatalf("rendered lines = %q, want think subtitle", rendered)
+	}
+}
+
+func TestRuntimeModelUsesToolSubtitleInTranscriptAndCard(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_think",
+		Name:      "think",
+		Subtitle:  "compare parser branch behavior",
+		Arguments: `{"thought":"compare parser branch behavior"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID: "call_think",
+		ToolName:   "think",
+		Output:     "Thought logged",
+	})
+
+	lines := model.ToLines()
+	if len(lines) < 2 {
+		t.Fatalf("len(lines) = %d, want at least 2", len(lines))
+	}
+	if lines[1].Content != "think compare parser branch behavior" {
+		t.Fatalf("tool call transcript = %q, want %q", lines[1].Content, "think compare parser branch behavior")
+	}
+
+	card := model.ToolCardView(60)
+	if !strings.Contains(card, "compare parser branch behavior") {
+		t.Fatalf("tool card = %q, want think subtitle", card)
+	}
+}
+
+func TestRuntimeModelPreservesOrderedStepTranscript(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 2})
+	model = model.ApplyEvent(runtimeevents.TextPart{Text: "checking"})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_think",
+		Name:      "think",
+		Subtitle:  "compare parser branch behavior",
+		Arguments: `{"thought":"compare parser branch behavior"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID: "call_think",
+		ToolName:   "think",
+		Output:     "Thought logged",
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_read",
+		Name:      "read_file",
+		Subtitle:  "main.go",
+		Arguments: `{"path":"main.go"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID: "call_read",
+		ToolName:   "read_file",
+		Output:     "package main",
+	})
+
+	got := model.ToLines()
+	want := []TranscriptLine{
+		{Type: LineTypeSystem, Content: "[step 2]"},
+		{Type: LineTypeAssistant, Content: "checking"},
+		{Type: LineTypeToolCall, Content: "think compare parser branch behavior"},
+		{Type: LineTypeToolResult, Content: "Thought logged"},
+		{Type: LineTypeToolCall, Content: "read_file main.go"},
+		{Type: LineTypeToolResult, Content: "package main"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(lines) = %d, want %d; lines=%#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type || got[i].Content != want[i].Content {
+			t.Fatalf("lines[%d] = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestModelFlushesPreviousStepBeforeRenderingNextStep(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.eventsCh = make(chan runtimeevents.Event)
+	model.mode = ModeStreaming
+	model.runtime = model.runtime.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model.runtime = model.runtime.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_think",
+		Name:      "think",
+		Subtitle:  "compare parser branch behavior",
+		Arguments: `{"thought":"compare parser branch behavior"}`,
+	})
+	model.output = model.output.SetPending(model.runtime.ToLines())
+
+	updated, cmd := model.Update(RuntimeEventMsg{
+		Event: runtimeevents.StepBegin{Number: 2},
+	})
+	model = updated.(Model)
+
+	if cmd == nil {
+		t.Fatal("cmd = nil, want wait command batch")
+	}
+	if len(model.output.lines) == 0 {
+		t.Fatal("flushed transcript lines = 0, want previous step persisted")
+	}
+	if model.output.lines[0].Content != "[step 1]" {
+		t.Fatalf("first flushed line = %q, want %q", model.output.lines[0].Content, "[step 1]")
+	}
+	if len(model.output.pending) == 0 || model.output.pending[0].Content != "[step 2]" {
+		t.Fatalf("pending lines = %#v, want new step header first", model.output.pending)
+	}
+}
+
+func TestModelAppliesBatchedRuntimeEventsInOrder(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.eventsCh = make(chan runtimeevents.Event)
+
+	updated, _ := model.Update(RuntimeEventsMsg{
+		Events: []runtimeevents.Event{
+			runtimeevents.StepBegin{Number: 1},
+			runtimeevents.TextPart{Text: "hel"},
+			runtimeevents.TextPart{Text: "lo"},
+			runtimeevents.ToolCall{
+				ID:       "call_think",
+				Name:     "think",
+				Subtitle: "compare parser branch behavior",
+			},
+		},
+	})
+	model = updated.(Model)
+
+	if len(model.output.pending) != 3 {
+		t.Fatalf("pending lines = %d, want 3", len(model.output.pending))
+	}
+	if model.output.pending[1].Content != "hello" {
+		t.Fatalf("assistant content = %q, want %q", model.output.pending[1].Content, "hello")
+	}
+	if model.output.pending[2].Content != "think compare parser branch behavior" {
+		t.Fatalf("tool call content = %q, want %q", model.output.pending[2].Content, "think compare parser branch behavior")
+	}
+}
+
+func TestOutputModelMouseWheelScrollsTranscript(t *testing.T) {
+	model := NewOutputModel()
+	model.height = 10
+	model.width = 80
+	for i := 1; i <= 8; i++ {
+		model = model.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: fmt.Sprintf("line %d", i),
+		})
+	}
+
+	view := model.View()
+	if !strings.Contains(view, "line 8") {
+		t.Fatalf("initial view = %q, want latest line", view)
+	}
+	if strings.Contains(view, "line 1") {
+		t.Fatalf("initial view = %q, want oldest line hidden", view)
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress}, model.width, model.height)
+	model = updated
+
+	view = model.View()
+	if !strings.Contains(view, "line 1") {
+		t.Fatalf("scrolled view = %q, want oldest line visible after wheel up", view)
+	}
+	if strings.Contains(view, "line 8") {
+		t.Fatalf("scrolled view = %q, want latest line hidden after wheel up", view)
+	}
+
+	updated, _ = model.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress}, model.width, model.height)
+	model = updated
+
+	view = model.View()
+	if !strings.Contains(view, "line 8") {
+		t.Fatalf("restored view = %q, want latest line visible after wheel down", view)
+	}
+}
+
+func TestOutputModelPreservesScrollPositionWhenNotAtBottom(t *testing.T) {
+	model := NewOutputModel()
+	model.height = 10
+	model.width = 80
+	for i := 1; i <= 8; i++ {
+		model = model.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: fmt.Sprintf("line %d", i),
+		})
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress}, model.width, model.height)
+	model = updated
+	if model.atBottom {
+		t.Fatal("atBottom = true, want false after scrolling up")
+	}
+
+	model = model.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: "line 9",
+	})
+
+	view := model.View()
+	if strings.Contains(view, "line 9") {
+		t.Fatalf("view after append = %q, want scroll position preserved while not at bottom", view)
 	}
 }
 
@@ -488,16 +706,14 @@ func TestModelAdvancesSpinnerWhileRunning(t *testing.T) {
 
 func TestModelIgnoresLateRuntimeEventsAfterCompletion(t *testing.T) {
 	model := NewModel(Dependencies{}, nil)
-	model.mode = ModeStreaming
-	model.eventsCh = make(chan runtimeevents.Event)
+	model.mode = ModeIdle
 	model.output = model.output.SetPending([]TranscriptLine{
 		{Type: LineTypeAssistant, Content: "partial"},
 	})
 
-	updated, _ := model.Update(RuntimeCompleteMsg{
+	model = model.finishRuntime(RuntimeCompleteMsg{
 		Result: runtime.Result{Status: runtime.RunStatusFinished},
 	})
-	model = updated.(Model)
 
 	if model.mode != ModeIdle {
 		t.Fatalf("mode after completion = %v, want %v", model.mode, ModeIdle)
@@ -518,6 +734,48 @@ func TestModelIgnoresLateRuntimeEventsAfterCompletion(t *testing.T) {
 	}
 	if model.eventsCh != nil {
 		t.Fatal("eventsCh should remain nil after late event")
+	}
+}
+
+func TestModelDefersCompletionUntilRuntimeEventsClosed(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeStreaming
+	model.eventsCh = make(chan runtimeevents.Event)
+	model.runtime = model.runtime.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model.runtime = model.runtime.ApplyEvent(runtimeevents.TextPart{Text: "partial"})
+	model.output = model.output.SetPending(model.runtime.ToLines())
+
+	updated, cmd := model.Update(RuntimeCompleteMsg{
+		Result: runtime.Result{Status: runtime.RunStatusFinished},
+	})
+	model = updated.(Model)
+
+	if cmd != nil {
+		t.Fatalf("cmd after completion = %#v, want nil while waiting for drain", cmd)
+	}
+	if model.mode != ModeStreaming {
+		t.Fatalf("mode after early completion = %v, want %v", model.mode, ModeStreaming)
+	}
+	if model.pendingCompletion == nil {
+		t.Fatal("pendingCompletion = nil, want deferred completion")
+	}
+
+	updated, _ = model.Update(RuntimeEventsMsg{
+		Events: []runtimeevents.Event{
+			runtimeevents.TextPart{Text: " answer"},
+		},
+		Closed: true,
+	})
+	model = updated.(Model)
+
+	if model.mode != ModeIdle {
+		t.Fatalf("mode after drain = %v, want %v", model.mode, ModeIdle)
+	}
+	if model.pendingCompletion != nil {
+		t.Fatal("pendingCompletion != nil after drain")
+	}
+	if len(model.output.lines) < 2 || model.output.lines[1].Content != "partial answer" {
+		t.Fatalf("flushed transcript = %#v, want final assistant text preserved", model.output.lines)
 	}
 }
 
@@ -550,30 +808,17 @@ func TestStartRuntimeExecutionStreamsEventsBeforeCompletion(t *testing.T) {
 		done <- complete
 	}()
 
-	firstMsg := waitForRuntimeEvents(eventsCh)()
-	firstEvent, ok := firstMsg.(RuntimeEventMsg)
-	if !ok {
-		t.Fatalf("first msg type = %T, want RuntimeEventMsg", firstMsg)
-	}
-	stepBegin, ok := firstEvent.Event.(runtimeevents.StepBegin)
-	if !ok {
-		t.Fatalf("first event type = %T, want StepBegin", firstEvent.Event)
-	}
-	if stepBegin.Number != 1 {
-		t.Fatalf("step number = %d, want 1", stepBegin.Number)
-	}
-
-	secondMsg := waitForRuntimeEvents(eventsCh)()
-	secondEvent, ok := secondMsg.(RuntimeEventMsg)
-	if !ok {
-		t.Fatalf("second msg type = %T, want RuntimeEventMsg", secondMsg)
-	}
-	textPart, ok := secondEvent.Event.(runtimeevents.TextPart)
-	if !ok {
-		t.Fatalf("second event type = %T, want TextPart", secondEvent.Event)
-	}
-	if textPart.Text != "assistant reply" {
-		t.Fatalf("text part = %q, want %q", textPart.Text, "assistant reply")
+	var allEvents []runtimeevents.Event
+	for {
+		msg := waitForRuntimeEvents(eventsCh)()
+		batch, ok := msg.(RuntimeEventsMsg)
+		if !ok {
+			t.Fatalf("event msg type = %T, want RuntimeEventsMsg", msg)
+		}
+		allEvents = append(allEvents, batch.Events...)
+		if batch.Closed {
+			break
+		}
 	}
 
 	complete := <-done
@@ -584,17 +829,64 @@ func TestStartRuntimeExecutionStreamsEventsBeforeCompletion(t *testing.T) {
 		t.Fatalf("completion status = %q, want %q", complete.Result.Status, runtime.RunStatusFinished)
 	}
 
-	thirdMsg := waitForRuntimeEvents(eventsCh)()
-	thirdEvent, ok := thirdMsg.(RuntimeEventMsg)
-	if !ok {
-		t.Fatalf("third msg type = %T, want RuntimeEventMsg", thirdMsg)
+	if len(allEvents) < 3 {
+		t.Fatalf("len(allEvents) = %d, want at least 3", len(allEvents))
 	}
-	if _, ok := thirdEvent.Event.(runtimeevents.StatusUpdate); !ok {
-		t.Fatalf("third event type = %T, want StatusUpdate", thirdEvent.Event)
+	if stepBegin, ok := allEvents[0].(runtimeevents.StepBegin); !ok || stepBegin.Number != 1 {
+		t.Fatalf("first event = %#v, want StepBegin{Number:1}", allEvents[0])
+	}
+	textSeen := false
+	statusSeen := false
+	for _, event := range allEvents[1:] {
+		switch e := event.(type) {
+		case runtimeevents.TextPart:
+			if e.Text == "assistant reply" {
+				textSeen = true
+			}
+		case runtimeevents.StatusUpdate:
+			statusSeen = true
+		}
+	}
+	if !textSeen {
+		t.Fatalf("events = %#v, want assistant text event", allEvents)
+	}
+	if !statusSeen {
+		t.Fatalf("events = %#v, want status update event", allEvents)
+	}
+}
+
+func TestWaitForRuntimeEventsBatchesBufferedEventsAndSignalsClosure(t *testing.T) {
+	eventsCh := make(chan runtimeevents.Event, runtimeEventBatchSize+4)
+	for i := 0; i < runtimeEventBatchSize+4; i++ {
+		eventsCh <- runtimeevents.TextPart{Text: fmt.Sprintf("chunk-%d", i)}
+	}
+	close(eventsCh)
+
+	firstMsg := waitForRuntimeEvents(eventsCh)()
+	firstBatch, ok := firstMsg.(RuntimeEventsMsg)
+	if !ok {
+		t.Fatalf("first msg type = %T, want RuntimeEventsMsg", firstMsg)
+	}
+	if len(firstBatch.Events) != runtimeEventBatchSize {
+		t.Fatalf("first batch len = %d, want %d", len(firstBatch.Events), runtimeEventBatchSize)
+	}
+	if firstBatch.Closed {
+		t.Fatal("first batch closed = true, want false while buffered events remain")
 	}
 
-	if msg := waitForRuntimeEvents(eventsCh)(); msg != nil {
-		t.Fatalf("final msg = %#v, want nil after closed channel", msg)
+	secondMsg := waitForRuntimeEvents(eventsCh)()
+	secondBatch, ok := secondMsg.(RuntimeEventsMsg)
+	if !ok {
+		t.Fatalf("second msg type = %T, want RuntimeEventsMsg", secondMsg)
+	}
+	if len(secondBatch.Events) != 4 {
+		t.Fatalf("second batch len = %d, want 4", len(secondBatch.Events))
+	}
+	if !secondBatch.Closed {
+		t.Fatal("second batch closed = false, want true after channel drain")
+	}
+	if got := secondBatch.Events[3].(runtimeevents.TextPart).Text; got != "chunk-67" {
+		t.Fatalf("last event text = %q, want %q", got, "chunk-67")
 	}
 }
 

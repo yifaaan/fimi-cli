@@ -8,10 +8,19 @@ import (
 	"github.com/charmbracelet/bubbletea"
 )
 
+const runtimeEventBatchSize = 64
+
 // RuntimeEventMsg 包装一个 runtime 事件，使其成为 Bubble Tea 消息。
 // 这允许将现有的 channel-based 事件系统桥接到 Bubble Tea 的消息循环。
 type RuntimeEventMsg struct {
 	Event runtimeevents.Event
+}
+
+// RuntimeEventsMsg 批量传递 runtime 事件，并显式标记事件流是否已关闭。
+// 这样可以降低高频流式输出导致的 UI 重绘压力，并确保尾部事件先于完成态被消费。
+type RuntimeEventsMsg struct {
+	Events []runtimeevents.Event
+	Closed bool
 }
 
 // InputSubmitMsg 表示用户提交了一个 prompt。
@@ -47,15 +56,34 @@ type ClearMsg struct{}
 // QuitMsg 表示用户请求退出。
 type QuitMsg struct{}
 
-// waitForRuntimeEvents 返回一个 Bubble Tea 命令，
-// 该命令会阻塞直到从 channel 收到一个事件。
-// 这是连接 runtime 事件系统和 Bubble Tea 消息系统的关键桥梁。
+// waitForRuntimeEvents 返回一个 Bubble Tea 命令。
+// 它会阻塞等待首个事件，然后尽可能多地批量提取后续已缓冲事件，
+// 避免在流式输出时为每个 token 触发一次完整 UI 更新。
 func waitForRuntimeEvents(ch <-chan runtimeevents.Event) tea.Cmd {
 	return func() tea.Msg {
-		if event, ok := <-ch; ok {
-			return RuntimeEventMsg{Event: event}
+		first, ok := <-ch
+		if !ok {
+			return RuntimeEventsMsg{Closed: true}
 		}
-		// Channel 已关闭，返回 nil 表示无更多消息
-		return nil
+
+		events := make([]runtimeevents.Event, 0, runtimeEventBatchSize)
+		events = append(events, first)
+
+		for len(events) < runtimeEventBatchSize {
+			select {
+			case event, ok := <-ch:
+				if !ok {
+					return RuntimeEventsMsg{
+						Events: events,
+						Closed: true,
+					}
+				}
+				events = append(events, event)
+			default:
+				return RuntimeEventsMsg{Events: events}
+			}
+		}
+
+		return RuntimeEventsMsg{Events: events}
 	}
 }

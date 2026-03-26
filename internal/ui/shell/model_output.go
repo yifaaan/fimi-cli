@@ -46,6 +46,8 @@ type OutputModel struct {
 	height int
 	// 是否自动滚动到底部
 	atBottom bool
+	// 相对底部的滚动偏移量（按行）
+	scrollOffset int
 }
 
 // NewOutputModel 创建一个新的输出模型。
@@ -61,12 +63,18 @@ func NewOutputModel() OutputModel {
 func (m OutputModel) AppendLine(line TranscriptLine) OutputModel {
 	line.Time = time.Now()
 	m.lines = append(m.lines, line)
+	if m.atBottom {
+		m.scrollOffset = 0
+	}
 	return m
 }
 
 // SetPending 用最新快照替换实时内容。
 func (m OutputModel) SetPending(lines []TranscriptLine) OutputModel {
 	m.pending = append([]TranscriptLine(nil), lines...)
+	if m.atBottom {
+		m.scrollOffset = 0
+	}
 	return m
 }
 
@@ -74,6 +82,9 @@ func (m OutputModel) SetPending(lines []TranscriptLine) OutputModel {
 func (m OutputModel) FlushPending() OutputModel {
 	m.lines = append(m.lines, m.pending...)
 	m.pending = nil
+	if m.atBottom {
+		m.scrollOffset = 0
+	}
 	return m
 }
 
@@ -81,6 +92,8 @@ func (m OutputModel) FlushPending() OutputModel {
 func (m OutputModel) Clear() OutputModel {
 	m.lines = nil
 	m.pending = nil
+	m.scrollOffset = 0
+	m.atBottom = true
 	return m
 }
 
@@ -88,6 +101,26 @@ func (m OutputModel) Clear() OutputModel {
 func (m OutputModel) Update(msg tea.Msg, width, height int) (OutputModel, tea.Cmd) {
 	m.width = width
 	m.height = height
+	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.scrollUp(3)
+		case tea.MouseButtonWheelDown:
+			m.scrollDown(3)
+		}
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "pgup":
+			m.scrollUp(m.visibleHeight())
+		case "pgdown":
+			m.scrollDown(m.visibleHeight())
+		case "home":
+			m.scrollToTop()
+		case "end":
+			m.scrollToBottom()
+		}
+	}
 	return m, nil
 }
 
@@ -108,13 +141,10 @@ func (m OutputModel) View() string {
 	}
 
 	// 只显示最后 N 行
-	startIdx := 0
-	if len(allLines) > availableHeight {
-		startIdx = len(allLines) - availableHeight
-	}
+	startIdx, endIdx := m.visibleRange(len(allLines), availableHeight)
 
 	var b strings.Builder
-	for i := startIdx; i < len(allLines); i++ {
+	for i := startIdx; i < endIdx; i++ {
 		line := allLines[i]
 		b.WriteString(m.renderLine(line))
 		b.WriteString("\n")
@@ -155,4 +185,94 @@ func (m OutputModel) renderLine(line TranscriptLine) string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, prefix, " ", content)
 	}
 	return content
+}
+
+func (m OutputModel) visibleHeight() int {
+	availableHeight := m.height - 6
+	if availableHeight < 5 {
+		availableHeight = 5
+	}
+
+	return availableHeight
+}
+
+func (m OutputModel) totalLines() int {
+	return len(m.lines) + len(m.pending)
+}
+
+func (m *OutputModel) scrollUp(lines int) {
+	if lines <= 0 {
+		return
+	}
+
+	maxOffset := m.maxScrollOffset()
+	if maxOffset <= 0 {
+		m.scrollOffset = 0
+		m.atBottom = true
+		return
+	}
+
+	m.scrollOffset += lines
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+	m.atBottom = m.scrollOffset == 0
+}
+
+func (m *OutputModel) scrollDown(lines int) {
+	if lines <= 0 {
+		return
+	}
+
+	m.scrollOffset -= lines
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+	m.atBottom = m.scrollOffset == 0
+}
+
+func (m *OutputModel) scrollToTop() {
+	m.scrollOffset = m.maxScrollOffset()
+	m.atBottom = m.scrollOffset == 0
+}
+
+func (m *OutputModel) scrollToBottom() {
+	m.scrollOffset = 0
+	m.atBottom = true
+}
+
+func (m OutputModel) maxScrollOffset() int {
+	total := m.totalLines()
+	visible := m.visibleHeight()
+	if total <= visible {
+		return 0
+	}
+
+	return total - visible
+}
+
+func (m OutputModel) visibleRange(totalLines int, visibleHeight int) (int, int) {
+	if totalLines <= visibleHeight {
+		return 0, totalLines
+	}
+
+	maxOffset := totalLines - visibleHeight
+	offset := m.scrollOffset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+
+	startIdx := totalLines - visibleHeight - offset
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	endIdx := startIdx + visibleHeight
+	if endIdx > totalLines {
+		endIdx = totalLines
+	}
+
+	return startIdx, endIdx
 }

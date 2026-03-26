@@ -115,6 +115,7 @@ func runBubbleTeaMode(ctx context.Context, deps Dependencies, history *historySt
 		tea.WithInput(deps.Input),
 		tea.WithOutput(deps.Output),
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 
 	// 在 goroutine 中运行，以便处理 context 取消

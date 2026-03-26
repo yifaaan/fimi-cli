@@ -49,6 +49,8 @@ type Model struct {
 
 	// 运行时事件通道 (由 Run() 创建)
 	eventsCh <-chan runtimeevents.Event
+	// runtime 已结束，但仍需等待尾部事件排空后再切回 idle。
+	pendingCompletion *RuntimeCompleteMsg
 }
 
 // NewModel 创建一个新的 Bubble Tea 模型。
@@ -82,7 +84,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		var outputCmd tea.Cmd
+		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
+		if outputCmd != nil {
+			cmds = append(cmds, outputCmd)
+		}
 		return m.handleKeyPress(msg)
+
+	case tea.MouseMsg:
+		var outputCmd tea.Cmd
+		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
+		return m, outputCmd
 
 	case spinner.TickMsg:
 		if m.mode == ModeIdle {
@@ -102,35 +114,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(inputCmd, outputCmd)
 
 	case RuntimeEventMsg:
-		// RuntimeCompleteMsg 可能先于尾部缓冲事件到达。
-		// 当前 run 已结束后，迟到事件不能再把 UI 切回运行中。
-		if m.eventsCh == nil {
-			return m, nil
-		}
-		m.runtime = m.runtime.ApplyEvent(msg.Event)
-		m.mode = ModeStreaming
-		// runtime.ToLines 返回的是当前完整快照，这里要整体替换而不是持续追加。
-		m.output = m.output.SetPending(m.runtime.ToLines())
-		return m, tea.Batch(
-			m.runtime.SpinnerCmd(),
-			waitForRuntimeEvents(m.eventsCh),
-		)
+		return m.handleRuntimeEvents(RuntimeEventsMsg{
+			Events: []runtimeevents.Event{msg.Event},
+		})
+
+	case RuntimeEventsMsg:
+		return m.handleRuntimeEvents(msg)
 
 	case InputSubmitMsg:
 		return m.handleSubmit(msg.Text)
 
 	case RuntimeCompleteMsg:
-		m.mode = ModeIdle
-		m.output = m.output.FlushPending()
-		m.runtime = m.runtime.Reset()
-		m.eventsCh = nil
-		if msg.Err != nil {
-			m.err = msg.Err
-			m.output = m.output.AppendLine(TranscriptLine{
-				Type:    LineTypeError,
-				Content: fmt.Sprintf("Error: %v", msg.Err),
-			})
+		// 先等待事件通道排空，再进入最终完成态，避免尾部流式内容丢失。
+		if m.eventsCh != nil {
+			complete := msg
+			m.pendingCompletion = &complete
+			return m, nil
 		}
+		m = m.finishRuntime(msg)
 		return m, nil
 
 	case ClearMsg:
@@ -253,6 +254,11 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	switch msg.String() {
+	case "pgup", "pgdown", "home", "end":
+		return m, nil
+	}
+
 	// 如果正在处理，忽略大部分输入
 	if m.mode != ModeIdle {
 		return m, nil
@@ -296,7 +302,7 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	m.mode = ModeThinking
 
 	// 启动 runtime 执行
-	eventsCh := make(chan runtimeevents.Event, 32)
+	eventsCh := make(chan runtimeevents.Event, 256)
 	m.eventsCh = eventsCh
 
 	return m, tea.Batch(
@@ -304,6 +310,58 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		waitForRuntimeEvents(eventsCh),
 		m.startRuntimeExecution(text, eventsCh),
 	)
+}
+
+func (m Model) handleRuntimeEvents(msg RuntimeEventsMsg) (tea.Model, tea.Cmd) {
+	// 已完成后迟到的事件批次不能再污染 UI。
+	if m.eventsCh == nil && !msg.Closed {
+		return m, nil
+	}
+
+	for _, event := range msg.Events {
+		if stepBegin, ok := event.(runtimeevents.StepBegin); ok && stepBegin.Number > 1 {
+			m.output = m.output.FlushPending()
+		}
+		m.runtime = m.runtime.ApplyEvent(event)
+		m.mode = ModeStreaming
+		// pending 持有“当前 step 的完整快照”。
+		// 遇到新的 StepBegin 时，上一个 step 已先 flush 到 transcript。
+		m.output = m.output.SetPending(m.runtime.ToLines())
+	}
+
+	if msg.Closed {
+		m.eventsCh = nil
+		if m.pendingCompletion != nil {
+			m = m.finishRuntime(*m.pendingCompletion)
+		}
+		return m, nil
+	}
+
+	if m.eventsCh == nil {
+		return m, nil
+	}
+
+	return m, tea.Batch(
+		m.runtime.SpinnerCmd(),
+		waitForRuntimeEvents(m.eventsCh),
+	)
+}
+
+func (m Model) finishRuntime(msg RuntimeCompleteMsg) Model {
+	m.mode = ModeIdle
+	m.output = m.output.FlushPending()
+	m.runtime = m.runtime.Reset()
+	m.eventsCh = nil
+	m.pendingCompletion = nil
+	if msg.Err != nil {
+		m.err = msg.Err
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("Error: %v", msg.Err),
+		})
+	}
+
+	return m
 }
 
 // handleCommand 处理 slash 命令。
@@ -349,10 +407,10 @@ func (m Model) startRuntimeExecution(prompt string, eventsCh chan runtimeevents.
 
 		// 执行 runtime
 		result, err := runner.Run(context.Background(), m.deps.Store, runtime.Input{
-				Prompt:       prompt,
-				Model:        m.deps.ModelName,
-				SystemPrompt: m.deps.SystemPrompt,
-			})
+			Prompt:       prompt,
+			Model:        m.deps.ModelName,
+			SystemPrompt: m.deps.SystemPrompt,
+		})
 
 		close(eventsCh)
 
@@ -370,20 +428,9 @@ func (m Model) renderLiveStatus() string {
 		parts = append(parts, spinner)
 	}
 
-	// 步骤指示器
-	if m.runtime.Step > 0 {
-		stepText := styles.StepStyle.Render(fmt.Sprintf("Step %d", m.runtime.Step))
-		parts = append(parts, stepText)
-	}
-
 	// 工具信息
 	if toolCard := m.runtime.ToolCardView(m.width - 4); toolCard != "" {
 		parts = append(parts, toolCard)
-	}
-
-	// 流式助手文本
-	if m.runtime.AssistantText != "" {
-		parts = append(parts, m.runtime.AssistantText)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
