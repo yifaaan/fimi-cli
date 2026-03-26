@@ -252,6 +252,13 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 清屏
 		m.output = m.output.Clear()
 		return m, nil
+
+	case "ctrl+o":
+		// 切换工具结果折叠状态
+		var toggled bool
+		m.output, toggled = m.output.ToggleExpand()
+		_ = toggled // 忽略返回值，即使没有切换也刷新界面
+		return m, nil
 	}
 
 	switch msg.String() {
