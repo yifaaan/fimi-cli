@@ -5,7 +5,7 @@
 This file tracks the migration gap between the Python reference implementation in `temp/`
 and the current Go rewrite.
 
-Updated: 2026-03-25
+Updated: 2026-03-26
 
 The previous version of this plan was outdated in two important ways:
 
@@ -59,13 +59,11 @@ The Python reference is broader than the old plan implied. The important source 
 
 ### Agent spec / delegation / tools
 
-- `temp/src/kimi_cli/agentspec.py`
+- `temp/src/kimi_cli/agent.py`
   - `extend`
-  - `system_prompt_args` merge
   - `model`
-  - `when_to_use`
+  - `system_prompt_args` merge
   - `tools`
-  - `allowed_tools`
   - `exclude_tools`
   - `subagents`
 - `temp/src/kimi_cli/subagents/`
@@ -90,7 +88,7 @@ The Python reference is broader than the old plan implied. The important source 
 
 ## Current Go Snapshot
 
-As of 2026-03-25, the Go rewrite already has more than the old plan credited it for.
+As of 2026-03-26, the Go rewrite already has more than the old plan credited it for.
 
 ### Implemented
 
@@ -102,8 +100,10 @@ As of 2026-03-25, the Go rewrite already has more than the old plan credited it 
 - multi-step runtime loop
 - tool-call execution loop
 - token usage persistence
-- agent spec loading with `extend`
+- agent spec loading with `extend`, `extend: default`, `model`, `exclude_tools`, `subagents`
 - system prompt template expansion
+- foreground declared subagent loading and execution
+- isolated subagent history files
 - LLM engine boundary
 - OpenAI-compatible and Qwen-compatible providers
 - streaming LLM seam
@@ -115,7 +115,7 @@ As of 2026-03-25, the Go rewrite already has more than the old plan credited it 
   - non-TTY transcript fallback
   - `/help`, `/clear`, `/exit`
   - shell history persistence
-- builtin tool runtime with 7 handlers:
+- builtin tool runtime with 7 local handlers:
   - `bash`
   - `read_file`
   - `glob`
@@ -123,12 +123,16 @@ As of 2026-03-25, the Go rewrite already has more than the old plan credited it 
   - `write_file`
   - `replace_file`
   - `patch_file`
+- app-wired delegation tool:
+  - `agent`
 
 ### Important nuance
 
-- builtin tool runtime exposes 7 tools, but the default agent currently enables 6 of them
+- tool registry exposes 8 definitions total: 7 local tools + 1 delegation tool
+- the default agent currently enables 7 tools and leaves `patch_file` disabled
 - shell UI exists, but it is still much smaller than Python shell mode
 - streaming exists for text and tool-call deltas, but protocol coverage is still narrower than Python
+- foreground subagent delegation exists, but background task orchestration does not
 
 ---
 
@@ -190,12 +194,13 @@ Python target in temp
 | Shell UI | rich shell suite | minimal shell/live shell | `partial` |
 | ACP mode | yes | no | `missing` |
 | Agent spec `extend` | yes | yes | `done` |
-| Agent spec `model` / `when_to_use` / `allowed_tools` | yes | no | `missing` |
-| Agent spec `exclude_tools` / `subagents` | yes | no | `missing` |
+| Agent spec `extend: default` | yes | yes | `done` |
+| Agent spec `model` | yes | yes | `done` |
+| Agent spec `exclude_tools` / `subagents` | yes | yes | `done` |
 | Local file/command tools | yes | yes | `done` |
 | Web tools | yes | no | `missing` |
 | Think / todo tools | yes | no | `missing` |
-| Agent / subagent delegation | yes | no | `missing` |
+| Agent / subagent delegation | yes | foreground-only | `partial` |
 | Background task tools/store | yes | no | `missing` |
 | MCP tool bridge | yes | no | `missing` |
 | D-Mail protocol | yes | no | `missing` |
@@ -209,19 +214,19 @@ Python target in temp
 | `temp/src/kimi_cli/app.py` | `cmd/fimi` + `internal/app` | `done` |
 | `temp/src/kimi_cli/config.py` | `internal/config` | `partial` |
 | `temp/src/kimi_cli/metadata.py` / session files | `internal/session` | `done` |
-| `temp/src/kimi_cli/agentspec.py` | `internal/agentspec` | `partial` |
+| `temp/src/kimi_cli/agent.py` | `internal/agentspec` + `internal/app` | `partial` |
 | `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | `partial` |
 | `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | `done` |
 | `temp/src/kimi_cli/wire/types.py` | `internal/runtime/events` | `partial` |
 | `temp/src/kimi_cli/ui/print/` | `internal/ui/printui` | `partial` |
 | `temp/src/kimi_cli/ui/shell/` | `internal/ui/shell` | `partial` |
 | `temp/src/kimi_cli/ui/acp/` | - | `missing` |
-| `temp/src/kimi_cli/subagents/` | - | `missing` |
+| `temp/src/kimi_cli/subagents/` | `internal/app` + `internal/session` subagent history path | `partial` |
 | `temp/src/kimi_cli/soul/toolset.py` MCP/tool loading parts | `internal/tools` + app wiring | `missing` |
 | `temp/src/kimi_cli/tools/web/` | - | `missing` |
 | `temp/src/kimi_cli/tools/think/` | - | `missing` |
 | `temp/src/kimi_cli/tools/todo/` | - | `missing` |
-| `temp/src/kimi_cli/tools/agent/` | - | `missing` |
+| `temp/src/kimi_cli/tools/task/` | `internal/tools/agent.go` + `internal/app` | `partial` |
 | `temp/src/kimi_cli/tools/background/` | - | `missing` |
 | `temp/src/kimi_cli/tools/dmail/` | - | `missing` |
 | `temp/src/kimi_cli/cli/mcp.py` | - | `missing` |
@@ -236,14 +241,13 @@ The next roadmap should follow the actual dependency chain, not the old shell/st
 
 Goal: make agent definitions expressive enough to match the Python model before building delegation.
 
-- [ ] add `model` to `internal/agentspec.Spec`
-- [ ] add `when_to_use`
-- [ ] add `allowed_tools`
-- [ ] add `exclude_tools`
-- [ ] add `subagents`
-- [ ] keep current inheritance rule for `system_prompt_args` merge
-- [ ] add overwrite semantics for `tools`, `allowed_tools`, `exclude_tools`, `subagents`
-- [ ] apply `exclude_tools` during tool resolution in app wiring
+- [x] add `model` to `internal/agentspec.Spec`
+- [x] add `exclude_tools`
+- [x] add `subagents`
+- [x] keep current inheritance rule for `system_prompt_args` merge
+- [x] add overwrite semantics for `tools`, `exclude_tools`, `subagents`
+- [x] apply `exclude_tools` during tool resolution in app wiring
+- [x] add `extend: default` compatibility
 
 Why now:
 
@@ -255,11 +259,11 @@ Why now:
 
 Goal: match the Python `Agent` tool at a minimal useful level.
 
-- [ ] add an `agent` or `task` tool contract
-- [ ] load subagent specs by declared name
-- [ ] create isolated subagent history/context
-- [ ] run a subagent with its own tools/system prompt/model
-- [ ] return final summary to the parent run
+- [x] add an `agent` tool contract
+- [x] load subagent specs by declared name
+- [x] create isolated subagent history/context
+- [x] run a subagent with its own tools/system prompt/model
+- [x] return final assistant summary text to the parent run
 
 Keep out of this phase unless necessary:
 
@@ -329,11 +333,11 @@ Goal: add machine-facing transport parity after the runtime/event model is wide 
 
 These are the real next steps now:
 
-1. agent spec parity: `exclude_tools` and `subagents` first
-2. minimal subagent delegation path
-3. services config + web tools
-4. MCP integration
-5. event protocol widening + `stream-json`
+1. services config + web tools
+2. think / todo tools
+3. MCP integration
+4. event protocol widening + `stream-json`
+5. background task model on top of the current foreground delegation path
 
 Not immediate anymore:
 
@@ -395,7 +399,7 @@ internal/runtime            core agent logic
   |     +-- MCP bridge
   |     +-- delegation tool
   |
-  +-- subagents             planned
+  +-- subagents             minimal foreground path exists in app; dedicated module planned
   +-- dmail                 planned
 ```
 
@@ -413,7 +417,7 @@ Good migration discipline:
 
 Bad shortcuts to avoid:
 
-- building subagents before agent spec can describe them
+- building background task orchestration before the foreground subagent boundary is stable
 - mixing service config into model provider config without a clear boundary
 - bolting MCP directly into runtime branches
 - implementing D-Mail before the event/runtime protocol has stable extension points
