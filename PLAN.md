@@ -2,93 +2,144 @@
 
 ## Purpose
 
-This file tracks the migration gap between the Python reference implementation in `temp/`
+This file tracks the migration gap between the Python reference snapshot in `temp/`
 and the current Go rewrite.
 
 Updated: 2026-03-26
 
-The previous version of this plan was outdated in two important ways:
+This version is based on the files that actually exist in this checkout.
+The previous version mixed in capabilities and paths from a broader/upstream reference
+that are not present in the checked `temp/` tree.
 
-- it still treated shell UI as "not started"
-- it still treated streaming LLM support as "missing"
+The biggest corrections are:
 
-Both are already present in the Go codebase. The real remaining gap is now mostly:
+- shell UI is already implemented in Go
+- streaming LLM support is already implemented in Go
+- `think` and `set_todo_list` are already implemented in Go
+- foreground declared-subagent delegation is already implemented in Go
+- the checked Python snapshot does **not** contain:
+  - `temp/src/kimi_cli/wire/types.py`
+  - `temp/src/kimi_cli/subagents/`
+  - `temp/src/kimi_cli/soul/toolset.py`
+  - `temp/src/kimi_cli/cli/mcp.py`
+  - `temp/src/kimi_cli/tools/background/`
 
-- richer agent spec parity
-- subagent / task delegation
+That means the real remaining gap in this repo is now mostly:
+
 - web tools
 - MCP integration
-- wider event protocol parity
-- D-Mail / ACP / `stream-json`
+- `stream-json` print mode
+- ACP transport mode
+- shell parity (`/compact`, richer meta-command surface)
+- D-Mail runtime integration
+- a few Go-side wiring/correctness gaps, especially around declared subagent model override
 
 ---
 
 ## Reference Baseline In `temp/`
 
-The Python reference is broader than the old plan implied. The important source files are:
+This section lists the Python reference files that are actually present in this checkout.
+Anything not listed here should not be treated as a parity requirement unless a newer
+reference snapshot is imported later.
 
 ### Runtime / protocol
 
 - `temp/src/kimi_cli/soul/kimisoul.py`
   - main turn loop
-  - step loop with retries
-  - checkpoint management
+  - per-step retry loop with retryable provider errors
+  - checkpointing before run / steps
   - D-Mail rollback integration
-  - MCP loading hooks
-  - status updates and streamed content/tool events
-- `temp/src/kimi_cli/wire/types.py`
-  - actual event protocol center
-  - includes `TurnBegin`, `TurnEnd`, `SteerInput`, `StepBegin`, `StepInterrupted`
-  - includes `CompactionBegin`, `CompactionEnd`
-  - includes MCP snapshots, subagent events, approval/question events, notifications
+  - streamed content and tool-call events
+- `temp/src/kimi_cli/soul/context.py`
+  - JSONL history persistence
+  - checkpoint records
+  - revert-to-checkpoint support
+  - usage persistence
+- `temp/src/kimi_cli/soul/event.py`
+  - actual checked event surface in this snapshot
+  - `StepBegin`
+  - `StepInterrupted`
+  - `StatusUpdate`
+  - content parts / tool call / tool call part / tool result flow through the queue
+- `temp/src/kimi_cli/ui/__init__.py`
+  - run coordinator
+  - cancellation boundary between runtime and visualization
 
 ### UI
 
-- `temp/src/kimi_cli/ui/print/visualize.py`
-  - text output
-  - `stream-json` output
-- `temp/src/kimi_cli/ui/shell/`
-  - interactive shell UI
-  - prompt handling
-  - live rendering
-  - approval/question panels
-  - MCP status panel
-  - task browser / replay / export-import helpers
-- `temp/src/kimi_cli/ui/acp/`
-  - ACP-facing UI / transport mode
+- `temp/src/kimi_cli/ui/print/__init__.py`
+  - text output mode
+  - `stream-json` output mode
+- `temp/src/kimi_cli/ui/shell/__init__.py`
+  - interactive prompt loop
+  - live rendering for text / tool / status events
+  - cancellation handling
+- `temp/src/kimi_cli/ui/shell/liveview.py`
+  - live step renderer with tool subtitles and context usage
+- `temp/src/kimi_cli/ui/shell/metacmd.py`
+  - `/help`
+  - `/clear`
+  - `/compact`
+  - `/init`
+  - `/release-notes`
+- `temp/src/kimi_cli/ui/acp/__init__.py`
+  - ACP server mode
+  - prompt / cancel / session transport
+  - tool-call streaming projection
 
 ### Agent spec / delegation / tools
 
 - `temp/src/kimi_cli/agent.py`
   - `extend`
-  - `model`
+  - `name`
+  - `system_prompt_path`
   - `system_prompt_args` merge
   - `tools`
   - `exclude_tools`
   - `subagents`
+  - MCP tool loading via `load_agent_with_mcp`
+- `temp/src/kimi_cli/tools/task/__init__.py`
+  - foreground subagent delegation tool (`Task`)
+- `temp/src/kimi_cli/tools/web/`
+  - `SearchWeb`
+  - `FetchURL`
+- `temp/src/kimi_cli/tools/think/`
+  - `Think`
+- `temp/src/kimi_cli/tools/todo/`
+  - `SetTodoList`
+- `temp/src/kimi_cli/tools/mcp.py`
+  - MCP tool adapter
+- `temp/src/kimi_cli/tools/dmail/`
+  - `SendDMail`
+- `temp/src/kimi_cli/tools/file/`
+  - file tools including patch support in the reference implementation
+
+### Important snapshot caveats
+
+The following paths cited by the previous version are not present in the checked `temp/`
+snapshot and should not drive parity claims in this repo:
+
+- `temp/src/kimi_cli/wire/types.py`
 - `temp/src/kimi_cli/subagents/`
-  - subagent builder / runner / store / model
 - `temp/src/kimi_cli/soul/toolset.py`
-  - tool loading
-  - hidden tools
-  - MCP tool loading and status
-- `temp/src/kimi_cli/tools/`
-  - local tools
-  - web tools
-  - think / todo
-  - plan mode
-  - ask-user
-  - background task tools
-  - D-Mail tool
-  - Agent tool
 - `temp/src/kimi_cli/cli/mcp.py`
-  - MCP config management CLI
+- `temp/src/kimi_cli/tools/background/`
+
+Also note:
+
+- the checked Python snapshot uses `temp/src/kimi_cli/soul/event.py` as its event center,
+  not `wire/types.py`
+- the checked Python snapshot uses a `Task` tool for delegation, not an `Agent` tool
+- broad claims about approval/question panels, MCP status panel, task browser,
+  replay/export helpers, or background-task orchestration are **not** grounded in the
+  checked `temp/` tree
 
 ---
 
 ## Current Go Snapshot
 
-As of 2026-03-26, the Go rewrite already has more than the old plan credited it for.
+As of 2026-03-26, the Go rewrite is further along than the previous version of this
+plan credited it for.
 
 ### Implemented
 
@@ -96,11 +147,16 @@ As of 2026-03-26, the Go rewrite already has more than the old plan credited it 
 - config loading with models/providers
 - session create / continue flow
 - JSONL history persistence
-- checkpoint create / revert
+- checkpoint create / revert in `internal/contextstore`
 - multi-step runtime loop
 - tool-call execution loop
 - token usage persistence
-- agent spec loading with `extend`, `extend: default`, `model`, `exclude_tools`, `subagents`
+- agent spec loading with:
+  - `extend`
+  - `extend: default`
+  - `model`
+  - `exclude_tools`
+  - `subagents`
 - system prompt template expansion
 - foreground declared subagent loading and execution
 - isolated subagent history files
@@ -108,14 +164,17 @@ As of 2026-03-26, the Go rewrite already has more than the old plan credited it 
 - OpenAI-compatible and Qwen-compatible providers
 - streaming LLM seam
 - runtime event sink boundary
-- print visualizer
+- print visualizer (text mode)
 - shell UI with:
   - REPL loop
   - TTY live mode
   - non-TTY transcript fallback
-  - `/help`, `/clear`, `/exit`
+  - `/help`, `/clear`, `/exit`, `/quit`
   - shell history persistence
-- builtin tool runtime with 7 local handlers:
+- builtin tool runtime with 10 registered tool definitions:
+  - `agent`
+  - `think`
+  - `set_todo_list`
   - `bash`
   - `read_file`
   - `glob`
@@ -123,36 +182,53 @@ As of 2026-03-26, the Go rewrite already has more than the old plan credited it 
   - `write_file`
   - `replace_file`
   - `patch_file`
-- app-wired delegation tool:
-  - `agent`
 
 ### Important nuance
 
-- tool registry exposes 8 definitions total: 7 local tools + 1 delegation tool
-- the default agent currently enables 7 tools and leaves `patch_file` disabled
-- shell UI exists, but it is still much smaller than Python shell mode
-- streaming exists for text and tool-call deltas, but protocol coverage is still narrower than Python
-- foreground subagent delegation exists, but background task orchestration does not
+- the default agent currently enables 9 tools and leaves `patch_file` disabled
+- `think` and `set_todo_list` are not just registered; they also have Go execution handlers
+- print UI exists, but it is text-only; there is no `stream-json` mode yet
+- shell UI exists and is usable, but it is still smaller than the Python shell path
+- current runtime event coverage is still narrow:
+  - `step_begin`
+  - `step_interrupted`
+  - `status_update`
+  - `text_part`
+  - `tool_call`
+  - `tool_call_part`
+  - `tool_result`
+- checkpoint/revert exists at storage level, but runtime-integrated rollback / D-Mail semantics do not
+- Go has gone beyond the checked Python snapshot by adding agent-spec `model`
+- top-level agent model override is wired through app/runtime selection
+- declared subagent runs still pass the parent-resolved runtime model into `runtime.Input`,
+  so per-subagent model override parity is not fully closed yet
 
 ---
 
-## What The Old Plan Got Wrong
+## What The Previous Plan Got Wrong
 
 These statements were inaccurate and should no longer guide the roadmap:
 
 - "Shell UI not started"
 - "UI mode is print only"
 - "Streaming LLM response is missing"
-- "`internal/runtime/events` is missing streaming events"
-- "`internal/ui/shell` is TODO"
-- "Streaming LLM seam" and "Shell UI basics" should be the top next steps
+- "Agent spec `exclude_tools` / `subagents` are missing in Go"
+- "Foreground subagent delegation is missing in Go"
+- "Think / todo tools are missing in Go"
+- "The Python event reference should point to `temp/src/kimi_cli/wire/types.py`"
+- "Background task tooling is part of the checked Python snapshot and should be a near-term parity target"
+- Python-shell claims about approvals/questions panels, MCP status panel, task browser,
+  replay/export helpers, and similar richer surfaces
 
 More accurate replacements:
 
-- shell UI is implemented, but lacks Python's richer interaction surface
-- streaming is implemented, but only for a smaller event family
-- the next priority is agent/delegation/tooling parity, not basic shell/streaming enablement
-- Python event references should point to `temp/src/kimi_cli/wire/types.py`, not a simplified `soul/event.py`
+- shell UI is implemented in Go, but still smaller than the Python shell path
+- streaming is implemented in Go for text and tool-call deltas
+- Go already has `exclude_tools`, `subagents`, foreground delegation, `think`, and `set_todo_list`
+- the checked Python event reference is `temp/src/kimi_cli/soul/event.py`
+- the real missing parity target is now mostly web/MCP/ACP/`stream-json`/D-Mail/shell-compaction
+- background task orchestration should be treated as a separate future feature unless a newer
+  reference snapshot is imported
 
 ---
 
@@ -160,50 +236,66 @@ More accurate replacements:
 
 ```text
 Current Go
-  = app entry + config + sessions + context/history + checkpoints +
-    multi-step runtime + local tool execution + streaming seam +
-    print visualizer + shell UI
+  = app entry + config + sessions + context/history + checkpoint store +
+    multi-step runtime + local tools + think/todo + foreground subagents +
+    streaming seam + print text UI + shell UI
 
 Python target in temp
   = current Go core +
-    richer agent spec +
-    subagent runtime +
+    stream-json print mode +
+    ACP transport mode +
     web tools +
-    MCP loading/config/tool bridge +
-    wider event protocol +
-    D-Mail +
-    ACP +
-    stream-json
+    MCP tool loading +
+    shell /compact and a richer meta-command surface +
+    D-Mail runtime rollback
 ```
 
 ### Capability Matrix
 
-| Area | Python reference | Current Go | Status |
+Rows marked `extra` mean Go already has a capability that is not part of the checked
+Python snapshot.
+
+| Area | Python reference in `temp/` | Current Go | Status |
 | --- | --- | --- | --- |
 | Entry / app wiring | yes | yes | `done` |
 | Config: models/providers | yes | yes | `done` |
-| Config: services / MCP | yes | no | `missing` |
 | Session create/continue | yes | yes | `done` |
 | Context history | yes | yes | `done` |
-| Checkpoint / revert | yes | yes | `done` |
+| Checkpoint / revert storage | yes | yes | `done` |
+| Runtime-managed rollback / D-Mail | yes | no | `missing` |
 | Multi-step runtime | yes | yes | `done` |
-| Step retry | provider-aware retry/backoff | simple retry loop | `partial` |
+| Step retry | provider-aware retry loop | simple retryable loop | `partial` |
 | Streaming text/tool deltas | yes | yes | `done` |
-| Turn / compaction / MCP / subagent event families | yes | no | `missing` |
-| Print UI | text + `stream-json` | text only | `partial` |
-| Shell UI | rich shell suite | minimal shell/live shell | `partial` |
+| Core runtime event family (`step/status/text/tool`) | yes | yes | `done` |
+| Print UI: text | yes | yes | `done` |
+| Print UI: `stream-json` | yes | no | `missing` |
+| Shell UI: live step/tool/status rendering | yes | yes | `partial` |
+| Shell meta commands | richer set incl. `/compact` | basic set only | `partial` |
 | ACP mode | yes | no | `missing` |
 | Agent spec `extend` | yes | yes | `done` |
-| Agent spec `extend: default` | yes | yes | `done` |
-| Agent spec `model` | yes | yes | `done` |
 | Agent spec `exclude_tools` / `subagents` | yes | yes | `done` |
+| Agent spec `model` | no | yes | `extra` |
+| Think tool | yes | yes | `done` |
+| Todo tool | yes | yes | `done` |
 | Local file/command tools | yes | yes | `done` |
 | Web tools | yes | no | `missing` |
-| Think / todo tools | yes | no | `missing` |
-| Agent / subagent delegation | yes | foreground-only | `partial` |
-| Background task tools/store | yes | no | `missing` |
+| Foreground subagent delegation | yes | yes, but smaller surface | `partial` |
 | MCP tool bridge | yes | no | `missing` |
-| D-Mail protocol | yes | no | `missing` |
+| Patch tool implementation | yes | yes | `done` |
+
+### Things intentionally removed from the parity target
+
+The following are **not** treated as current migration gaps, because they are not backed
+by the checked `temp/` snapshot:
+
+- background task tools/store
+- approval/question event families
+- task browser / replay / export UI
+- broad MCP status panel UI
+- `wire/types.py`-style wider protocol families
+
+If we later import a newer Python reference snapshot that contains those features,
+add a second plan or reopen this one with that newer snapshot as the baseline.
 
 ---
 
@@ -211,121 +303,95 @@ Python target in temp
 
 | Python reference | Go target | Status |
 | --- | --- | --- |
-| `temp/src/kimi_cli/app.py` | `cmd/fimi` + `internal/app` | `done` |
+| `temp/src/kimi_cli/__init__.py` | `cmd/fimi` + `internal/app` | `done` |
 | `temp/src/kimi_cli/config.py` | `internal/config` | `partial` |
-| `temp/src/kimi_cli/metadata.py` / session files | `internal/session` | `done` |
+| `temp/src/kimi_cli/metadata.py` | `internal/session` | `done` |
 | `temp/src/kimi_cli/agent.py` | `internal/agentspec` + `internal/app` | `partial` |
 | `temp/src/kimi_cli/soul/kimisoul.py` | `internal/runtime` | `partial` |
-| `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | `done` |
-| `temp/src/kimi_cli/wire/types.py` | `internal/runtime/events` | `partial` |
-| `temp/src/kimi_cli/ui/print/` | `internal/ui/printui` | `partial` |
-| `temp/src/kimi_cli/ui/shell/` | `internal/ui/shell` | `partial` |
-| `temp/src/kimi_cli/ui/acp/` | - | `missing` |
-| `temp/src/kimi_cli/subagents/` | `internal/app` + `internal/session` subagent history path | `partial` |
-| `temp/src/kimi_cli/soul/toolset.py` MCP/tool loading parts | `internal/tools` + app wiring | `missing` |
+| `temp/src/kimi_cli/soul/context.py` | `internal/contextstore` | `partial` |
+| `temp/src/kimi_cli/soul/event.py` | `internal/runtime/events` | `done` |
+| `temp/src/kimi_cli/ui/print/__init__.py` | `internal/ui/printui` | `partial` |
+| `temp/src/kimi_cli/ui/shell/__init__.py` + `liveview.py` + `metacmd.py` | `internal/ui/shell` | `partial` |
+| `temp/src/kimi_cli/ui/acp/__init__.py` | - | `missing` |
+| `temp/src/kimi_cli/tools/task/__init__.py` | `internal/tools/agent.go` + `internal/app` | `partial` |
 | `temp/src/kimi_cli/tools/web/` | - | `missing` |
-| `temp/src/kimi_cli/tools/think/` | - | `missing` |
-| `temp/src/kimi_cli/tools/todo/` | - | `missing` |
-| `temp/src/kimi_cli/tools/task/` | `internal/tools/agent.go` + `internal/app` | `partial` |
-| `temp/src/kimi_cli/tools/background/` | - | `missing` |
+| `temp/src/kimi_cli/tools/think/` | `internal/tools/builtin.go` + registry/app wiring | `done` |
+| `temp/src/kimi_cli/tools/todo/` | `internal/tools/builtin.go` + registry/app wiring | `done` |
+| `temp/src/kimi_cli/tools/mcp.py` | - | `missing` |
 | `temp/src/kimi_cli/tools/dmail/` | - | `missing` |
-| `temp/src/kimi_cli/cli/mcp.py` | - | `missing` |
+| `temp/src/kimi_cli/tools/file/` | `internal/tools/builtin.go` | `done` |
 
 ---
 
 ## Remaining Work, In Practical Order
 
-The next roadmap should follow the actual dependency chain, not the old shell/streaming-first ordering.
+The next roadmap should follow the actual checked `temp/` snapshot, not the older,
+broader plan.
 
-### Phase 8: Agent Spec Parity
+### Phase 8: Web Tools And External Service Wiring
 
-Goal: make agent definitions expressive enough to match the Python model before building delegation.
+Goal: close the largest missing tool capability that is actually present in `temp/`.
 
-- [x] add `model` to `internal/agentspec.Spec`
-- [x] add `exclude_tools`
-- [x] add `subagents`
-- [x] keep current inheritance rule for `system_prompt_args` merge
-- [x] add overwrite semantics for `tools`, `exclude_tools`, `subagents`
-- [x] apply `exclude_tools` during tool resolution in app wiring
-- [x] add `extend: default` compatibility
+- [ ] extend Go config/app wiring with a clean external-service boundary
+- [ ] add `search_web`
+- [ ] implement `search_web` with a DuckDuckGo backend first
+- [ ] add `fetch_url`
+- [ ] decide whether `fetch_url` is raw HTTP only or readability/extraction aware
 
 Why now:
 
-- subagent delegation depends on `subagents`
-- tool exposure control depends on `exclude_tools`
-- this is the smallest missing boundary that unlocks later phases cleanly
+- these are real gaps against the checked Python snapshot
+- this is a clean adapter-layer addition
+- it does not require changing runtime semantics first
 
-### Phase 9: Foreground Subagent Delegation
+### Phase 9: MCP Integration
 
-Goal: match the Python `Agent` tool at a minimal useful level.
+Goal: match the Python MCP adapter path that is actually present in `temp/`.
 
-- [x] add an `agent` tool contract
-- [x] load subagent specs by declared name
-- [x] create isolated subagent history/context
-- [x] run a subagent with its own tools/system prompt/model
-- [x] return final assistant summary text to the parent run
+- [ ] add MCP config surface
+- [ ] add MCP client lifecycle and tool discovery
+- [ ] wrap MCP tools into Go tool definitions / handlers
+- [ ] surface MCP failures cleanly to app/UI
 
 Keep out of this phase unless necessary:
 
-- background tasks
-- resume existing subagent instances
-- ACP projection
+- broad MCP status UI
+- speculative MCP management CLI that is not present in the checked Python snapshot
 
-### Phase 10: Background Task Model
+### Phase 10: Print / Transport Parity
 
-Goal: catch up with Python's separation between foreground subagent calls and background task management.
+Goal: close the machine-facing output gap.
 
-- [ ] define background task model/store
-- [ ] add task listing/output/stop tools
-- [ ] persist task metadata separately from foreground transcript
-
-### Phase 11: Services Config And Missing Utility Tools
-
-Goal: add external information tools without mixing provider config and service config.
-
-- [ ] extend `internal/config` with service configuration
-- [ ] add `search_web`
-- [ ] add `fetch_url`
-- [ ] add `think`
-- [ ] add `todo` / `set_todo_list`
-- [ ] decide whether fetch is pure HTTP or content-extraction aware
-
-### Phase 12: MCP Integration
-
-Goal: bridge external MCP tools into the Go tool runtime.
-
-- [ ] add MCP config surface
-- [ ] add MCP tool loading lifecycle
-- [ ] expose MCP status snapshots to runtime/UI
-- [ ] decide CLI management shape for MCP config
-
-### Phase 13: Event Protocol Expansion
-
-Goal: widen the Go event model toward Python wire parity.
-
-- [ ] add turn-level events
-- [ ] add compaction-related events if compaction is implemented
-- [ ] add MCP loading/status events
-- [ ] add subagent events
-- [ ] add approval/question/notification events only when the runtime can emit them
 - [ ] add `stream-json` print output mode
+- [ ] add ACP server mode
+- [ ] project the existing runtime event family onto ACP transport messages
+- [ ] support cancellation across the ACP boundary
 
-### Phase 14: D-Mail
+### Phase 11: Shell Parity
 
-Goal: add the time-travel protocol on top of the existing checkpoint/revert foundation.
+Goal: match the checked Python shell features that clearly matter.
+
+- [ ] add `/compact`
+- [ ] decide whether `/init` belongs in Go or should remain out of scope
+- [ ] decide whether `/release-notes` belongs in Go or should remain out of scope
+- [ ] improve live shell presentation only where it closes a clear Python gap
+
+### Phase 12: D-Mail / Rollback Integration
+
+Goal: build on the checkpoint store that already exists in Go.
 
 - [ ] add D-Mail state holder
-- [ ] add D-Mail tool
-- [ ] integrate fetch/send behavior into the runtime loop
-- [ ] define rollback semantics and history replay behavior
+- [ ] add `SendDMail` tool
+- [ ] checkpoint before run and per-step boundaries
+- [ ] integrate rollback / synthetic message replay into the runtime loop
 
-### Phase 15: ACP
+### Phase 13: Go-Specific Cleanup / Divergence
 
-Goal: add machine-facing transport parity after the runtime/event model is wide enough.
+Goal: stabilize features that Go already has or almost has.
 
-- [ ] add ACP server mode
-- [ ] project runtime events onto transport messages
-- [ ] support cancellation/interruption across the transport boundary
+- [ ] close declared-subagent `model` override path so subagents actually run with their own resolved model
+- [ ] decide whether `patch_file` should stay disabled in the default agent
+- [ ] decide whether background task orchestration belongs in the Go rewrite as a separate future feature
 
 ---
 
@@ -333,16 +399,20 @@ Goal: add machine-facing transport parity after the runtime/event model is wide 
 
 These are the real next steps now:
 
-1. services config + web tools
-2. think / todo tools
-3. MCP integration
-4. event protocol widening + `stream-json`
-5. background task model on top of the current foreground delegation path
+1. web tools + external service wiring
+2. MCP integration
+3. `stream-json` print mode
+4. ACP transport mode
+5. shell `/compact`
+6. D-Mail / runtime rollback
 
 Not immediate anymore:
 
 - basic shell UI
 - basic streaming LLM support
+- think / todo tools
+- foreground subagent delegation
+- background task model as a parity requirement
 
 ---
 
@@ -395,12 +465,12 @@ internal/runtime            core agent logic
   +-- llm                   replaceable adapter boundary
   +-- tools                 replaceable tool boundary
   |     +-- builtin local tools
-  |     +-- web tools
-  |     +-- MCP bridge
+  |     +-- think / todo
+  |     +-- web tools       planned
+  |     +-- MCP bridge      planned
   |     +-- delegation tool
   |
-  +-- subagents             minimal foreground path exists in app; dedicated module planned
-  +-- dmail                 planned
+  +-- dmail                 planned on top of checkpoints
 ```
 
 ---
@@ -409,16 +479,21 @@ internal/runtime            core agent logic
 
 Good migration discipline:
 
-- keep runtime unaware of shell rendering details
+- treat the checked `temp/` tree as the ground truth for parity
+- keep runtime unaware of shell / print / ACP rendering details
 - keep tool execution behind explicit boundaries
-- keep MCP as an adapter layer, not runtime-specific code
-- keep subagent execution isolated from parent context storage
-- treat `stream-json` as a projection of runtime events, not a separate runtime
+- keep MCP as an adapter layer, not runtime-specific branching
+- keep D-Mail on top of the existing checkpoint store
+- treat `stream-json` as a projection, not a second runtime
+- distinguish clearly between:
+  - true temp parity gaps
+  - Go-only extra features
+  - speculative future work
 
 Bad shortcuts to avoid:
 
-- building background task orchestration before the foreground subagent boundary is stable
-- mixing service config into model provider config without a clear boundary
+- planning around Python files that are not present in the checked `temp/` snapshot
+- calling background tasks a parity gap without reference code in `temp/`
+- assuming subagent model override is fully correct just because `agentspec.Spec` already has `model`
 - bolting MCP directly into runtime branches
-- implementing D-Mail before the event/runtime protocol has stable extension points
-- turning shell/UI concerns into special cases inside runtime
+- letting shell/UI concerns leak into runtime control flow
