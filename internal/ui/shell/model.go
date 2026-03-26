@@ -559,23 +559,26 @@ func (m Model) renderSessionSelectView() string {
 		// 选中项和普通项的不同样式
 		var block string
 		if i == m.selectedSession {
-			// 选中项：使用背景色高亮整行
+			// 选中项：使用主色调背景 + 白色前景，更明显的高亮
 			selectedStyle := lipgloss.NewStyle().
-				Foreground(styles.ColorPrimary).
-				Background(styles.ColorInputBg).
-				Bold(true)
+				Foreground(styles.ColorBrightWhite).
+				Background(styles.ColorPrimary).
+				Bold(true).
+				Padding(0, 1)
 			selectedMetaStyle := lipgloss.NewStyle().
-				Foreground(styles.ColorMuted).
-				Background(styles.ColorInputBg)
+				Foreground(styles.ColorBrightWhite).
+				Background(styles.ColorSecondary).
+				Padding(0, 1)
 			line1 := selectedStyle.Render("▶ " + idPreview)
-			line2 := selectedMetaStyle.Render("    " + metaLine)
+			line2 := selectedMetaStyle.Render(metaLine)
 			block = lipgloss.JoinVertical(lipgloss.Left, line1, line2)
 		} else {
 			// 普通项
 			normalStyle := lipgloss.NewStyle().
-				Foreground(styles.ColorMuted)
+				Foreground(styles.ColorMuted).
+				Padding(0, 1)
 			line1 := normalStyle.Render("  " + idPreview)
-			line2 := normalStyle.Render("    " + metaLine)
+			line2 := normalStyle.Render(metaLine)
 			block = lipgloss.JoinVertical(lipgloss.Left, line1, line2)
 		}
 		sections = append(sections, block)
