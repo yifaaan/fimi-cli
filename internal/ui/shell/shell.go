@@ -27,17 +27,18 @@ type Runner interface {
 
 // Dependencies 描述 shell REPL 运行需要的最小装配输入。
 type Dependencies struct {
-	Runner        Runner
-	Store         contextstore.Context
-	Input         io.Reader
-	Output        io.Writer
-	ErrOutput     io.Writer
-	HistoryFile   string
-	EditorFactory lineEditorFactory
-	ModelName     string
-	SystemPrompt  string
-	InitialPrompt string
-	StartupInfo   StartupInfo
+	Runner         Runner
+	Store          contextstore.Context
+	Input          io.Reader
+	Output         io.Writer
+	ErrOutput      io.Writer
+	HistoryFile    string
+	EditorFactory  lineEditorFactory
+	ModelName      string
+	SystemPrompt   string
+	InitialPrompt  string
+	InitialRecords []contextstore.TextRecord
+	StartupInfo    StartupInfo
 }
 
 type eventSinkCapableRunner interface {
@@ -159,6 +160,9 @@ func runLinerMode(ctx context.Context, deps Dependencies, history *historyStore)
 	defer editor.Close()
 
 	if err := displayStartupBanner(display, deps.StartupInfo); err != nil {
+		return err
+	}
+	if err := appendInitialTranscript(display, deps.InitialRecords); err != nil {
 		return err
 	}
 
@@ -304,6 +308,37 @@ func displayStartupBanner(display *display, info StartupInfo) error {
 	}
 
 	return display.AppendTranscriptLines(lines)
+}
+
+func appendInitialTranscript(display *display, records []contextstore.TextRecord) error {
+	lines := transcriptLinesFromRecords(records)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	return display.AppendTranscriptLines(lines)
+}
+
+func transcriptLinesFromRecords(records []contextstore.TextRecord) []string {
+	models := transcriptLineModelsFromRecords(records)
+	lines := make([]string, 0, len(models)*2)
+	for _, line := range models {
+		switch line.Type {
+		case LineTypeUser:
+			lines = append(lines, "[user]")
+			lines = append(lines, splitPreservingEmpty(line.Content)...)
+		case LineTypeAssistant:
+			lines = append(lines, "[assistant]")
+			lines = append(lines, splitPreservingEmpty(line.Content)...)
+		case LineTypeToolCall:
+			lines = append(lines, "[tool] "+line.Content)
+		case LineTypeToolResult:
+			lines = append(lines, "[tool result]")
+			lines = append(lines, splitPreservingEmpty(line.Content)...)
+		}
+	}
+
+	return lines
 }
 
 func startupBannerLines(info StartupInfo) []string {

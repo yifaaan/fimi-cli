@@ -2,10 +2,11 @@ package shell
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"fimi-cli/internal/ui/shell/styles"
 
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -79,9 +80,12 @@ func (m InputModel) handleKeyPress(msg tea.KeyMsg) (InputModel, tea.Cmd) {
 		m.historyIdx = -1
 
 	case tea.KeyBackspace:
-		// 删除最后一个字符
+		// 删除最后一个 Unicode 字符，而不是最后一个字节。
 		if len(m.value) > 0 {
-			m.value = m.value[:len(m.value)-1]
+			_, size := utf8.DecodeLastRuneInString(m.value)
+			if size > 0 {
+				m.value = m.value[:len(m.value)-size]
+			}
 		}
 
 	case tea.KeyEnter:

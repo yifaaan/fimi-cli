@@ -1038,8 +1038,8 @@ func TestToolCallSubtitleFormatsCommonTools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := toolCallSubtitle(tt.call); got != tt.want {
-				t.Fatalf("toolCallSubtitle() = %q, want %q", got, tt.want)
+			if got := ToolCallSubtitle(tt.call); got != tt.want {
+				t.Fatalf("ToolCallSubtitle() = %q, want %q", got, tt.want)
 			}
 		})
 	}

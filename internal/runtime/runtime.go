@@ -597,7 +597,7 @@ func (r Runner) emitStepEvents(
 		if err := r.emitEvent(ctx, runtimeevents.ToolCall{
 			ID:        call.ID,
 			Name:      call.Name,
-			Subtitle:  toolCallSubtitle(call),
+			Subtitle:  ToolCallSubtitle(call),
 			Arguments: call.Arguments,
 		}); err != nil {
 			return err
@@ -631,7 +631,7 @@ func (r Runner) emitStepEvents(
 	})
 }
 
-func toolCallSubtitle(call ToolCall) string {
+func ToolCallSubtitle(call ToolCall) string {
 	switch call.Name {
 	case "agent":
 		return agentToolSubtitle(call.Arguments)

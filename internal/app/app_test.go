@@ -1078,6 +1078,9 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if shellDeps.InitialPrompt != "fix tests" {
 		t.Fatalf("shell deps initial prompt = %q, want %q", shellDeps.InitialPrompt, "fix tests")
 	}
+	if len(shellDeps.InitialRecords) != 0 {
+		t.Fatalf("shell initial records len = %d, want 0 for new session", len(shellDeps.InitialRecords))
+	}
 
 	ctx := contextstore.New(historyFile)
 	records, err := ctx.ReadAll()
@@ -1454,6 +1457,13 @@ func TestDependenciesRunContinuesSessionWhenRequested(t *testing.T) {
 	}
 	if shellDeps.StartupInfo.LastSummary != "picked up from the latest checkpoint" {
 		t.Fatalf("shell startup last summary = %q, want %q", shellDeps.StartupInfo.LastSummary, "picked up from the latest checkpoint")
+	}
+	wantInitialRecords := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("continue the refactor"),
+		contextstore.NewAssistantTextRecord("picked up\nfrom the latest checkpoint"),
+	}
+	if !reflect.DeepEqual(shellDeps.InitialRecords, wantInitialRecords) {
+		t.Fatalf("shell initial records = %#v, want %#v", shellDeps.InitialRecords, wantInitialRecords)
 	}
 }
 

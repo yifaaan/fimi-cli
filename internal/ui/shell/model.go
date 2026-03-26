@@ -58,9 +58,14 @@ func NewModel(deps Dependencies, history *historyStore) Model {
 	// 如果有启动信息，显示横幅
 	showBanner := deps.StartupInfo != (StartupInfo{})
 
+	output := NewOutputModel()
+	for _, line := range transcriptLineModelsFromRecords(deps.InitialRecords) {
+		output = output.AppendLine(line)
+	}
+
 	return Model{
 		input:      NewInputModel(),
-		output:     NewOutputModel(),
+		output:     output,
 		runtime:    NewRuntimeModel(),
 		mode:       ModeIdle,
 		showBanner: showBanner,

@@ -69,22 +69,30 @@ func TestRunProcessesInitialPromptBeforeEnteringLoop(t *testing.T) {
 	}
 }
 
-func TestRunPrintsStartupBannerWhenProvided(t *testing.T) {
+func TestRunPrintsRestoredTranscriptBeforePromptLoop(t *testing.T) {
 	var out bytes.Buffer
 	err := Run(context.Background(), Dependencies{
-		Runner:        &countingRunner{},
-		Store:         contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
-		Input:         strings.NewReader("/exit\n"),
-		Output:        &out,
-		HistoryFile:   filepath.Join(t.TempDir(), "shell_history.txt"),
+		Runner: &countingRunner{},
+		Store:  contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		Input:  strings.NewReader("/exit\n"),
+		Output: &out,
+		HistoryFile: filepath.Join(t.TempDir(), "shell_history.txt"),
 		EditorFactory: scriptedEditorFactory(),
+		InitialRecords: []contextstore.TextRecord{
+			contextstore.NewSystemTextRecord("session initialized"),
+			contextstore.NewUserTextRecord("continue the refactor"),
+			{
+				Role:          contextstore.RoleAssistant,
+				Content:       "picked up\nfrom the latest checkpoint",
+				ToolCallsJSON: `[{"ID":"call_read","Name":"read_file","Arguments":"{\"path\":\"main.go\"}"}]`,
+			},
+			contextstore.NewToolResultRecord("call_read", "package main"),
+		},
 		StartupInfo: StartupInfo{
 			SessionID:      "session-123",
 			SessionReused:  true,
 			ModelName:      "test-model",
 			ConversationDB: "/tmp/history.jsonl",
-			LastRole:       "assistant",
-			LastSummary:    "resumed from previous reply",
 		},
 	})
 	if err != nil {
@@ -92,20 +100,88 @@ func TestRunPrintsStartupBannerWhenProvided(t *testing.T) {
 	}
 
 	got := out.String()
-	for _, want := range []string{
+	wantParts := []string{
 		"Shell session\n",
-		"  session: session-123\n",
-		"  mode: continue\n",
-		"  model: test-model\n",
-		"  history: /tmp/history.jsonl\n",
-		"  last: assistant: resumed from previous reply\n",
-		"  commands: /help /clear /exit\n",
-	} {
-		if !strings.Contains(got, want) {
+		"[user]\ncontinue the refactor\n",
+		"[assistant]\npicked up\nfrom the latest checkpoint\n",
+		"[tool] Read main.go\n",
+		"[tool result]\npackage main\n",
+	}
+	lastIndex := -1
+	for _, want := range wantParts {
+		idx := strings.Index(got, want)
+		if idx < 0 {
 			t.Fatalf("shell output = %q, want substring %q", got, want)
+		}
+		if idx <= lastIndex {
+			t.Fatalf("shell output order incorrect = %q", got)
+		}
+		lastIndex = idx
+	}
+	if !strings.HasSuffix(got, promptText) {
+		t.Fatalf("shell output = %q, want trailing prompt %q", got, promptText)
+	}
+}
+
+func TestTranscriptLineModelsFromRecordsSkipsBootstrapRecord(t *testing.T) {
+	got := transcriptLineModelsFromRecords([]contextstore.TextRecord{
+		contextstore.NewSystemTextRecord("session initialized"),
+		contextstore.NewUserTextRecord("continue the refactor"),
+		{
+			Role:          contextstore.RoleAssistant,
+			Content:       "picked up\nfrom the latest checkpoint",
+			ToolCallsJSON: `[{"ID":"call_read","Name":"read_file","Arguments":"{\"path\":\"main.go\"}"}]`,
+		},
+		contextstore.NewToolResultRecord("call_read", "package main"),
+	})
+
+	want := []TranscriptLine{
+		{Type: LineTypeUser, Content: "continue the refactor"},
+		{Type: LineTypeAssistant, Content: "picked up\nfrom the latest checkpoint"},
+		{Type: LineTypeToolCall, Content: "Read main.go"},
+		{Type: LineTypeToolResult, Content: "package main"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(lines) = %d, want %d; lines=%#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type || got[i].Content != want[i].Content {
+			t.Fatalf("lines[%d] = %#v, want %#v", i, got[i], want[i])
 		}
 	}
 }
+
+func TestNewModelStartsWithRestoredTranscript(t *testing.T) {
+	model := NewModel(Dependencies{
+		InitialRecords: []contextstore.TextRecord{
+			contextstore.NewSystemTextRecord("session initialized"),
+			contextstore.NewUserTextRecord("continue the refactor"),
+			{
+				Role:          contextstore.RoleAssistant,
+				Content:       "picked up\nfrom the latest checkpoint",
+				ToolCallsJSON: `[{"ID":"call_read","Name":"read_file","Arguments":"{\"path\":\"main.go\"}"}]`,
+			},
+			contextstore.NewToolResultRecord("call_read", "package main"),
+		},
+		StartupInfo: StartupInfo{SessionID: "session-123"},
+	}, nil)
+
+	want := []TranscriptLine{
+		{Type: LineTypeUser, Content: "continue the refactor"},
+		{Type: LineTypeAssistant, Content: "picked up\nfrom the latest checkpoint"},
+		{Type: LineTypeToolCall, Content: "Read main.go"},
+		{Type: LineTypeToolResult, Content: "package main"},
+	}
+	if len(model.output.lines) != len(want) {
+		t.Fatalf("len(model.output.lines) = %d, want %d; lines=%#v", len(model.output.lines), len(want), model.output.lines)
+	}
+	for i := range want {
+		if model.output.lines[i].Type != want[i].Type || model.output.lines[i].Content != want[i].Content {
+			t.Fatalf("model.output.lines[%d] = %#v, want %#v", i, model.output.lines[i], want[i])
+		}
+	}
+}
+
 
 func TestLiveStateBuildsRenderableLines(t *testing.T) {
 	state := liveState{}
@@ -717,23 +793,34 @@ func TestModelReplacesPendingSnapshotForRuntimeEvents(t *testing.T) {
 	}
 }
 
-func TestInputModelAcceptsSpaceKey(t *testing.T) {
+func TestInputModelBackspaceDeletesSingleASCIICharacter(t *testing.T) {
 	input := NewInputModel()
 
 	input, _ = input.Update(tea.KeyMsg{
 		Type:  tea.KeyRunes,
-		Runes: []rune("hello"),
+		Runes: []rune("abc"),
 	}, 80)
-	input, _ = input.Update(tea.KeyMsg{Type: tea.KeySpace}, 80)
-	input, _ = input.Update(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune("world"),
-	}, 80)
+	input, _ = input.Update(tea.KeyMsg{Type: tea.KeyBackspace}, 80)
 
-	if input.Value() != "hello world" {
-		t.Fatalf("input value = %q, want %q", input.Value(), "hello world")
+	if input.Value() != "ab" {
+		t.Fatalf("input value = %q, want %q", input.Value(), "ab")
 	}
 }
+
+func TestInputModelBackspaceDeletesSingleChineseCharacter(t *testing.T) {
+	input := NewInputModel()
+
+	input, _ = input.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("你好"),
+	}, 80)
+	input, _ = input.Update(tea.KeyMsg{Type: tea.KeyBackspace}, 80)
+
+	if input.Value() != "你" {
+		t.Fatalf("input value = %q, want %q", input.Value(), "你")
+	}
+}
+
 
 func TestModelAdvancesSpinnerWhileRunning(t *testing.T) {
 	model := NewModel(Dependencies{}, nil)

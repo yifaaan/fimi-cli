@@ -623,6 +623,14 @@ func (d dependencies) runShell(
 	if err != nil {
 		return err
 	}
+	historyTurnLimit := cfg.HistoryWindow.RuntimeTurns
+	if historyTurnLimit <= 0 {
+		historyTurnLimit = config.DefaultRuntimeTurns
+	}
+	initialRecords, err := store.ReadRecentTurns(historyTurnLimit)
+	if err != nil {
+		return fmt.Errorf("read recent turns for shell startup: %w", err)
+	}
 
 	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
 	if err != nil {
@@ -640,15 +648,16 @@ func (d dependencies) runShell(
 	}
 
 	return runShellUI(ctx, shell.Dependencies{
-		Runner:        runner,
-		Store:         store,
-		Input:         os.Stdin,
-		Output:        os.Stdout,
-		ErrOutput:     os.Stderr,
-		HistoryFile:   historyFile,
-		ModelName:     resolveRuntimeModelName(cfg),
-		SystemPrompt:  agent.SystemPrompt,
-		InitialPrompt: input.prompt,
+		Runner:         runner,
+		Store:          store,
+		Input:          os.Stdin,
+		Output:         os.Stdout,
+		ErrOutput:      os.Stderr,
+		HistoryFile:    historyFile,
+		ModelName:      resolveRuntimeModelName(cfg),
+		SystemPrompt:   agent.SystemPrompt,
+		InitialPrompt:  input.prompt,
+		InitialRecords: initialRecords,
 		StartupInfo: shell.StartupInfo{
 			SessionID:      sess.ID,
 			SessionReused:  sessionReused,

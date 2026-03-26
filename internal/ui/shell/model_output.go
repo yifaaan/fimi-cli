@@ -1,10 +1,13 @@
 package shell
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"fimi-cli/internal/contextstore"
+	"fimi-cli/internal/runtime"
 	"fimi-cli/internal/ui/shell/styles"
 
 	"github.com/charmbracelet/bubbletea"
@@ -75,6 +78,81 @@ func (m OutputModel) AppendLine(line TranscriptLine) OutputModel {
 		m.scrollOffset = 0
 	}
 	return m
+}
+
+func transcriptLineModelsFromRecords(records []contextstore.TextRecord) []TranscriptLine {
+	lines := make([]TranscriptLine, 0, len(records))
+	for _, record := range records {
+		content := strings.TrimSpace(record.Content)
+		if record.Role == contextstore.RoleSystem && content == "session initialized" {
+			continue
+		}
+
+		switch record.Role {
+		case contextstore.RoleUser:
+			if content == "" {
+				continue
+			}
+			lines = append(lines, TranscriptLine{
+				Type:    LineTypeUser,
+				Content: content,
+			})
+		case contextstore.RoleAssistant:
+			if content != "" {
+				lines = append(lines, TranscriptLine{
+					Type:    LineTypeAssistant,
+					Content: content,
+				})
+			}
+			for _, summary := range storedToolCallSummaries(record.ToolCallsJSON) {
+				lines = append(lines, TranscriptLine{
+					Type:    LineTypeToolCall,
+					Content: summary,
+				})
+			}
+		case contextstore.RoleTool:
+			if content == "" {
+				continue
+			}
+			lines = append(lines, TranscriptLine{
+				Type:    LineTypeToolResult,
+				Content: content,
+			})
+		}
+	}
+
+	return lines
+}
+
+func storedToolCallSummaries(encoded string) []string {
+	if strings.TrimSpace(encoded) == "" {
+		return nil
+	}
+
+	var calls []struct {
+		Name      string
+		Arguments string
+	}
+	if err := json.Unmarshal([]byte(encoded), &calls); err != nil {
+		return nil
+	}
+
+	summaries := make([]string, 0, len(calls))
+	for _, call := range calls {
+		summary := strings.TrimSpace(runtime.ToolCallSubtitle(runtime.ToolCall{
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		}))
+		if summary == "" {
+			summary = strings.TrimSpace(toolCallDisplaySummary(call.Name, "", call.Arguments))
+		}
+		if summary == "" {
+			continue
+		}
+		summaries = append(summaries, summary)
+	}
+
+	return summaries
 }
 
 // SetPending 用最新快照替换实时内容。
