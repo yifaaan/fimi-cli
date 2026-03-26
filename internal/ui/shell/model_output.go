@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wrap"
 )
 
 // LineType 表示 transcript 行的类型。
@@ -126,27 +127,17 @@ func (m OutputModel) Update(msg tea.Msg, width, height int) (OutputModel, tea.Cm
 
 // View 渲染 transcript 视图。
 func (m OutputModel) View() string {
-	var allLines []TranscriptLine
-	allLines = append(allLines, m.lines...)
-	allLines = append(allLines, m.pending...)
+	rows := m.renderedRows()
 
-	if len(allLines) == 0 {
+	if len(rows) == 0 {
 		return ""
 	}
 
-	// 计算可用高度（留出输入区和状态栏）
-	availableHeight := m.height - 6
-	if availableHeight < 5 {
-		availableHeight = 5
-	}
-
-	// 只显示最后 N 行
-	startIdx, endIdx := m.visibleRange(len(allLines), availableHeight)
+	startIdx, endIdx := m.visibleRange(len(rows), m.visibleHeight())
 
 	var b strings.Builder
 	for i := startIdx; i < endIdx; i++ {
-		line := allLines[i]
-		b.WriteString(m.renderLine(line))
+		b.WriteString(rows[i])
 		b.WriteString("\n")
 	}
 
@@ -197,7 +188,7 @@ func (m OutputModel) visibleHeight() int {
 }
 
 func (m OutputModel) totalLines() int {
-	return len(m.lines) + len(m.pending)
+	return len(m.renderedRows())
 }
 
 func (m *OutputModel) scrollUp(lines int) {
@@ -275,4 +266,32 @@ func (m OutputModel) visibleRange(totalLines int, visibleHeight int) (int, int) 
 	}
 
 	return startIdx, endIdx
+}
+
+func (m OutputModel) renderedRows() []string {
+	var allLines []TranscriptLine
+	allLines = append(allLines, m.lines...)
+	allLines = append(allLines, m.pending...)
+
+	if len(allLines) == 0 {
+		return nil
+	}
+
+	renderWidth := m.renderWidth()
+	rows := make([]string, 0, len(allLines))
+	for _, line := range allLines {
+		rendered := m.renderLine(line)
+		wrapped := wrap.String(rendered, renderWidth)
+		rows = append(rows, strings.Split(wrapped, "\n")...)
+	}
+
+	return rows
+}
+
+func (m OutputModel) renderWidth() int {
+	if m.width <= 1 {
+		return 1
+	}
+
+	return m.width
 }
