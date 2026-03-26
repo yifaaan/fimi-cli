@@ -3,8 +3,11 @@ package shell
 import (
 	"time"
 
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/session"
+
 	"github.com/charmbracelet/bubbletea"
 )
 
@@ -50,11 +53,21 @@ type ErrorMsg struct {
 	Err error
 }
 
+// ResumeListMsg 表示 session 列表查询结果。
+type ResumeListMsg struct {
+	Sessions []session.SessionInfo
+	Err      error
+}
+
+// ResumeSwitchMsg 表示 session 切换结果。
+type ResumeSwitchMsg struct {
+	Session session.Session
+	Records []contextstore.TextRecord
+	Err     error
+}
+
 // ClearMsg 表示用户请求清屏。
 type ClearMsg struct{}
-
-// QuitMsg 表示用户请求退出。
-type QuitMsg struct{}
 
 // waitForRuntimeEvents 返回一个 Bubble Tea 命令。
 // 它会阻塞等待首个事件，然后尽可能多地批量提取后续已缓冲事件，

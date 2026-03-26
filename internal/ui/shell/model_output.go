@@ -1,10 +1,11 @@
 package shell
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"encoding/json"
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
@@ -265,26 +266,22 @@ func (m OutputModel) renderLine(line TranscriptLine, idx int) string {
 	return content
 }
 
-// renderToolResult 渲染工具结果，支持折叠显示。
+// renderToolResult 渲染工具结果，默认隐藏正文，展开后才显示完整内容。
 func (m OutputModel) renderToolResult(content string, idx int) string {
-	lines := strings.Split(content, "\n")
-
-	// 如果行数不超过阈值，直接显示
-	if len(lines) <= foldThreshold {
-		return styles.SystemStyle.Render(content)
-	}
-
-	// 检查是否已展开
 	if m.expanded[idx] {
 		return styles.SystemStyle.Render(content)
 	}
 
-	// 折叠显示：前 foldThreshold 行 + 提示
-	foldedLines := lines[:foldThreshold]
-	foldedLines = append(foldedLines,
-		styles.HelpStyle.Render(fmt.Sprintf("... (%d more lines, Ctrl+O to expand)", len(lines)-foldThreshold)),
-	)
-	return strings.Join(foldedLines, "\n")
+	lines := strings.Split(content, "\n")
+	preview := strings.TrimSpace(lines[0])
+	if preview == "" {
+		preview = "Tool output hidden"
+	}
+	if len(preview) > 60 {
+		preview = preview[:57] + "..."
+	}
+
+	return styles.HelpStyle.Render(fmt.Sprintf("Output hidden. %s (Ctrl+O to expand)", preview))
 }
 
 func (m OutputModel) visibleHeight() int {
@@ -378,10 +375,7 @@ func (m OutputModel) visibleRange(totalLines int, visibleHeight int) (int, int) 
 }
 
 func (m OutputModel) renderedRows() []string {
-	var allLines []TranscriptLine
-	allLines = append(allLines, m.lines...)
-	allLines = append(allLines, m.pending...)
-
+	allLines := m.allLines()
 	if len(allLines) == 0 {
 		return nil
 	}
@@ -397,6 +391,13 @@ func (m OutputModel) renderedRows() []string {
 	return rows
 }
 
+func (m OutputModel) allLines() []TranscriptLine {
+	allLines := make([]TranscriptLine, 0, len(m.lines)+len(m.pending))
+	allLines = append(allLines, m.lines...)
+	allLines = append(allLines, m.pending...)
+	return allLines
+}
+
 func (m OutputModel) renderWidth() int {
 	if m.width <= 1 {
 		return 1
@@ -408,10 +409,10 @@ func (m OutputModel) renderWidth() int {
 // ToggleExpand 切换最后一个 ToolResult 行的折叠状态。
 // 返回切换后的模型和是否找到了可切换的行。
 func (m OutputModel) ToggleExpand() (OutputModel, bool) {
-	// 查找最后一个 ToolResult 类型的行
+	allLines := m.allLines()
 	lastToolResultIdx := -1
-	for i := len(m.lines) - 1; i >= 0; i-- {
-		if m.lines[i].Type == LineTypeToolResult {
+	for i := len(allLines) - 1; i >= 0; i-- {
+		if allLines[i].Type == LineTypeToolResult {
 			lastToolResultIdx = i
 			break
 		}
@@ -421,13 +422,6 @@ func (m OutputModel) ToggleExpand() (OutputModel, bool) {
 		return m, false
 	}
 
-	// 检查该行是否超过折叠阈值
-	lines := strings.Split(m.lines[lastToolResultIdx].Content, "\n")
-	if len(lines) <= foldThreshold {
-		return m, false
-	}
-
-	// 切换状态
 	m.expanded[lastToolResultIdx] = !m.expanded[lastToolResultIdx]
 	return m, true
 }

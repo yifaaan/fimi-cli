@@ -656,6 +656,7 @@ func (d dependencies) runShell(
 		HistoryFile:    historyFile,
 		ModelName:      resolveRuntimeModelName(cfg),
 		SystemPrompt:   agent.SystemPrompt,
+		WorkDir:        sess.WorkDir,
 		InitialPrompt:  input.prompt,
 		InitialRecords: initialRecords,
 		StartupInfo: shell.StartupInfo{

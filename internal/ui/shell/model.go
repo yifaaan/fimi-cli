@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/session"
 	"fimi-cli/internal/ui/shell/styles"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -24,6 +26,8 @@ const (
 	ModeThinking
 	// ModeStreaming AI 响应正在流式输出
 	ModeStreaming
+	// ModeSessionSelect 选择 session 的交互模式
+	ModeSessionSelect
 )
 
 // Model 是 Bubble Tea 的根模型。
@@ -51,6 +55,11 @@ type Model struct {
 	eventsCh <-chan runtimeevents.Event
 	// runtime 已结束，但仍需等待尾部事件排空后再切回 idle。
 	pendingCompletion *RuntimeCompleteMsg
+
+	// Session 选择相关状态
+	sessionList       []session.SessionInfo
+	selectedSession   int
+	inSessionSelect   bool
 }
 
 // NewModel 创建一个新的 Bubble Tea 模型。
@@ -89,6 +98,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// 如果在 session 选择模式，特殊处理键盘输入
+		if m.mode == ModeSessionSelect {
+			return m.handleSessionSelectKeyPress(msg)
+		}
 		var outputCmd tea.Cmd
 		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
 		if outputCmd != nil {
@@ -146,6 +159,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ErrorMsg:
 		m.err = msg.Err
 		return m, nil
+
+	case ResumeListMsg:
+		return m.handleResumeListResult(msg)
+
+	case ResumeSwitchMsg:
+		return m.handleResumeSwitchResult(msg)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -154,6 +173,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View 实现 tea.Model 接口。
 // 渲染整个 UI。
 func (m Model) View() string {
+	// 如果在 session 选择模式，渲染选择界面
+	if m.mode == ModeSessionSelect {
+		return m.renderSessionSelectView()
+	}
+
 	var sections []string
 
 	// 0. 启动横幅（只显示一次）
@@ -378,18 +402,20 @@ func (m Model) finishRuntime(msg RuntimeCompleteMsg) Model {
 
 // handleCommand 处理 slash 命令。
 func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
-	switch cmd {
-	case "/exit", "/quit":
+	switch {
+	case cmd == "/exit" || cmd == "/quit":
 		return m, tea.Quit
-	case "/help":
+	case cmd == "/help":
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeSystem,
 			Content: helpText(),
 		})
 		return m, nil
-	case "/clear":
+	case cmd == "/clear":
 		m.output = m.output.Clear()
 		return m, nil
+	case cmd == "/resume":
+		return m.handleResumeList()
 	default:
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeError,
@@ -446,6 +472,275 @@ func (m Model) renderLiveStatus() string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// handleResumeListResult 处理 session 列表查询结果。
+func (m Model) handleResumeListResult(msg ResumeListMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error listing sessions: %v", msg.Err),
+		})
+		return m, nil
+	}
+
+	if len(msg.Sessions) == 0 {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: "No sessions found for this work directory.",
+		})
+		return m, nil
+	}
+
+	// 进入 session 选择模式
+	m.mode = ModeSessionSelect
+	m.sessionList = msg.Sessions
+	m.selectedSession = 0
+	return m, nil
+}
+
+// handleSessionSelectKeyPress 处理 session 选择模式的键盘输入。
+func (m Model) handleSessionSelectKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.selectedSession > 0 {
+			m.selectedSession--
+		}
+		return m, nil
+	case "down", "j":
+		if m.selectedSession < len(m.sessionList)-1 {
+			m.selectedSession++
+		}
+		return m, nil
+	case "enter":
+		// 切换到选中的 session
+		return m.handleResumeSwitch(m.sessionList[m.selectedSession].ID)
+	case "esc", "q":
+		// 取消选择，返回正常模式
+		m.mode = ModeIdle
+		m.sessionList = nil
+		m.selectedSession = 0
+		return m, nil
+	}
+	return m, nil
+}
+
+// renderSessionSelectView 渲染 session 选择界面。
+func (m Model) renderSessionSelectView() string {
+	var sections []string
+
+	// 标题
+	titleStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorPrimary).
+		Bold(true)
+	sections = append(sections, titleStyle.Render("Select a session to resume"))
+	sections = append(sections, "")
+
+	// Session 列表
+	for i, s := range m.sessionList {
+		// 获取第一条用户消息作为预览
+		preview := m.getSessionPreview(s.HistoryFile)
+
+		shortID := s.ID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+
+		// 格式化文件大小
+		fileSize := formatFileSize(s.FileSize)
+		// 格式化时间
+		timeAgo := formatTime(s.LastModified)
+
+		// 第一行：session id + preview
+		idPreview := fmt.Sprintf("%s  %s", shortID, preview)
+		// 第二行：时间 + 大小（放到该 session 下面显示）
+		metaLine := fmt.Sprintf("    %s  %s", timeAgo, fileSize)
+
+		// 选中项和普通项的不同样式
+		var line string
+		if i == m.selectedSession {
+			selectedStyle := lipgloss.NewStyle().
+				Foreground(styles.ColorPrimary).
+				Bold(true)
+			line = selectedStyle.Render("▶ " + idPreview)
+			line = lipgloss.JoinVertical(lipgloss.Left,
+				line,
+				selectedStyle.Render(metaLine),
+			)
+		} else {
+			normalStyle := lipgloss.NewStyle().
+				Foreground(styles.ColorMuted)
+			line = normalStyle.Render("  " + idPreview)
+			line = lipgloss.JoinVertical(lipgloss.Left,
+				line,
+				normalStyle.Render(metaLine),
+			)
+		}
+		sections = append(sections, line)
+	}
+
+	sections = append(sections, "")
+
+	// 帮助提示
+	helpStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted).
+		Italic(true)
+	sections = append(sections, helpStyle.Render("↑/↓ or j/k to navigate, Enter to select, Esc/q to cancel"))
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+// formatFileSize 返回友好的文件大小描述（kB / MB / GB）。
+func formatFileSize(size int64) string {
+	switch {
+	case size < 1024:
+		return fmt.Sprintf("%d B", size)
+	case size < 1024*1024:
+		return fmt.Sprintf("%.1f kB", float64(size)/1024)
+	case size < 1024*1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1f GB", float64(size)/(1024*1024*1024))
+	}
+}
+
+// getSessionPreview 获取 session 的第一条用户消息预览（保留第一行）。
+func (m Model) getSessionPreview(historyFile string) string {
+	store := contextstore.New(historyFile)
+	record, found, err := store.ReadFirstUserRecord()
+	if err != nil || !found {
+		return "..."
+	}
+
+	content := strings.TrimSpace(record.Content)
+	// 只取第一行
+	lines := strings.Split(content, "\n")
+	firstLine := strings.TrimSpace(lines[0])
+	// 使用 rune 截断以正确处理 UTF-8/中文，限制在一行内显示
+	runes := []rune(firstLine)
+	if len(runes) > 50 {
+		return string(runes[:50]) + "..."
+	}
+	return firstLine
+}
+
+// handleResumeSwitchResult 处理 session 切换结果。
+func (m Model) handleResumeSwitchResult(msg ResumeSwitchMsg) (tea.Model, tea.Cmd) {
+	// 无论成功与否，退出 session 选择模式
+	m.mode = ModeIdle
+	m.sessionList = nil
+	m.selectedSession = 0
+
+	if msg.Err != nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error loading session: %v", msg.Err),
+		})
+		return m, nil
+	}
+
+	// 更新 Store 到新的 session
+	newStore := contextstore.New(msg.Session.HistoryFile)
+	m.deps.Store = newStore
+
+	// 更新 StartupInfo
+	m.deps.StartupInfo.SessionID = msg.Session.ID
+	m.deps.StartupInfo.SessionReused = true
+	m.deps.StartupInfo.ConversationDB = msg.Session.HistoryFile
+
+	// 清空当前输出
+	m.output = m.output.Clear()
+
+	// 使用 transcriptLineModelsFromRecords 将历史记录转换为 TranscriptLine
+	// 这样会以标准格式显示（带颜色、前缀等）
+	for _, line := range transcriptLineModelsFromRecords(msg.Records) {
+		m.output = m.output.AppendLine(line)
+	}
+
+	// 添加切换提示
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: fmt.Sprintf("Switched to session %s", msg.Session.ID[:8]),
+	})
+
+	return m, nil
+}
+
+// truncateString 截断字符串到指定长度（使用 rune 正确处理 UTF-8）。
+func truncateString(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-3]) + "..."
+}
+
+// handleResumeList 处理 /resume 命令（无参数），列出可用 session。
+func (m Model) handleResumeList() (tea.Model, tea.Cmd) {
+	if m.deps.WorkDir == "" {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: "error: work directory not set",
+		})
+		return m, nil
+	}
+
+	return m, func() tea.Msg {
+		sessions, err := session.ListSessions(m.deps.WorkDir)
+		return ResumeListMsg{Sessions: sessions, Err: err}
+	}
+}
+
+// handleResumeSwitch 处理 /resume <id> 命令，切换到指定 session。
+func (m Model) handleResumeSwitch(sessionID string) (tea.Model, tea.Cmd) {
+	if m.deps.WorkDir == "" {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: "error: work directory not set",
+		})
+		return m, nil
+	}
+	if sessionID == "" {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: "error: session ID is required",
+		})
+		return m, nil
+	}
+
+	return m, func() tea.Msg {
+		sess, err := session.LoadSession(m.deps.WorkDir, sessionID)
+		if err != nil {
+			// 尝试前缀匹配
+			sessions, listErr := session.ListSessions(m.deps.WorkDir)
+			if listErr == nil {
+				for _, s := range sessions {
+					if strings.HasPrefix(s.ID, sessionID) {
+						sess = session.Session{
+							ID:          s.ID,
+							WorkDir:     s.WorkDir,
+							HistoryFile: s.HistoryFile,
+						}
+						err = nil
+						break
+					}
+				}
+			}
+		}
+		if err != nil {
+			return ResumeSwitchMsg{Err: err}
+		}
+
+		// 读取新 session 的历史记录
+		newStore := contextstore.New(sess.HistoryFile)
+		records, _ := newStore.ReadRecentTurns(10)
+
+		return ResumeSwitchMsg{
+			Session: sess,
+			Records: records,
+			Err:     nil,
+		}
+	}
 }
 
 // renderStatusBar 渲染状态栏。
