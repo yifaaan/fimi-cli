@@ -282,6 +282,42 @@ func toolParametersSchema(name string) map[string]any {
 			schemaProperty("prompt", "string", "Detailed task prompt for the subagent."),
 			schemaProperty("subagent_name", "string", "Declared subagent name to run."),
 		))
+	case tools.ToolThink:
+		return objectSchema(requiredProperties(
+			schemaProperty("thought", "string", "Private reasoning note to log for the current step."),
+		))
+	case tools.ToolSetTodoList:
+		return map[string]any{
+			"type": "object",
+			"$defs": map[string]any{
+				"Todo": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title": map[string]any{
+							"type":        "string",
+							"description": "The title of the todo",
+							"minLength":   1,
+						},
+						"status": map[string]any{
+							"type":        "string",
+							"description": "The status of the todo",
+							"enum":        []string{"Pending", "In Progress", "Done"},
+						},
+					},
+					"required": []string{"title", "status"},
+				},
+			},
+			"properties": map[string]any{
+				"todos": map[string]any{
+					"type":        "array",
+					"description": "The updated todo list",
+					"items": map[string]any{
+						"$ref": "#/$defs/Todo",
+					},
+				},
+			},
+			"required": []string{"todos"},
+		}
 	case tools.ToolBash:
 		return objectSchema(requiredProperties(
 			schemaProperty("command", "string", "Shell command to run inside the workspace."),
@@ -360,8 +396,8 @@ func objectSchema(entries []schemaEntry) map[string]any {
 }
 
 // buildRuntimeConfig 把全局配置映射为 runtime 模块自己的最小配置。
-func buildRuntimeConfig(cfg config.Config) runtime.Config {
-	modelCfg, err := resolveConfiguredModel(cfg)
+func buildRuntimeConfig(cfg config.Config, agent loadedAgent) runtime.Config {
+	modelCfg, err := resolveConfiguredModel(resolveModelOverride(cfg, agent))
 
 	return runtime.Config{
 		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
@@ -381,6 +417,8 @@ func resolveContextWindowTokens(modelCfg config.ModelConfig, err error) int {
 
 // buildRuntimeInput 把应用输入、模型选择和 agent prompt 映射为单次 runtime 调用输入。
 func buildRuntimeInput(cfg config.Config, input runInput, agent loadedAgent) runtime.Input {
+	cfg = resolveModelOverride(cfg, agent)
+
 	return runtime.Input{
 		Prompt:       input.prompt,
 		Model:        resolveRuntimeModelName(cfg),
@@ -398,12 +436,25 @@ func resolveRuntimeModelName(cfg config.Config) string {
 	return cfg.DefaultModel
 }
 
+func resolveModelOverride(cfg config.Config, agent loadedAgent) config.Config {
+	modelAlias := strings.TrimSpace(agent.Spec.Model)
+	if modelAlias == "" {
+		return cfg
+	}
+
+	cfg.DefaultModel = modelAlias
+
+	return cfg
+}
+
 // buildEngine 负责装配当前默认的 llm engine。
 func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
 	return d.buildEngineForAgent(cfg, loadedAgent{})
 }
 
 func (d dependencies) buildEngineForAgent(cfg config.Config, agent loadedAgent) (llm.Engine, error) {
+	cfg = resolveModelOverride(cfg, agent)
+
 	buildClient := d.buildLLMClient
 	if buildClient == nil {
 		buildClient = buildLLMClientFromConfig
@@ -427,6 +478,8 @@ func (d dependencies) buildRunner(cfg config.Config) (runtimeRunner, error) {
 
 // buildRunnerForAgent 负责把当前 agent 的工具能力一起装配进 runtime。
 func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, workDir string) (runtimeRunner, error) {
+	cfg = resolveModelOverride(cfg, agent)
+
 	if d.buildRuntimeRunner != nil {
 		return d.buildRuntimeRunner(cfg)
 	}
@@ -445,7 +498,7 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		},
 	)
 
-	return runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg)), nil
+	return runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent)), nil
 }
 
 func buildEngine(cfg config.Config) (llm.Engine, error) {
@@ -498,6 +551,8 @@ func (d dependencies) runShell(
 	workDir string,
 	input runInput,
 ) error {
+	cfg = resolveModelOverride(cfg, agent)
+
 	sess, sessionReused, err := d.openRunSession(workDir, input)
 	if err != nil {
 		return err

@@ -12,10 +12,15 @@ import (
 )
 
 const DefaultVersion = 1
+const defaultExtendAlias = "default"
+const defaultAgentDirName = "agents"
+const defaultAgentProfileName = "default"
+const defaultAgentFileName = "agent.yaml"
 
 var ErrUnsupportedVersion = errors.New("unsupported agent spec version")
 var ErrSystemPromptArgMissing = errors.New("system prompt argument is missing")
 var ErrAgentSpecExtendCycle = errors.New("agent spec extend cycle detected")
+var ErrDefaultAgentSpecNotFound = errors.New("default agent spec not found")
 
 var systemPromptArgPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
@@ -24,6 +29,7 @@ var systemPromptArgPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`
 type Spec struct {
 	Extend           string                  `yaml:"extend"`
 	Name             string                  `yaml:"name"`
+	Model            string                  `yaml:"model"`
 	SystemPromptPath string                  `yaml:"system_prompt_path"`
 	SystemPromptArgs map[string]string       `yaml:"system_prompt_args"`
 	Tools            []string                `yaml:"tools"`
@@ -75,7 +81,10 @@ func loadFile(path string, visited map[string]struct{}) (Spec, error) {
 	spec.SystemPromptPath = resolvePath(filepath.Dir(path), spec.SystemPromptPath)
 	spec.Subagents = resolveSubagentPaths(filepath.Dir(path), spec.Subagents)
 	if spec.Extend != "" {
-		basePath := resolvePath(filepath.Dir(path), spec.Extend)
+		basePath, err := resolveExtendPath(filepath.Dir(path), spec.Extend)
+		if err != nil {
+			return Spec{}, fmt.Errorf("resolve base agent spec %q: %w", spec.Extend, err)
+		}
 		baseSpec, err := loadFile(basePath, visited)
 		if err != nil {
 			return Spec{}, fmt.Errorf("load base agent spec %q: %w", basePath, err)
@@ -110,6 +119,7 @@ func LoadSystemPrompt(spec Spec) (string, error) {
 func normalizeSpec(spec Spec) Spec {
 	spec.Extend = strings.TrimSpace(spec.Extend)
 	spec.Name = strings.TrimSpace(spec.Name)
+	spec.Model = strings.TrimSpace(spec.Model)
 	spec.SystemPromptPath = strings.TrimSpace(spec.SystemPromptPath)
 	spec.SystemPromptArgs = normalizeSystemPromptArgs(spec.SystemPromptArgs)
 	spec.Tools = normalizeTools(spec.Tools)
@@ -199,6 +209,44 @@ func resolvePath(baseDir string, path string) string {
 	return filepath.Clean(filepath.Join(baseDir, path))
 }
 
+func resolveExtendPath(baseDir string, extend string) (string, error) {
+	extend = strings.TrimSpace(extend)
+	if extend == "" {
+		return "", nil
+	}
+	if extend != defaultExtendAlias {
+		return resolvePath(baseDir, extend), nil
+	}
+
+	path, ok := findDefaultAgentSpecPath(baseDir)
+	if !ok {
+		return "", fmt.Errorf("%w from %q", ErrDefaultAgentSpecNotFound, baseDir)
+	}
+
+	return path, nil
+}
+
+func findDefaultAgentSpecPath(baseDir string) (string, bool) {
+	dir := filepath.Clean(baseDir)
+	for {
+		for _, candidate := range []string{
+			filepath.Join(dir, defaultAgentProfileName, defaultAgentFileName),
+			filepath.Join(dir, defaultAgentDirName, defaultAgentProfileName, defaultAgentFileName),
+		} {
+			info, err := os.Stat(candidate)
+			if err == nil && !info.IsDir() {
+				return filepath.Clean(candidate), true
+			}
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
 func validateSpec(spec Spec) error {
 	if spec.Name == "" {
 		return errors.New("agent.name is required")
@@ -225,6 +273,9 @@ func mergeSpec(base Spec, override Spec) Spec {
 	merged := base
 	if override.Name != "" {
 		merged.Name = override.Name
+	}
+	if override.Model != "" {
+		merged.Model = override.Model
 	}
 	if override.SystemPromptPath != "" {
 		merged.SystemPromptPath = override.SystemPromptPath

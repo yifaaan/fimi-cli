@@ -34,9 +34,26 @@ var ErrToolPathOutsideWorkspace = errors.New("tool path escapes workspace")
 var ErrToolPatternOutsideWorkspace = errors.New("tool pattern escapes workspace")
 var ErrToolPatchDiffRequired = errors.New("tool patch diff is required")
 var ErrToolPatchFailed = errors.New("failed to apply patch")
+var ErrToolThoughtRequired = errors.New("tool thought is required")
+var ErrToolTodosRequired = errors.New("tool todos are required")
+var ErrToolTodoTitleRequired = errors.New("tool todo title is required")
+var ErrToolTodoStatusInvalid = errors.New("tool todo status is invalid")
 
 type bashArguments struct {
 	Command string `json:"command"`
+}
+
+type thinkArguments struct {
+	Thought string `json:"thought"`
+}
+
+type todoItemArguments struct {
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+type setTodoListArguments struct {
+	Todos []todoItemArguments `json:"todos"`
 }
 
 type globArguments struct {
@@ -109,6 +126,8 @@ func NewBuiltinExecutorWithShaperAndExtraHandlers(
 
 func builtinHandlers(workDir string, shaper OutputShaper) map[string]HandlerFunc {
 	return map[string]HandlerFunc{
+		ToolThink:       newThinkHandler(),
+		ToolSetTodoList: newSetTodoListHandler(),
 		ToolBash:        newBashHandler(workDir, shaper),
 		ToolGlob:        newGlobHandler(workDir, shaper),
 		ToolGrep:        newGrepHandler(workDir, shaper),
@@ -116,6 +135,45 @@ func builtinHandlers(workDir string, shaper OutputShaper) map[string]HandlerFunc
 		ToolWriteFile:   newWriteFileHandler(workDir),
 		ToolReplaceFile: newReplaceFileHandler(workDir),
 		ToolPatchFile:   newPatchFileHandler(workDir),
+	}
+}
+
+func newThinkHandler() HandlerFunc {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeThinkArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		_ = args
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: "Thought logged",
+		}, nil
+	}
+}
+
+func newSetTodoListHandler() HandlerFunc {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeSetTodoListArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
+		var builder strings.Builder
+		for _, todo := range args.Todos {
+			builder.WriteString("- ")
+			builder.WriteString(todo.Title)
+			builder.WriteString(" [")
+			builder.WriteString(todo.Status)
+			builder.WriteString("]\n")
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: builder.String(),
+		}, nil
 	}
 }
 
@@ -457,6 +515,42 @@ func decodeBashArguments(raw string) (bashArguments, error) {
 	return args, nil
 }
 
+func decodeThinkArguments(raw string) (thinkArguments, error) {
+	var args thinkArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return thinkArguments{}, markRefused(fmt.Errorf("%w: decode think arguments: %v", ErrToolArgumentsInvalid, err))
+	}
+	if strings.TrimSpace(args.Thought) == "" {
+		return thinkArguments{}, markRefused(ErrToolThoughtRequired)
+	}
+
+	return args, nil
+}
+
+func decodeSetTodoListArguments(raw string) (setTodoListArguments, error) {
+	var args setTodoListArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return setTodoListArguments{}, markRefused(fmt.Errorf("%w: decode set_todo_list arguments: %v", ErrToolArgumentsInvalid, err))
+	}
+	if len(args.Todos) == 0 {
+		return setTodoListArguments{}, markRefused(ErrToolTodosRequired)
+	}
+
+	for i := range args.Todos {
+		args.Todos[i].Title = strings.TrimSpace(args.Todos[i].Title)
+		args.Todos[i].Status = strings.TrimSpace(args.Todos[i].Status)
+
+		if args.Todos[i].Title == "" {
+			return setTodoListArguments{}, markRefused(ErrToolTodoTitleRequired)
+		}
+		if !isAllowedTodoStatus(args.Todos[i].Status) {
+			return setTodoListArguments{}, markRefused(fmt.Errorf("%w: %s", ErrToolTodoStatusInvalid, args.Todos[i].Status))
+		}
+	}
+
+	return args, nil
+}
+
 func decodeGlobArguments(raw string) (globArguments, error) {
 	var args globArguments
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
@@ -704,6 +798,15 @@ func splitSlashPath(raw string) []string {
 	}
 
 	return strings.Split(raw, "/")
+}
+
+func isAllowedTodoStatus(status string) bool {
+	switch status {
+	case "Pending", "In Progress", "Done":
+		return true
+	default:
+		return false
+	}
 }
 
 func findGrepMatches(rootAbs string, targetAbs string, expression *regexp.Regexp) ([]string, error) {

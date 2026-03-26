@@ -22,6 +22,8 @@ type RuntimeModel struct {
 	AssistantText string
 	// 当前工具调用信息
 	CurrentTool *ToolCallInfo
+	// 当前 step 已累积的 transcript 行
+	stepLines []TranscriptLine
 	// Spinner 动画
 	spinner spinner.Model
 	// 是否被中断
@@ -70,6 +72,10 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 		m.Step = e.Number
 		m.AssistantText = ""
 		m.CurrentTool = nil
+		m.stepLines = []TranscriptLine{{
+			Type:    LineTypeSystem,
+			Content: fmt.Sprintf("[step %d]", e.Number),
+		}}
 		m.Interrupted = false
 
 	case runtimeevents.StatusUpdate:
@@ -77,18 +83,21 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 
 	case runtimeevents.TextPart:
 		m.AssistantText += e.Text
+		m.appendAssistantText(e.Text)
 
 	case runtimeevents.ToolCall:
 		m.CurrentTool = &ToolCallInfo{
 			ID:     e.ID,
 			Name:   e.Name,
 			Status: ToolStatusRunning,
-			Args:   e.Arguments,
+			Args:   firstNonEmpty(strings.TrimSpace(e.Subtitle), strings.TrimSpace(e.Arguments)),
 		}
+		m.appendToolCallLine()
 
 	case runtimeevents.ToolCallPart:
 		if m.CurrentTool != nil {
 			m.CurrentTool.Args += e.Delta
+			m.updateCurrentToolCallLine()
 		}
 
 	case runtimeevents.ToolResult:
@@ -100,10 +109,15 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 			} else {
 				m.CurrentTool.Status = ToolStatusCompleted
 			}
+			m.appendToolResultLine()
 		}
 
 	case runtimeevents.StepInterrupted:
 		m.Interrupted = true
+		m.stepLines = append(m.stepLines, TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: "[interrupted]",
+		})
 	}
 
 	return m
@@ -115,46 +129,76 @@ func (m RuntimeModel) Reset() RuntimeModel {
 	m.ContextUsage = 0
 	m.AssistantText = ""
 	m.CurrentTool = nil
+	m.stepLines = nil
 	m.Interrupted = false
 	return m
 }
 
 // ToLines 将当前状态转换为 transcript 行。
 func (m RuntimeModel) ToLines() []TranscriptLine {
-	var lines []TranscriptLine
+	return append([]TranscriptLine(nil), m.stepLines...)
+}
 
-	if m.AssistantText != "" {
-		lines = append(lines, TranscriptLine{
-			Type:    LineTypeAssistant,
-			Content: m.AssistantText,
-		})
+func (m *RuntimeModel) appendAssistantText(delta string) {
+	if delta == "" {
+		return
+	}
+	if len(m.stepLines) > 0 && m.stepLines[len(m.stepLines)-1].Type == LineTypeAssistant {
+		m.stepLines[len(m.stepLines)-1].Content += delta
+		return
 	}
 
-	if m.CurrentTool != nil && m.CurrentTool.Status == ToolStatusCompleted {
-		lines = append(lines, TranscriptLine{
-			Type:    LineTypeToolCall,
-			Content: fmt.Sprintf("%s", m.CurrentTool.Name),
-		})
-		if m.CurrentTool.Output != "" {
-			lineType := LineTypeToolResult
-			if m.CurrentTool.IsError {
-				lineType = LineTypeError
-			}
-			lines = append(lines, TranscriptLine{
-				Type:    lineType,
-				Content: m.CurrentTool.Output,
-			})
+	m.stepLines = append(m.stepLines, TranscriptLine{
+		Type:    LineTypeAssistant,
+		Content: delta,
+	})
+}
+
+func (m *RuntimeModel) appendToolCallLine() {
+	if m.CurrentTool == nil {
+		return
+	}
+
+	m.stepLines = append(m.stepLines, TranscriptLine{
+		Type:    LineTypeToolCall,
+		Content: formatToolCallLine(*m.CurrentTool),
+	})
+}
+
+func (m *RuntimeModel) updateCurrentToolCallLine() {
+	if m.CurrentTool == nil {
+		return
+	}
+	for i := len(m.stepLines) - 1; i >= 0; i-- {
+		if m.stepLines[i].Type == LineTypeToolCall {
+			m.stepLines[i].Content = formatToolCallLine(*m.CurrentTool)
+			return
 		}
 	}
+}
 
-	if m.Interrupted {
-		lines = append(lines, TranscriptLine{
-			Type:    LineTypeSystem,
-			Content: "[interrupted]",
-		})
+func (m *RuntimeModel) appendToolResultLine() {
+	if m.CurrentTool == nil || m.CurrentTool.Output == "" {
+		return
 	}
 
-	return lines
+	lineType := LineTypeToolResult
+	if m.CurrentTool.IsError {
+		lineType = LineTypeError
+	}
+	m.stepLines = append(m.stepLines, TranscriptLine{
+		Type:    lineType,
+		Content: m.CurrentTool.Output,
+	})
+}
+
+func formatToolCallLine(tool ToolCallInfo) string {
+	content := tool.Name
+	if summary := strings.TrimSpace(tool.Args); summary != "" {
+		content += " " + summary
+	}
+
+	return content
 }
 
 // SpinnerCmd 返回 spinner 动画命令。

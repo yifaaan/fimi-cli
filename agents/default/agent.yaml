@@ -6,6 +6,8 @@ agent:
     ROLE: coding agent
   tools:
     - agent
+    - think
+    - set_todo_list
     - bash
     - read_file
     - glob

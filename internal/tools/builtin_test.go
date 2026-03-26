@@ -161,6 +161,90 @@ func TestNewBuiltinExecutorWithExtraHandlersUsesInjectedHandler(t *testing.T) {
 	}
 }
 
+func TestNewBuiltinExecutorThinkLogsThought(t *testing.T) {
+	ctx := context.Background()
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolThink,
+			Kind: KindUtility,
+		},
+	}, t.TempDir())
+
+	got, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolThink,
+		Arguments: `{"thought":"need to compare the parser branches"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Output != "Thought logged" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "Thought logged")
+	}
+}
+
+func TestNewBuiltinExecutorThinkRejectsEmptyThought(t *testing.T) {
+	ctx := context.Background()
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolThink,
+			Kind: KindUtility,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolThink,
+		Arguments: `{"thought":"   "}`,
+	})
+	if !errors.Is(err, ErrToolThoughtRequired) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolThoughtRequired)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
+}
+
+func TestNewBuiltinExecutorSetTodoListRendersTodos(t *testing.T) {
+	ctx := context.Background()
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolSetTodoList,
+			Kind: KindUtility,
+		},
+	}, t.TempDir())
+
+	got, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolSetTodoList,
+		Arguments: `{"todos":[{"title":"Inspect runtime loop","status":"Done"},{"title":"Add todo tool","status":"In Progress"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got.Output != "- Inspect runtime loop [Done]\n- Add todo tool [In Progress]\n" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "- Inspect runtime loop [Done]\n- Add todo tool [In Progress]\n")
+	}
+}
+
+func TestNewBuiltinExecutorSetTodoListRejectsInvalidStatus(t *testing.T) {
+	ctx := context.Background()
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolSetTodoList,
+			Kind: KindUtility,
+		},
+	}, t.TempDir())
+
+	_, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolSetTodoList,
+		Arguments: `{"todos":[{"title":"Inspect runtime loop","status":"Started"}]}`,
+	})
+	if !errors.Is(err, ErrToolTodoStatusInvalid) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolTodoStatusInvalid)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
+}
+
 func TestNewBashHandlerWithTimeoutCancelsLongRunningCommand(t *testing.T) {
 	ctx := context.Background()
 	shaper := NewOutputShaperWithLimits(1000, 500) // 使用宽松的限制便于测试

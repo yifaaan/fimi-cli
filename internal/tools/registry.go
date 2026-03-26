@@ -18,11 +18,14 @@ const (
 	KindCommand Kind = "command"
 	KindFile    Kind = "file"
 	KindAgent   Kind = "agent"
+	KindUtility Kind = "utility"
 )
 
 const (
 	ToolBash        = "bash"
 	ToolAgent       = "agent"
+	ToolThink       = "think"
+	ToolSetTodoList = "set_todo_list"
 	ToolReadFile    = "read_file"
 	ToolGlob        = "glob"
 	ToolGrep        = "grep"
@@ -30,6 +33,16 @@ const (
 	ToolReplaceFile = "replace_file"
 	ToolPatchFile   = "patch_file"
 )
+
+const setTodoListDescription = `Update the whole todo list.
+
+Todo list is a simple yet powerful tool to help you get things done. You typically want to use this tool when the given task involves multiple subtasks or milestones, or when multiple tasks are given in a single request. This tool helps you break down the task and track progress.
+
+This is the only todo list tool available. Each time you want to operate on the todo list, you need to update the whole list. Make sure to maintain the todo items and their statuses properly.
+
+Once you finish a subtask or milestone, update the todo list to reflect progress.
+
+Avoid using this tool for trivial one-step tasks or simple factual questions.`
 
 // Definition 表示 runtime 未来会消费的单个工具声明。
 // 当前阶段先保留稳定的名字、类别和说明。
@@ -66,6 +79,16 @@ func BuiltinRegistry() Registry {
 			Name:        ToolAgent,
 			Kind:        KindAgent,
 			Description: "Run a declared subagent for a focused task.",
+		},
+		Definition{
+			Name:        ToolThink,
+			Kind:        KindUtility,
+			Description: "Log a private reasoning note without changing workspace state.",
+		},
+		Definition{
+			Name:        ToolSetTodoList,
+			Kind:        KindUtility,
+			Description: setTodoListDescription,
 		},
 		Definition{
 			Name:        ToolBash,

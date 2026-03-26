@@ -597,6 +597,7 @@ func (r Runner) emitStepEvents(
 		if err := r.emitEvent(ctx, runtimeevents.ToolCall{
 			ID:        call.ID,
 			Name:      call.Name,
+			Subtitle:  toolCallSubtitle(call),
 			Arguments: call.Arguments,
 		}); err != nil {
 			return err
@@ -628,6 +629,26 @@ func (r Runner) emitStepEvents(
 	return r.emitEvent(ctx, runtimeevents.StatusUpdate{
 		Status: buildStatusSnapshotWithWindow(store, r.config.ContextWindowTokens),
 	})
+}
+
+func toolCallSubtitle(call ToolCall) string {
+	switch call.Name {
+	case "think":
+		return thinkToolSubtitle(call.Arguments)
+	default:
+		return ""
+	}
+}
+
+func thinkToolSubtitle(raw string) string {
+	var args struct {
+		Thought string `json:"thought"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(args.Thought)
 }
 
 func (r Runner) emitEvent(ctx context.Context, event runtimeevents.Event) error {

@@ -81,6 +81,36 @@ func TestBuiltinRegistryIncludesAgentTool(t *testing.T) {
 	}
 }
 
+func TestBuiltinRegistryIncludesThinkTool(t *testing.T) {
+	registry := BuiltinRegistry()
+
+	got, err := registry.Resolve(ToolThink)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.Name != ToolThink {
+		t.Fatalf("Resolve().Name = %q, want %q", got.Name, ToolThink)
+	}
+	if got.Kind != KindUtility {
+		t.Fatalf("Resolve().Kind = %q, want %q", got.Kind, KindUtility)
+	}
+}
+
+func TestBuiltinRegistryIncludesSetTodoListTool(t *testing.T) {
+	registry := BuiltinRegistry()
+
+	got, err := registry.Resolve(ToolSetTodoList)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got.Name != ToolSetTodoList {
+		t.Fatalf("Resolve().Name = %q, want %q", got.Name, ToolSetTodoList)
+	}
+	if got.Kind != KindUtility {
+		t.Fatalf("Resolve().Kind = %q, want %q", got.Kind, KindUtility)
+	}
+}
+
 func TestRegistryReturnsStructuredErrors(t *testing.T) {
 	registry := BuiltinRegistry()
 

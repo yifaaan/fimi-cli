@@ -969,9 +969,9 @@ func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 			return StepResult{
 				Status:        StepStatusIncomplete,
 				Kind:          StepKindToolCalls,
-				AssistantText: "I will inspect the file.",
+				AssistantText: "I will think before editing.",
 				ToolCalls: []ToolCall{
-					{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`},
+					{ID: "call_think", Name: "think", Arguments: `{"thought":"inspect the parser branch first"}`},
 				},
 			}, nil
 		}
@@ -990,15 +990,16 @@ func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 
 	want := []runtimeevents.Event{
 		runtimeevents.StepBegin{Number: 1},
-		runtimeevents.TextPart{Text: "I will inspect the file."},
+		runtimeevents.TextPart{Text: "I will think before editing."},
 		runtimeevents.ToolCall{
-			ID:        "call_read",
-			Name:      "read_file",
-			Arguments: `{"path":"main.go"}`,
+			ID:        "call_think",
+			Name:      "think",
+			Subtitle:  "inspect the parser branch first",
+			Arguments: `{"thought":"inspect the parser branch first"}`,
 		},
 		runtimeevents.ToolResult{
-			ToolCallID: "call_read",
-			ToolName:   "read_file",
+			ToolCallID: "call_think",
+			ToolName:   "think",
 			Output:     "",
 			IsError:    false,
 		},

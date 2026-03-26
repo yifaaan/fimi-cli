@@ -103,6 +103,53 @@ func TestBuildLLMToolDefinitionsForAgentTool(t *testing.T) {
 	}
 }
 
+func TestBuildLLMToolDefinitionsForThinkTool(t *testing.T) {
+	got := buildLLMToolDefinitions([]tools.Definition{
+		{
+			Name:        tools.ToolThink,
+			Description: "Log a private reasoning note without changing workspace state.",
+		},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
+	}
+	properties, ok := got[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
+	}
+	if _, ok := properties["thought"]; !ok {
+		t.Fatalf("tool parameters missing %q property", "thought")
+	}
+}
+
+func TestBuildLLMToolDefinitionsForSetTodoListTool(t *testing.T) {
+	got := buildLLMToolDefinitions([]tools.Definition{
+		{
+			Name:        tools.ToolSetTodoList,
+			Description: "Update the whole todo list.",
+		},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
+	}
+	defs, ok := got[0].Parameters["$defs"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool parameters $defs type = %T, want map[string]any", got[0].Parameters["$defs"])
+	}
+	if _, ok := defs["Todo"]; !ok {
+		t.Fatalf("tool parameters missing %q definition", "Todo")
+	}
+	properties, ok := got[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
+	}
+	if _, ok := properties["todos"]; !ok {
+		t.Fatalf("tool parameters missing %q property", "todos")
+	}
+}
+
 func TestBuildRuntimeConfig(t *testing.T) {
 	cfg := config.Config{
 		LoopControl: config.LoopControl{
@@ -122,7 +169,7 @@ func TestBuildRuntimeConfig(t *testing.T) {
 		},
 	}
 
-	got := buildRuntimeConfig(cfg)
+	got := buildRuntimeConfig(cfg, loadedAgent{})
 	if got.ReplyHistoryTurnLimit != 7 {
 		t.Fatalf("buildRuntimeConfig().ReplyHistoryTurnLimit = %d, want %d", got.ReplyHistoryTurnLimit, 7)
 	}
@@ -149,6 +196,37 @@ func TestBuildRuntimeInput(t *testing.T) {
 	want := runtime.Input{
 		Prompt:       "fix the test",
 		Model:        "custom-model",
+		SystemPrompt: "You are the configured agent.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildRuntimeInput() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildRuntimeInputUsesAgentModelOverride(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "default-model",
+		Models: map[string]config.ModelConfig{
+			"default-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "actual-default-model",
+			},
+			"reviewer": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "actual-reviewer-model",
+			},
+		},
+	}
+	input := runInput{
+		prompt: "fix the test",
+	}
+	agent := testLoadedAgent("You are the configured agent.")
+	agent.Spec.Model = "reviewer"
+
+	got := buildRuntimeInput(cfg, input, agent)
+	want := runtime.Input{
+		Prompt:       "fix the test",
+		Model:        "actual-reviewer-model",
 		SystemPrompt: "You are the configured agent.",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -256,6 +334,34 @@ func TestBuildRuntimeInputFallsBackToModelAliasWhenModelNameEmpty(t *testing.T) 
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildRuntimeInput() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildRuntimeConfigUsesAgentModelOverride(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "default-model",
+		Models: map[string]config.ModelConfig{
+			"default-model": {
+				Provider:            config.ProviderTypePlaceholder,
+				Model:               "default-model",
+				ContextWindowTokens: 128000,
+			},
+			"reviewer": {
+				Provider:            config.ProviderTypePlaceholder,
+				Model:               "reviewer-model",
+				ContextWindowTokens: 64000,
+			},
+		},
+	}
+	agent := loadedAgent{
+		Spec: agentspec.Spec{
+			Model: "reviewer",
+		},
+	}
+
+	got := buildRuntimeConfig(cfg, agent)
+	if got.ContextWindowTokens != 64000 {
+		t.Fatalf("buildRuntimeConfig().ContextWindowTokens = %d, want %d", got.ContextWindowTokens, 64000)
 	}
 }
 
@@ -1702,6 +1808,42 @@ func TestDependenciesBuildRunnerUsesInjectedClientBuilder(t *testing.T) {
 	}
 	if gotCfg.Models["custom-model"].Provider != config.ProviderTypePlaceholder {
 		t.Fatalf("builder got provider = %q, want %q", gotCfg.Models["custom-model"].Provider, config.ProviderTypePlaceholder)
+	}
+}
+
+func TestDependenciesBuildRunnerForAgentUsesModelOverride(t *testing.T) {
+	var gotCfg config.Config
+	deps := dependencies{
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			gotCfg = cfg
+			return llm.NewPlaceholderClient(), nil
+		},
+	}
+	cfg := config.Config{
+		DefaultModel: "custom-model",
+		Models: map[string]config.ModelConfig{
+			"custom-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "custom-model",
+			},
+			"reviewer-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "reviewer-model",
+			},
+		},
+	}
+
+	_, err := deps.buildRunnerForAgent(cfg, loadedAgent{
+		Spec: agentspec.Spec{
+			Model: "reviewer-model",
+		},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildRunnerForAgent() error = %v", err)
+	}
+
+	if gotCfg.DefaultModel != "reviewer-model" {
+		t.Fatalf("builder got DefaultModel = %q, want %q", gotCfg.DefaultModel, "reviewer-model")
 	}
 }
 

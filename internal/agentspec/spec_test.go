@@ -68,6 +68,27 @@ agent:
 		}
 	})
 
+	t.Run("loads model", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
+version: 1
+agent:
+  name: Test Agent
+  model: " reviewer-model "
+  system_prompt_path: ./system.md
+  tools:
+    - tool.read
+`, "You are a test agent.\n")
+
+		got, err := LoadFile(agentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		if got.Model != "reviewer-model" {
+			t.Fatalf("LoadFile().Model = %q, want %q", got.Model, "reviewer-model")
+		}
+	})
+
 	t.Run("loads exclude tools and subagents", func(t *testing.T) {
 		dir := t.TempDir()
 		agentFile := filepath.Join(dir, "agent.yaml")
@@ -253,6 +274,103 @@ agent:
 		}
 	})
 
+	t.Run("overrides model when extending", func(t *testing.T) {
+		dir := t.TempDir()
+		baseAgentFile := filepath.Join(dir, "base.yaml")
+		childAgentFile := filepath.Join(dir, "child.yaml")
+		promptFile := filepath.Join(dir, "system.md")
+
+		if err := os.WriteFile(baseAgentFile, []byte(`
+version: 1
+agent:
+  name: Base Agent
+  model: base-model
+  system_prompt_path: ./system.md
+  tools:
+    - tool.read
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(base.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(childAgentFile, []byte(`
+version: 1
+agent:
+  extend: ./base.yaml
+  model: child-model
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(child.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(promptFile, []byte("You are a test agent.\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(system.md) error = %v", err)
+		}
+
+		got, err := LoadFile(childAgentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		if got.Model != "child-model" {
+			t.Fatalf("LoadFile().Model = %q, want %q", got.Model, "child-model")
+		}
+	})
+
+	t.Run("loads default extension from workspace agents directory", func(t *testing.T) {
+		dir := t.TempDir()
+		defaultDir := filepath.Join(dir, "agents", "default")
+		defaultAgentFile := filepath.Join(defaultDir, "agent.yaml")
+		defaultPromptFile := filepath.Join(defaultDir, "system.md")
+		childAgentFile := filepath.Join(dir, "extending.yaml")
+
+		if err := os.MkdirAll(defaultDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", defaultDir, err)
+		}
+		if err := os.WriteFile(defaultAgentFile, []byte(`
+version: 1
+agent:
+  name: Default Agent
+  system_prompt_path: ./system.md
+  system_prompt_args:
+    ROLE: base
+  tools:
+    - bash
+    - read_file
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(default agent.yaml) error = %v", err)
+		}
+		if err := os.WriteFile(defaultPromptFile, []byte("You are the default agent.\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(default system.md) error = %v", err)
+		}
+		if err := os.WriteFile(childAgentFile, []byte(`
+version: 1
+agent:
+  extend: default
+  system_prompt_args:
+    SCOPE: app
+  exclude_tools:
+    - bash
+`), 0o644); err != nil {
+			t.Fatalf("WriteFile(extending.yaml) error = %v", err)
+		}
+
+		got, err := LoadFile(childAgentFile)
+		if err != nil {
+			t.Fatalf("LoadFile() error = %v", err)
+		}
+
+		want := Spec{
+			Name:             "Default Agent",
+			SystemPromptPath: defaultPromptFile,
+			SystemPromptArgs: map[string]string{
+				"ROLE":  "base",
+				"SCOPE": "app",
+			},
+			Tools:        []string{"bash", "read_file"},
+			ExcludeTools: []string{"bash"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("LoadFile() = %#v, want %#v", got, want)
+		}
+	})
+
 	t.Run("defaults missing version to v1", func(t *testing.T) {
 		agentFile, promptFile := writeAgentFixture(t, `
 agent:
@@ -285,6 +403,19 @@ agent:
 		_, err := LoadFile(agentFile)
 		if !errors.Is(err, ErrUnsupportedVersion) {
 			t.Fatalf("LoadFile() error = %v, want wrapped %v", err, ErrUnsupportedVersion)
+		}
+	})
+
+	t.Run("rejects default extension when default agent file is missing", func(t *testing.T) {
+		agentFile, _ := writeAgentFixture(t, `
+version: 1
+agent:
+  extend: default
+`, "You are a test agent.\n")
+
+		_, err := LoadFile(agentFile)
+		if !errors.Is(err, ErrDefaultAgentSpecNotFound) {
+			t.Fatalf("LoadFile() error = %v, want wrapped %v", err, ErrDefaultAgentSpecNotFound)
 		}
 	})
 

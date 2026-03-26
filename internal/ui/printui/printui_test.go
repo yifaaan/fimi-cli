@@ -117,6 +117,28 @@ func TestVisualizeTextUsesToolSubtitleWhenPresent(t *testing.T) {
 	}
 }
 
+func TestVisualizeTextPrintsThinkSubtitleInsteadOfJSONArguments(t *testing.T) {
+	var out bytes.Buffer
+	visualize := VisualizeText(&out)
+
+	events := make(chan runtimeevents.Event, 1)
+	events <- runtimeevents.ToolCall{
+		Name:      "think",
+		Subtitle:  "compare parser branch behavior",
+		Arguments: `{"thought":"compare parser branch behavior"}`,
+	}
+	close(events)
+
+	err := visualize(context.Background(), events)
+	if err != nil {
+		t.Fatalf("visualize() error = %v", err)
+	}
+
+	if out.String() != "[tool call] think compare parser branch behavior\n" {
+		t.Fatalf("printed output = %q, want %q", out.String(), "[tool call] think compare parser branch behavior\n")
+	}
+}
+
 func TestVisualizeTextSkipsZeroStatusUpdate(t *testing.T) {
 	var out bytes.Buffer
 	visualize := VisualizeText(&out)
