@@ -278,3 +278,30 @@ func LoadSession(workDir, sessionID string) (Session, error) {
 		HistoryFile: historyFile,
 	}, nil
 }
+
+// DeleteSession 删除指定 ID 的 session。
+// 删除 session 的历史文件，如果文件不存在则返回错误。
+func DeleteSession(workDir, sessionID string) error {
+	if sessionID == "" {
+		return errors.New("session ID is required")
+	}
+
+	_, workDirSessionsDir, err := DirForWorkDir(workDir)
+	if err != nil {
+		return err
+	}
+
+	historyFile := HistoryFileForSession(workDirSessionsDir, sessionID)
+
+	// 验证文件存在
+	if _, err := os.Stat(historyFile); os.IsNotExist(err) {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+
+	// 删除历史文件
+	if err := os.Remove(historyFile); err != nil {
+		return fmt.Errorf("remove session file: %w", err)
+	}
+
+	return nil
+}

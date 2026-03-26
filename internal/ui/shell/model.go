@@ -166,6 +166,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ResumeSwitchMsg:
 		return m.handleResumeSwitchResult(msg)
+
+	case SessionDeleteMsg:
+		return m.handleSessionDeleteResult(msg)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -539,6 +542,12 @@ func (m Model) handleSessionSelectKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	case "enter":
 		// 切换到选中的 session
 		return m.handleResumeSwitch(m.sessionList[m.selectedSession].ID)
+	case "ctrl+d":
+		// 删除选中的 session
+		if len(m.sessionList) == 0 {
+			return m, nil
+		}
+		return m, m.deleteSelectedSession()
 	case "esc", "q":
 		// 取消选择，返回正常模式
 		m.mode = ModeIdle
@@ -655,7 +664,7 @@ func (m Model) renderSessionSelectView() string {
 	helpStyle := lipgloss.NewStyle().
 		Foreground(styles.ColorMuted).
 		Italic(true)
-	sections = append(sections, helpStyle.Render("↑/↓ or j/k to navigate, Enter to select, Esc/q to cancel"))
+	sections = append(sections, helpStyle.Render("↑/↓ or j/k to navigate, Enter to select, Ctrl+D to delete, Esc/q to cancel"))
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
@@ -734,6 +743,81 @@ func (m Model) handleResumeSwitchResult(msg ResumeSwitchMsg) (tea.Model, tea.Cmd
 	})
 
 	return m, nil
+}
+
+// deleteSelectedSession 返回一个删除选中 session 的命令。
+func (m Model) deleteSelectedSession() tea.Cmd {
+	if len(m.sessionList) == 0 || m.selectedSession >= len(m.sessionList) {
+		return nil
+	}
+
+	sessionID := m.sessionList[m.selectedSession].ID
+	workDir := m.deps.WorkDir
+
+	return func() tea.Msg {
+		err := session.DeleteSession(workDir, sessionID)
+		return SessionDeleteMsg{SessionID: sessionID, Err: err}
+	}
+}
+
+// handleSessionDeleteResult 处理 session 删除结果。
+func (m Model) handleSessionDeleteResult(msg SessionDeleteMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		// 删除失败，显示错误并保持在选择模式
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error deleting session: %v", msg.Err),
+		})
+		return m, nil
+	}
+
+	// 从列表中移除已删除的 session
+	var newList []session.SessionInfo
+	for _, s := range m.sessionList {
+		if s.ID != msg.SessionID {
+			newList = append(newList, s)
+		}
+	}
+
+	if len(newList) == 0 {
+		// 没有剩余 session，退出选择模式
+		m.mode = ModeIdle
+		m.sessionList = nil
+		m.selectedSession = 0
+		m.sessionScrollOffset = 0
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: "Session deleted. No more sessions available.",
+		})
+		return m, nil
+	}
+
+	// 更新列表
+	m.sessionList = newList
+
+	// 调整选中位置
+	if m.selectedSession >= len(newList) {
+		m.selectedSession = len(newList) - 1
+	}
+
+	// 调整滚动偏移
+	availableHeight := m.height - 8
+	if availableHeight < 6 {
+		availableHeight = 6
+	}
+	maxVisible := availableHeight / 2
+	if maxVisible < 1 {
+		maxVisible = 1
+	}
+	if m.sessionScrollOffset > m.selectedSession {
+		m.sessionScrollOffset = m.selectedSession
+	}
+	if m.sessionScrollOffset > len(newList)-maxVisible && len(newList) > maxVisible {
+		m.sessionScrollOffset = len(newList) - maxVisible
+	}
+
+	// 清屏并重绘
+	return m, tea.ClearScreen
 }
 
 // truncateString 截断字符串到指定长度（使用 rune 正确处理 UTF-8）。

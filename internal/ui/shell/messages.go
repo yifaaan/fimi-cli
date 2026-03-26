@@ -66,6 +66,12 @@ type ResumeSwitchMsg struct {
 	Err     error
 }
 
+// SessionDeleteMsg 表示 session 删除结果。
+type SessionDeleteMsg struct {
+	SessionID string
+	Err       error
+}
+
 // ClearMsg 表示用户请求清屏。
 type ClearMsg struct{}
 
