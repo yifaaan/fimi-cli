@@ -220,6 +220,42 @@ func (c Context) ReadRecentTurns(limit int) ([]TextRecord, error) {
 	return records, nil
 }
 
+// ReadFirstUserRecord 返回 history 中第一条 user 记录（用于快速预览）。
+// 如果不存在 user 记录，返回 (TextRecord{}, false, nil)。
+func (c Context) ReadFirstUserRecord() (TextRecord, bool, error) {
+	f, err := os.Open(c.historyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return TextRecord{}, false, nil
+	}
+	if err != nil {
+		return TextRecord{}, false, fmt.Errorf("open history file %q: %w", c.historyFile, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var record TextRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			return TextRecord{}, false, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
+		}
+
+		if record.Role == RoleUser {
+			return record, true, nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return TextRecord{}, false, fmt.Errorf("scan history file %q: %w", c.historyFile, err)
+	}
+
+	return TextRecord{}, false, nil
+}
+
 func (c Context) readRecords(limit int) ([]TextRecord, error) {
 	f, err := os.Open(c.historyFile)
 	if errors.Is(err, os.ErrNotExist) {
