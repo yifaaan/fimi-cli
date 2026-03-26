@@ -994,7 +994,7 @@ func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 		runtimeevents.ToolCall{
 			ID:        "call_think",
 			Name:      "think",
-			Subtitle:  "inspect the parser branch first",
+			Subtitle:  "Thought: inspect the parser branch first",
 			Arguments: `{"thought":"inspect the parser branch first"}`,
 		},
 		runtimeevents.ToolResult{
@@ -1010,6 +1010,38 @@ func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sink.events, want) {
 		t.Fatalf("captured events = %#v, want %#v", sink.events, want)
+	}
+}
+
+func TestToolCallSubtitleFormatsCommonTools(t *testing.T) {
+	tests := []struct {
+		name string
+		call ToolCall
+		want string
+	}{
+		{
+			name: "bash",
+			call: ToolCall{Name: "bash", Arguments: `{"command":"git status --short"}`},
+			want: "Ran git status --short",
+		},
+		{
+			name: "read_file",
+			call: ToolCall{Name: "read_file", Arguments: `{"path":"internal/app/app.go"}`},
+			want: "Read internal/app/app.go",
+		},
+		{
+			name: "think",
+			call: ToolCall{Name: "think", Arguments: `{"thought":"compare parser branch behavior"}`},
+			want: "Thought: compare parser branch behavior",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := toolCallSubtitle(tt.call); got != tt.want {
+				t.Fatalf("toolCallSubtitle() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

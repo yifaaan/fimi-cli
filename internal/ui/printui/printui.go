@@ -93,7 +93,7 @@ func formatEvent(event runtimeevents.Event) string {
 			return fmt.Sprintf("[tool call] %s", e.Name)
 		}
 
-		return fmt.Sprintf("[tool call] %s %s", e.Name, summary)
+		return fmt.Sprintf("[tool call] %s", summary)
 	case runtimeevents.ToolCallPart:
 		return fmt.Sprintf("[tool call part] %s %s", e.ToolCallID, e.Delta)
 	case runtimeevents.ToolResult:
@@ -117,7 +117,12 @@ func toolCallSummary(event runtimeevents.ToolCall) string {
 		return clampInline(summary)
 	}
 
-	return clampInline(strings.TrimSpace(event.Arguments))
+	arguments := strings.TrimSpace(event.Arguments)
+	if arguments == "" {
+		return ""
+	}
+
+	return clampInline(event.Name + " " + arguments)
 }
 
 func formatToolResult(event runtimeevents.ToolResult) string {

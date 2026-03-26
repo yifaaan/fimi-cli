@@ -147,7 +147,7 @@ func TestLiveStateUsesToolSubtitleForThinkCalls(t *testing.T) {
 	})
 
 	rendered := strings.Join(state.Lines(), "\n")
-	if !strings.Contains(rendered, "[tool] think compare parser branch behavior") {
+	if !strings.Contains(rendered, "[tool] compare parser branch behavior") {
 		t.Fatalf("rendered lines = %q, want think subtitle", rendered)
 	}
 }
@@ -171,13 +171,32 @@ func TestRuntimeModelUsesToolSubtitleInTranscriptAndCard(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("len(lines) = %d, want at least 2", len(lines))
 	}
-	if lines[1].Content != "think compare parser branch behavior" {
-		t.Fatalf("tool call transcript = %q, want %q", lines[1].Content, "think compare parser branch behavior")
+	if lines[1].Content != "compare parser branch behavior" {
+		t.Fatalf("tool call transcript = %q, want %q", lines[1].Content, "compare parser branch behavior")
 	}
 
 	card := model.ToolCardView(60)
 	if !strings.Contains(card, "compare parser branch behavior") {
 		t.Fatalf("tool card = %q, want think subtitle", card)
+	}
+}
+
+func TestRuntimeModelUsesHumanizedBashSubtitleInTranscript(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_bash",
+		Name:      "bash",
+		Subtitle:  "Ran git status --short",
+		Arguments: `{"command":"git status --short"}`,
+	})
+
+	lines := model.ToLines()
+	if len(lines) < 2 {
+		t.Fatalf("len(lines) = %d, want at least 2", len(lines))
+	}
+	if lines[1].Content != "Ran git status --short" {
+		t.Fatalf("tool call transcript = %q, want %q", lines[1].Content, "Ran git status --short")
 	}
 }
 
@@ -199,7 +218,7 @@ func TestRuntimeModelPreservesOrderedStepTranscript(t *testing.T) {
 	model = model.ApplyEvent(runtimeevents.ToolCall{
 		ID:        "call_read",
 		Name:      "read_file",
-		Subtitle:  "main.go",
+		Subtitle:  "Read main.go",
 		Arguments: `{"path":"main.go"}`,
 	})
 	model = model.ApplyEvent(runtimeevents.ToolResult{
@@ -212,9 +231,9 @@ func TestRuntimeModelPreservesOrderedStepTranscript(t *testing.T) {
 	want := []TranscriptLine{
 		{Type: LineTypeSystem, Content: "[step 2]"},
 		{Type: LineTypeAssistant, Content: "checking"},
-		{Type: LineTypeToolCall, Content: "think compare parser branch behavior"},
+		{Type: LineTypeToolCall, Content: "compare parser branch behavior"},
 		{Type: LineTypeToolResult, Content: "Thought logged"},
-		{Type: LineTypeToolCall, Content: "read_file main.go"},
+		{Type: LineTypeToolCall, Content: "Read main.go"},
 		{Type: LineTypeToolResult, Content: "package main"},
 	}
 	if len(got) != len(want) {
@@ -283,8 +302,8 @@ func TestModelAppliesBatchedRuntimeEventsInOrder(t *testing.T) {
 	if model.output.pending[1].Content != "hello" {
 		t.Fatalf("assistant content = %q, want %q", model.output.pending[1].Content, "hello")
 	}
-	if model.output.pending[2].Content != "think compare parser branch behavior" {
-		t.Fatalf("tool call content = %q, want %q", model.output.pending[2].Content, "think compare parser branch behavior")
+	if model.output.pending[2].Content != "compare parser branch behavior" {
+		t.Fatalf("tool call content = %q, want %q", model.output.pending[2].Content, "compare parser branch behavior")
 	}
 }
 
@@ -352,6 +371,41 @@ func TestOutputModelPreservesScrollPositionWhenNotAtBottom(t *testing.T) {
 	view := model.View()
 	if strings.Contains(view, "line 9") {
 		t.Fatalf("view after append = %q, want scroll position preserved while not at bottom", view)
+	}
+}
+
+func TestOutputModelMouseWheelScrollsWrappedTranscriptRows(t *testing.T) {
+	model := NewOutputModel()
+	model.height = 10
+	model.width = 20
+	model = model.AppendLine(TranscriptLine{
+		Type: LineTypeAssistant,
+		Content: strings.Join([]string{
+			"line 1",
+			"line 2",
+			"line 3",
+			"line 4",
+			"line 5",
+			"line 6",
+			"line 7",
+			"line 8",
+		}, "\n"),
+	})
+
+	view := model.View()
+	if !strings.Contains(view, "line 8") {
+		t.Fatalf("initial view = %q, want latest wrapped row", view)
+	}
+	if strings.Contains(view, "line 1") {
+		t.Fatalf("initial view = %q, want top wrapped row hidden before scroll", view)
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress}, model.width, model.height)
+	model = updated
+
+	view = model.View()
+	if !strings.Contains(view, "line 1") {
+		t.Fatalf("scrolled view = %q, want earliest wrapped row visible after wheel up", view)
 	}
 }
 

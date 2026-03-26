@@ -34,7 +34,7 @@ func (s *liveState) Apply(event runtimeevents.Event) {
 		s.assistantText += e.Text
 	case runtimeevents.ToolCall:
 		s.toolName = e.Name
-		s.toolSummary = firstNonEmpty(strings.TrimSpace(e.Subtitle), strings.TrimSpace(e.Arguments))
+		s.toolSummary = toolCallDisplaySummary(e.Name, e.Subtitle, e.Arguments)
 		s.toolOutput = ""
 		s.toolIsError = false
 	case runtimeevents.ToolCallPart:
@@ -66,7 +66,7 @@ func (s liveState) Lines() []string {
 
 	if s.toolName != "" {
 		if summary := strings.TrimSpace(s.toolSummary); summary != "" {
-			lines = append(lines, fmt.Sprintf("[tool] %s %s", s.toolName, summary))
+			lines = append(lines, fmt.Sprintf("[tool] %s", summary))
 		} else {
 			lines = append(lines, fmt.Sprintf("[tool] %s", s.toolName))
 		}

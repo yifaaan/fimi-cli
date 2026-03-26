@@ -39,7 +39,7 @@ func TestVisualizeTextPrintsEventsInOrder(t *testing.T) {
 	want := strings.Join([]string{
 		"[step 1]",
 		"hello", // TextPart 后面跟着 ToolCall，所以会补换行
-		`[tool call] read_file {"path":"main.go"}`,
+		"[tool call] read_file {\"path\":\"main.go\"}",
 		"[tool result] read_file package main",
 		"[status] context used 25%",
 		"[interrupted]",
@@ -112,8 +112,30 @@ func TestVisualizeTextUsesToolSubtitleWhenPresent(t *testing.T) {
 		t.Fatalf("visualize() error = %v", err)
 	}
 
-	if out.String() != "[tool call] bash go test ./internal/...\n" {
-		t.Fatalf("printed output = %q, want %q", out.String(), "[tool call] bash go test ./internal/...\n")
+	if out.String() != "[tool call] go test ./internal/...\n" {
+		t.Fatalf("printed output = %q, want %q", out.String(), "[tool call] go test ./internal/...\n")
+	}
+}
+
+func TestVisualizeTextPrintsHumanizedBashSubtitleWithoutToolName(t *testing.T) {
+	var out bytes.Buffer
+	visualize := VisualizeText(&out)
+
+	events := make(chan runtimeevents.Event, 1)
+	events <- runtimeevents.ToolCall{
+		Name:      "bash",
+		Subtitle:  "Ran git status --short",
+		Arguments: `{"command":"git status --short"}`,
+	}
+	close(events)
+
+	err := visualize(context.Background(), events)
+	if err != nil {
+		t.Fatalf("visualize() error = %v", err)
+	}
+
+	if out.String() != "[tool call] Ran git status --short\n" {
+		t.Fatalf("printed output = %q, want %q", out.String(), "[tool call] Ran git status --short\n")
 	}
 }
 
@@ -134,8 +156,8 @@ func TestVisualizeTextPrintsThinkSubtitleInsteadOfJSONArguments(t *testing.T) {
 		t.Fatalf("visualize() error = %v", err)
 	}
 
-	if out.String() != "[tool call] think compare parser branch behavior\n" {
-		t.Fatalf("printed output = %q, want %q", out.String(), "[tool call] think compare parser branch behavior\n")
+	if out.String() != "[tool call] compare parser branch behavior\n" {
+		t.Fatalf("printed output = %q, want %q", out.String(), "[tool call] compare parser branch behavior\n")
 	}
 }
 
@@ -198,7 +220,7 @@ func TestVisualizeTextClampsLongToolCallSummary(t *testing.T) {
 		t.Fatalf("visualize() error = %v", err)
 	}
 
-	want := "[tool call] write_file " + strings.Repeat("a", 77) + "...\n"
+	want := "[tool call] " + clampInline("write_file "+strings.Repeat("a", 100)) + "\n"
 	if out.String() != want {
 		t.Fatalf("printed output = %q, want %q", out.String(), want)
 	}

@@ -90,7 +90,7 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 			ID:     e.ID,
 			Name:   e.Name,
 			Status: ToolStatusRunning,
-			Args:   firstNonEmpty(strings.TrimSpace(e.Subtitle), strings.TrimSpace(e.Arguments)),
+			Args:   toolCallDisplaySummary(e.Name, e.Subtitle, e.Arguments),
 		}
 		m.appendToolCallLine()
 
@@ -193,12 +193,24 @@ func (m *RuntimeModel) appendToolResultLine() {
 }
 
 func formatToolCallLine(tool ToolCallInfo) string {
-	content := tool.Name
 	if summary := strings.TrimSpace(tool.Args); summary != "" {
-		content += " " + summary
+		return summary
 	}
 
-	return content
+	return tool.Name
+}
+
+func toolCallDisplaySummary(name string, subtitle string, arguments string) string {
+	if summary := strings.TrimSpace(subtitle); summary != "" {
+		return summary
+	}
+
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return name
+	}
+
+	return name + " " + arguments
 }
 
 // SpinnerCmd 返回 spinner 动画命令。
