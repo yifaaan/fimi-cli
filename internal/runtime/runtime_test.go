@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -107,6 +110,23 @@ func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 			contextstore.NewUserTextRecord("hello"),
 		})
 	}
+
+	checkpoints, err := ctx.ListCheckpoints()
+	if err != nil {
+		t.Fatalf("ListCheckpoints() error = %v", err)
+	}
+	if len(checkpoints) != 1 {
+		t.Fatalf("len(ListCheckpoints()) = %d, want 1", len(checkpoints))
+	}
+	if checkpoints[0].ID != 0 {
+		t.Fatalf("checkpoints[0].ID = %d, want 0", checkpoints[0].ID)
+	}
+	if checkpoints[0].PromptPreview != "hello" {
+		t.Fatalf("checkpoints[0].PromptPreview = %q, want %q", checkpoints[0].PromptPreview, "hello")
+	}
+	if checkpoints[0].CreatedAt == "" {
+		t.Fatalf("checkpoints[0].CreatedAt = %q, want non-empty", checkpoints[0].CreatedAt)
+	}
 }
 
 func TestRunnerRunSkipsEmptyPrompt(t *testing.T) {
@@ -136,6 +156,14 @@ func TestRunnerRunSkipsEmptyPrompt(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("Count() = %d, want 0", count)
+	}
+
+	checkpoints, err := ctx.ListCheckpoints()
+	if err != nil {
+		t.Fatalf("ListCheckpoints() error = %v", err)
+	}
+	if len(checkpoints) != 0 {
+		t.Fatalf("len(ListCheckpoints()) = %d, want 0", len(checkpoints))
 	}
 }
 
@@ -1088,6 +1116,124 @@ func TestRunnerRunEmitsInterruptedEventWhenContextCancelled(t *testing.T) {
 	if sink.events[len(sink.events)-1] != wantLast {
 		t.Fatalf("last event = %#v, want %#v", sink.events[len(sink.events)-1], wantLast)
 	}
+}
+
+func TestRunnerRunCreatesCheckpointBeforeUserPromptInRawHistory(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{
+		reply: AssistantReply{Text: "assistant reply"},
+	}, Config{})
+
+	if _, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	roles, err := rawHistoryRoles(ctx.Path())
+	if err != nil {
+		t.Fatalf("rawHistoryRoles() error = %v", err)
+	}
+	want := []string{contextstore.RoleCheckpoint, contextstore.RoleUser, contextstore.RoleAssistant}
+	if !reflect.DeepEqual(roles, want) {
+		t.Fatalf("raw history roles = %#v, want %#v", roles, want)
+	}
+}
+
+func TestRunnerRunCreatesSequentialPromptBoundaryCheckpoints(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{
+		reply: AssistantReply{Text: "assistant reply"},
+	}, Config{})
+
+	if _, err := runner.Run(context.Background(), ctx, Input{Prompt: "first prompt"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := runner.Run(context.Background(), ctx, Input{Prompt: "second prompt"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+
+	checkpoints, err := ctx.ListCheckpoints()
+	if err != nil {
+		t.Fatalf("ListCheckpoints() error = %v", err)
+	}
+	want := []contextstore.CheckpointRecord{
+		{Role: contextstore.RoleCheckpoint, ID: 0, PromptPreview: "first prompt"},
+		{Role: contextstore.RoleCheckpoint, ID: 1, PromptPreview: "second prompt"},
+	}
+	if len(checkpoints) != len(want) {
+		t.Fatalf("len(ListCheckpoints()) = %d, want %d", len(checkpoints), len(want))
+	}
+	for i := range want {
+		if checkpoints[i].Role != want[i].Role {
+			t.Fatalf("checkpoints[%d].Role = %q, want %q", i, checkpoints[i].Role, want[i].Role)
+		}
+		if checkpoints[i].ID != want[i].ID {
+			t.Fatalf("checkpoints[%d].ID = %d, want %d", i, checkpoints[i].ID, want[i].ID)
+		}
+		if checkpoints[i].PromptPreview != want[i].PromptPreview {
+			t.Fatalf("checkpoints[%d].PromptPreview = %q, want %q", i, checkpoints[i].PromptPreview, want[i].PromptPreview)
+		}
+		if checkpoints[i].CreatedAt == "" {
+			t.Fatalf("checkpoints[%d].CreatedAt = %q, want non-empty", i, checkpoints[i].CreatedAt)
+		}
+	}
+}
+
+func TestRunnerRunCheckpointFailureAbortsBeforeHistoryMutation(t *testing.T) {
+	parentFile := filepath.Join(t.TempDir(), "history-parent")
+	if err := os.WriteFile(parentFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile(parentFile) error = %v", err)
+	}
+	ctx := contextstore.New(filepath.Join(parentFile, "history.jsonl"))
+	engine := &trackingEngine{}
+	runner := New(engine, Config{})
+
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want non-nil")
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+	if engine.called {
+		t.Fatalf("engine called = true, want false")
+	}
+	if _, statErr := os.Stat(ctx.Path()); !errors.Is(statErr, os.ErrNotExist) && statErr == nil {
+		t.Fatalf("Stat(%q) error = nil, want non-existent history file", ctx.Path())
+	}
+}
+
+func TestCheckpointPromptPreviewNormalizesWhitespaceAndTruncates(t *testing.T) {
+	prompt := "  first line\n\n second line with a lot of trailing words to make sure preview truncates correctly  "
+	got := checkpointPromptPreview(prompt)
+	want := "first line second line with a lot of trailing words to ma..."
+	if got != want {
+		t.Fatalf("checkpointPromptPreview() = %q, want %q", got, want)
+	}
+}
+
+func rawHistoryRoles(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	roles := make([]string, 0)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var header struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+			return nil, err
+		}
+		roles = append(roles, header.Role)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return roles, nil
 }
 
 type staticEngine struct {

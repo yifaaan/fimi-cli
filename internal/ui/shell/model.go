@@ -29,6 +29,8 @@ const (
 	ModeStreaming
 	// ModeSessionSelect 选择 session 的交互模式
 	ModeSessionSelect
+	// ModeCheckpointSelect 选择 checkpoint 的交互模式
+	ModeCheckpointSelect
 	// ModeCommandSelect 选择命令的交互模式
 	ModeCommandSelect
 )
@@ -56,14 +58,23 @@ type Model struct {
 
 	// 运行时事件通道 (由 Run() 创建)
 	eventsCh <-chan runtimeevents.Event
+
 	// runtime 已结束，但仍需等待尾部事件排空后再切回 idle。
 	pendingCompletion *RuntimeCompleteMsg
+
+	// 当前正在运行的 shell 动作命令字，用于在完成态识别后处理。
+	activeShellActionCommand string
 
 	// Session 选择相关状态
 	sessionList         []session.SessionInfo
 	selectedSession     int
 	sessionScrollOffset int // 滚动偏移量
 	inSessionSelect     bool
+
+	// Checkpoint 选择相关状态
+	checkpointList         []contextstore.CheckpointRecord
+	selectedCheckpoint     int
+	checkpointScrollOffset int
 
 	// Command 建议相关状态
 	showCommandSuggestions bool
@@ -81,6 +92,8 @@ func availableCommands() []CommandInfo {
 	return []CommandInfo{
 		{Name: "/help", Description: "Show this help message"},
 		{Name: "/clear", Description: "Clear the screen"},
+		{Name: "/compact", Description: "Compact conversation context"},
+		{Name: "/rewind", Description: "List available rewind checkpoints"},
 		{Name: "/exit", Description: "Exit the shell"},
 		{Name: "/quit", Description: "Exit the shell"},
 		{Name: "/resume", Description: "List available sessions"},
@@ -126,6 +139,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 如果在 session 选择模式，特殊处理键盘输入
 		if m.mode == ModeSessionSelect {
 			return m.handleSessionSelectKeyPress(msg)
+		}
+		if m.mode == ModeCheckpointSelect {
+			return m.handleCheckpointSelectKeyPress(msg)
 		}
 		var outputCmd tea.Cmd
 		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
@@ -193,6 +209,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SessionDeleteMsg:
 		return m.handleSessionDeleteResult(msg)
+
+	case CheckpointListMsg:
+		return m.handleCheckpointListResult(msg)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -204,6 +223,9 @@ func (m Model) View() string {
 	// 如果在 session 选择模式，渲染选择界面
 	if m.mode == ModeSessionSelect {
 		return m.renderSessionSelectView()
+	}
+	if m.mode == ModeCheckpointSelect {
+		return m.renderCheckpointSelectView()
 	}
 
 	var sections []string
@@ -508,8 +530,63 @@ func (m Model) finishRuntime(msg RuntimeCompleteMsg) Model {
 			Type:    LineTypeError,
 			Content: fmt.Sprintf("Error: %v", msg.Err),
 		})
+		m.activeShellActionCommand = ""
+		return m
+	}
+	if m.activeShellActionCommand == "/compact" {
+		m = m.finishCompactRuntime(msg)
+	}
+	m.activeShellActionCommand = ""
+
+	return m
+}
+
+func compactedRecordsFromResult(store contextstore.Context, result runtime.Result) []contextstore.TextRecord {
+	records := []contextstore.TextRecord{contextstore.NewSystemTextRecord("session initialized")}
+	if firstUser, ok, err := store.ReadFirstUserRecord(); err == nil && ok && strings.TrimSpace(firstUser.Content) != "" {
+		records = append(records, firstUser)
+	}
+	for _, step := range result.Steps {
+		if strings.TrimSpace(step.AssistantText) == "" {
+			continue
+		}
+		records = append(records, contextstore.NewAssistantTextRecord(step.AssistantText))
+	}
+	return records
+}
+
+func compactedNoticeText() string {
+	return "Conversation context compacted into a working summary."
+}
+
+func (m Model) rebuildOutputFromRecords(records []contextstore.TextRecord) Model {
+	m.output = NewOutputModel()
+	for _, line := range transcriptLineModelsFromRecords(records) {
+		m.output = m.output.AppendLine(line)
+	}
+	if last, ok, err := m.deps.Store.Last(); err == nil && ok {
+		m.deps.StartupInfo.LastRole = last.Role
+		m.deps.StartupInfo.LastSummary = strings.TrimSpace(last.Content)
+	}
+	return m
+}
+
+func (m Model) finishCompactRuntime(msg RuntimeCompleteMsg) Model {
+	records := compactedRecordsFromResult(m.deps.Store, msg.Result)
+	if err := m.deps.Store.RewriteTextRecordsPreservingNamedBackup(records, "compact"); err != nil {
+		m.err = err
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("Error: persist compacted history: %v", err),
+		})
+		return m
 	}
 
+	m = m.rebuildOutputFromRecords(records)
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: compactedNoticeText(),
+	})
 	return m
 }
 
@@ -527,6 +604,10 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 	case cmd == "/clear":
 		m.output = m.output.Clear()
 		return m, nil
+	case cmd == "/compact":
+		return m.handleCompactCommand()
+	case cmd == "/rewind":
+		return m.handleRewindList()
 	case cmd == "/resume":
 		return m.handleResumeList()
 	default:
@@ -535,6 +616,77 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 			Content: fmt.Sprintf("Unknown command: %s", cmd),
 		})
 		return m, nil
+	}
+}
+
+type shellActionSpec struct {
+	CommandText string
+	StatusText  string
+	Prompt      string
+}
+
+func (m Model) handleCompactCommand() (tea.Model, tea.Cmd) {
+	return m.startShellAction(compactActionSpec())
+}
+
+func (m Model) startShellAction(spec shellActionSpec) (tea.Model, tea.Cmd) {
+	spec.CommandText = strings.TrimSpace(spec.CommandText)
+	spec.Prompt = strings.TrimSpace(spec.Prompt)
+	if spec.CommandText == "" || spec.Prompt == "" {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: "error: shell action requires non-empty command text and prompt",
+		})
+		return m, nil
+	}
+
+	// 新动作开始前先把上一轮临时 UI 状态落定，并清空 live runtime 状态。
+	m.output = m.output.FlushPending()
+	m.runtime = m.runtime.Reset()
+
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: spec.StatusText,
+	})
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeUser,
+		Content: spec.CommandText,
+	})
+
+	if m.history != nil {
+		_ = m.history.Append(spec.CommandText)
+	}
+	m.input.AppendHistory(spec.CommandText)
+
+	m.input = m.input.Clear()
+	m.mode = ModeThinking
+	m.activeShellActionCommand = spec.CommandText
+
+	eventsCh := make(chan runtimeevents.Event, 256)
+	m.eventsCh = eventsCh
+
+	return m, tea.Batch(
+		m.runtime.SpinnerCmd(),
+		waitForRuntimeEvents(eventsCh),
+		m.startRuntimeExecution(spec.Prompt, eventsCh),
+	)
+}
+
+func compactActionSpec() shellActionSpec {
+	return shellActionSpec{
+		CommandText: "/compact",
+		StatusText:  "Compacting conversation context into a structured working summary...",
+		Prompt: strings.Join([]string{
+			"Compact the current conversation context into a concise working summary.",
+			"Return the result using exactly these section headings:",
+			"- Current goal",
+			"- Constraints",
+			"- Decisions",
+			"- Open tasks",
+			"- Next step",
+			"Keep each section brief and concrete.",
+			"Preserve the user's goals, current constraints, important decisions, open tasks, and the next concrete step so work can continue efficiently in the same session.",
+		}, "\n"),
 	}
 }
 
@@ -778,7 +930,6 @@ func (m Model) renderSessionSelectView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-
 // formatFileSize 返回友好的文件大小描述（kB / MB / GB）。
 func formatFileSize(size int64) string {
 	switch {
@@ -937,6 +1088,216 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen-3]) + "..."
+}
+
+func (m Model) handleRewindList() (tea.Model, tea.Cmd) {
+	return m, func() tea.Msg {
+		checkpoints, err := m.deps.Store.ListCheckpoints()
+		return CheckpointListMsg{Checkpoints: checkpoints, Err: err}
+	}
+}
+
+func (m Model) handleCheckpointListResult(msg CheckpointListMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error listing rewind checkpoints: %v", msg.Err),
+		})
+		return m, nil
+	}
+
+	if len(msg.Checkpoints) == 0 {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: "No rewind checkpoints found for this session.",
+		})
+		return m, nil
+	}
+
+	m.mode = ModeCheckpointSelect
+	m.checkpointList = msg.Checkpoints
+	m.selectedCheckpoint = 0
+	m.checkpointScrollOffset = 0
+	return m, nil
+}
+
+func (m Model) handleCheckpointSelectKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	availableHeight := m.height - 8
+	if availableHeight < 6 {
+		availableHeight = 6
+	}
+	linesPerCheckpoint := 2
+	maxVisible := availableHeight / linesPerCheckpoint
+	if maxVisible < 1 {
+		maxVisible = 1
+	}
+
+	total := len(m.checkpointList)
+	oldScrollOffset := m.checkpointScrollOffset
+
+	switch keyStr {
+	case "up", "k":
+		if m.selectedCheckpoint > 0 {
+			m.selectedCheckpoint--
+			if m.selectedCheckpoint < m.checkpointScrollOffset {
+				m.checkpointScrollOffset = m.selectedCheckpoint
+			}
+		}
+	case "down", "j":
+		if m.selectedCheckpoint < total-1 {
+			m.selectedCheckpoint++
+			if m.selectedCheckpoint >= m.checkpointScrollOffset+maxVisible {
+				m.checkpointScrollOffset = m.selectedCheckpoint - maxVisible + 1
+			}
+		}
+	case "enter":
+		return m.rewindToSelectedCheckpoint(), nil
+	case "esc", "q":
+		return m.finishCheckpointSelection(), nil
+	}
+
+	if m.checkpointScrollOffset != oldScrollOffset {
+		return m, tea.ClearScreen
+	}
+	return m, nil
+}
+
+func (m Model) renderCheckpointSelectView() string {
+	var sections []string
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorPrimary).
+		Bold(true)
+	sections = append(sections, titleStyle.Render("Select a checkpoint to rewind"))
+	sections = append(sections, "")
+
+	availableHeight := m.height - 6
+	if availableHeight < 6 {
+		availableHeight = 6
+	}
+	linesPerCheckpoint := 2
+	maxVisibleCheckpoints := availableHeight / linesPerCheckpoint
+	if maxVisibleCheckpoints < 1 {
+		maxVisibleCheckpoints = 1
+	}
+
+	totalCheckpoints := len(m.checkpointList)
+	scrollOffset := m.checkpointScrollOffset
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+	if scrollOffset > totalCheckpoints-maxVisibleCheckpoints && totalCheckpoints > maxVisibleCheckpoints {
+		scrollOffset = totalCheckpoints - maxVisibleCheckpoints
+	}
+
+	startIdx := scrollOffset
+	endIdx := scrollOffset + maxVisibleCheckpoints
+	if endIdx > totalCheckpoints {
+		endIdx = totalCheckpoints
+	}
+
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("14")).
+		Bold(true)
+	selectedMetaStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("14"))
+
+	for i := startIdx; i < endIdx; i++ {
+		checkpoint := m.checkpointList[i]
+		label := strings.TrimSpace(checkpoint.PromptPreview)
+		if label == "" {
+			label = fmt.Sprintf("checkpoint %d", checkpoint.ID)
+		}
+
+		metaLine := fmt.Sprintf("ID %d", checkpoint.ID)
+		if createdAt := strings.TrimSpace(checkpoint.CreatedAt); createdAt != "" {
+			metaLine = fmt.Sprintf("ID %d  %s", checkpoint.ID, createdAt)
+		}
+
+		var block string
+		displayNum := i + 1
+		if i == m.selectedCheckpoint {
+			line1 := selectedStyle.Render(fmt.Sprintf("[%d] > %s", displayNum, truncateString(label, 70)))
+			line2 := selectedMetaStyle.Render(fmt.Sprintf("      %s", metaLine))
+			block = fmt.Sprintf("%s\n%s", line1, line2)
+		} else {
+			block = fmt.Sprintf("[%d] %s\n    %s", displayNum, truncateString(label, 70), metaLine)
+		}
+		sections = append(sections, block)
+	}
+
+	sections = append(sections, "")
+
+	statusText := fmt.Sprintf("Checkpoint %d/%d", m.selectedCheckpoint+1, totalCheckpoints)
+	if totalCheckpoints > maxVisibleCheckpoints {
+		statusText += fmt.Sprintf(" (showing %d-%d)", startIdx+1, endIdx)
+	}
+	statusStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted).
+		Italic(true)
+	sections = append(sections, statusStyle.Render(statusText))
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted).
+		Italic(true)
+	sections = append(sections, helpStyle.Render("↑/↓ or j/k to navigate, Enter to select, Esc/q to cancel"))
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+func rewindedNoticeText(checkpointID int) string {
+	return fmt.Sprintf("Conversation rewound to checkpoint %d.", checkpointID)
+}
+
+func (m Model) finishCheckpointSelection() Model {
+	m.mode = ModeIdle
+	m.checkpointList = nil
+	m.selectedCheckpoint = 0
+	m.checkpointScrollOffset = 0
+	return m
+}
+
+func (m Model) rewindToSelectedCheckpoint() Model {
+	if len(m.checkpointList) == 0 || m.selectedCheckpoint >= len(m.checkpointList) {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: "error rewinding conversation: no checkpoint selected",
+		})
+		return m.finishCheckpointSelection()
+	}
+
+	checkpoint := m.checkpointList[m.selectedCheckpoint]
+	if _, err := m.deps.Store.RevertToCheckpoint(checkpoint.ID); err != nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error rewinding conversation: %v", err),
+		})
+		return m.finishCheckpointSelection()
+	}
+
+	records, err := m.deps.Store.ReadAll()
+	if err != nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error reading rewound conversation: %v", err),
+		})
+		return m.finishCheckpointSelection()
+	}
+
+	m.output = m.output.FlushPending()
+	m.runtime = m.runtime.Reset()
+	m.eventsCh = nil
+	m.pendingCompletion = nil
+	m.activeShellActionCommand = ""
+	m = m.finishCheckpointSelection()
+	m = m.rebuildOutputFromRecords(records)
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: rewindedNoticeText(checkpoint.ID),
+	})
+	return m
 }
 
 // handleResumeList 处理 /resume 命令（无参数），列出可用 session。

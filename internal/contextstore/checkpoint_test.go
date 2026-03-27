@@ -3,6 +3,7 @@ package contextstore
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -77,6 +78,56 @@ func TestAppendCheckpoint(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("expected 2 checkpoints, got %d", count)
+	}
+}
+
+func TestAppendCheckpointWithMetadataAndListCheckpoints(t *testing.T) {
+	dir := t.TempDir()
+	historyFile := filepath.Join(dir, "history.jsonl")
+	ctx := New(historyFile)
+
+	if _, err := ctx.AppendCheckpointWithMetadata(CheckpointMetadata{
+		CreatedAt:     "2026-03-27T10:00:00Z",
+		PromptPreview: "fix flaky tests",
+	}); err != nil {
+		t.Fatalf("AppendCheckpointWithMetadata() error = %v", err)
+	}
+	if _, err := ctx.AppendCheckpointWithMetadata(CheckpointMetadata{
+		CreatedAt:     "2026-03-27T10:05:00Z",
+		PromptPreview: "refactor shell rewind flow",
+	}); err != nil {
+		t.Fatalf("AppendCheckpointWithMetadata() error = %v", err)
+	}
+
+	got, err := ctx.ListCheckpoints()
+	if err != nil {
+		t.Fatalf("ListCheckpoints() error = %v", err)
+	}
+	want := []CheckpointRecord{
+		{Role: RoleCheckpoint, ID: 0, CreatedAt: "2026-03-27T10:00:00Z", PromptPreview: "fix flaky tests"},
+		{Role: RoleCheckpoint, ID: 1, CreatedAt: "2026-03-27T10:05:00Z", PromptPreview: "refactor shell rewind flow"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListCheckpoints() = %#v, want %#v", got, want)
+	}
+}
+
+func TestListCheckpointsSupportsLegacyMinimalRows(t *testing.T) {
+	dir := t.TempDir()
+	historyFile := filepath.Join(dir, "history.jsonl")
+	ctx := New(historyFile)
+
+	if _, err := ctx.AppendCheckpoint(); err != nil {
+		t.Fatalf("AppendCheckpoint() error = %v", err)
+	}
+
+	got, err := ctx.ListCheckpoints()
+	if err != nil {
+		t.Fatalf("ListCheckpoints() error = %v", err)
+	}
+	want := []CheckpointRecord{{Role: RoleCheckpoint, ID: 0}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListCheckpoints() = %#v, want %#v", got, want)
 	}
 }
 

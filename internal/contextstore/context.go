@@ -2,11 +2,14 @@ package contextstore
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -37,8 +40,16 @@ type UsageRecord struct {
 
 // CheckpointRecord 记录检查点。
 type CheckpointRecord struct {
-	Role string `json:"role"`
-	ID   int    `json:"id"`
+	Role          string `json:"role"`
+	ID            int    `json:"id"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	PromptPreview string `json:"prompt_preview,omitempty"`
+}
+
+// CheckpointMetadata 表示创建 checkpoint 时附带的可展示元数据。
+type CheckpointMetadata struct {
+	CreatedAt     string
+	PromptPreview string
 }
 
 // Snapshot 表示某个 history 文件当前的读取结果摘要。
@@ -151,6 +162,58 @@ func (c Context) AppendText(role, content string) error {
 	})
 }
 
+// RewriteTextRecords 用新的文本记录集合覆盖当前 history。
+// 这里不会保留 usage / checkpoint 等元数据；它的语义就是重建对话文本历史。
+func (c Context) RewriteTextRecords(records []TextRecord) error {
+	if err := os.MkdirAll(filepath.Dir(c.historyFile), 0o755); err != nil {
+		return fmt.Errorf("create history dir: %w", err)
+	}
+
+	var data bytes.Buffer
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal text record: %w", err)
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+
+	if err := os.WriteFile(c.historyFile, data.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("rewrite history file %q: %w", c.historyFile, err)
+	}
+
+	return nil
+}
+
+// RewriteTextRecordsPreservingBackup 用新的文本记录集合覆盖当前 history。
+// 如果当前 history 已存在，会先轮转为通用备份文件，再写入新的文本历史。
+func (c Context) RewriteTextRecordsPreservingBackup(records []TextRecord) error {
+	return c.RewriteTextRecordsPreservingNamedBackup(records, "")
+}
+
+// RewriteTextRecordsPreservingNamedBackup 用新的文本记录集合覆盖当前 history。
+// 如果当前 history 已存在，会先按给定标签轮转为备份文件，再写入新的文本历史。
+func (c Context) RewriteTextRecordsPreservingNamedBackup(records []TextRecord, backupTag string) error {
+	exists, err := c.Exists()
+	if err != nil {
+		return fmt.Errorf("check history exists: %w", err)
+	}
+	if exists {
+		rotatedPath, err := c.findTaggedRotationPath(backupTag)
+		if err != nil {
+			return fmt.Errorf("find rotation path: %w", err)
+		}
+		if err := os.Rename(c.historyFile, rotatedPath); err != nil {
+			return fmt.Errorf("rotate history file %q: %w", c.historyFile, err)
+		}
+	}
+	if err := c.RewriteTextRecords(records); err != nil {
+		return fmt.Errorf("rewrite text records preserving backup: %w", err)
+	}
+	return nil
+}
+
 // ReadAll 读取 history file 中的全部文本记录。
 // 如果文件还不存在，返回空结果而不是报错。
 func (c Context) ReadAll() ([]TextRecord, error) {
@@ -196,6 +259,11 @@ func (c Context) ReadRecentTurns(limit int) ([]TextRecord, error) {
 		var record TextRecord
 		if err := json.Unmarshal(line, &record); err != nil {
 			return nil, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
+		}
+
+		// 跳过元数据记录（_usage, _checkpoint），避免把存储层标记暴露给对话窗口。
+		if record.Role == RoleUsage || record.Role == RoleCheckpoint {
+			continue
 		}
 
 		records = append(records, record)
@@ -430,6 +498,11 @@ func (c Context) AppendUsage(tokenCount int) error {
 
 // AppendCheckpoint 追加检查点记录，返回检查点 ID。
 func (c Context) AppendCheckpoint() (int, error) {
+	return c.AppendCheckpointWithMetadata(CheckpointMetadata{})
+}
+
+// AppendCheckpointWithMetadata 追加带元数据的检查点记录，返回检查点 ID。
+func (c Context) AppendCheckpointWithMetadata(metadata CheckpointMetadata) (int, error) {
 	// 计算下一个检查点 ID
 	nextID, err := c.nextCheckpointID()
 	if err != nil {
@@ -437,8 +510,10 @@ func (c Context) AppendCheckpoint() (int, error) {
 	}
 
 	record := CheckpointRecord{
-		Role: RoleCheckpoint,
-		ID:   nextID,
+		Role:          RoleCheckpoint,
+		ID:            nextID,
+		CreatedAt:     strings.TrimSpace(metadata.CreatedAt),
+		PromptPreview: strings.TrimSpace(metadata.PromptPreview),
 	}
 
 	line, err := json.Marshal(record)
@@ -497,6 +572,41 @@ func (c Context) nextCheckpointID() (int, error) {
 	}
 
 	return maxID + 1, nil
+}
+
+// ListCheckpoints 返回当前 history 中的全部检查点记录。
+func (c Context) ListCheckpoints() ([]CheckpointRecord, error) {
+	f, err := os.Open(c.historyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return []CheckpointRecord{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open history file: %w", err)
+	}
+	defer f.Close()
+
+	checkpoints := []CheckpointRecord{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var record CheckpointRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Role != RoleCheckpoint {
+			continue
+		}
+		checkpoints = append(checkpoints, record)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan history file: %w", err)
+	}
+	return checkpoints, nil
 }
 
 // ReadUsage 读取最后的 token 使用量。
@@ -578,9 +688,12 @@ func (c Context) RevertToCheckpoint(checkpointID int) (int, error) {
 	return recordCount, nil
 }
 
-// findRotationPath 找到下一个可用的备份文件名。
-func (c Context) findRotationPath() (string, error) {
+// findTaggedRotationPath 找到下一个可用的带标签备份文件名。
+func (c Context) findTaggedRotationPath(tag string) (string, error) {
 	base := c.historyFile
+	if tag != "" {
+		base = fmt.Sprintf("%s.%s", base, tag)
+	}
 	for i := 1; i <= 1000; i++ {
 		candidate := fmt.Sprintf("%s.%d", base, i)
 		if _, err := os.Stat(candidate); os.IsNotExist(err) {
@@ -588,6 +701,47 @@ func (c Context) findRotationPath() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no available rotation path found")
+}
+
+// findRotationPath 找到下一个可用的备份文件名。
+func (c Context) findRotationPath() (string, error) {
+	return c.findTaggedRotationPath("")
+}
+
+// LatestTaggedBackupPath 返回指定标签的最新备份文件路径。
+// 如果不存在匹配备份，返回 ("", false, nil)。
+func (c Context) LatestTaggedBackupPath(tag string) (string, bool, error) {
+	if strings.TrimSpace(tag) == "" {
+		return "", false, nil
+	}
+
+	pattern := fmt.Sprintf("%s.%s.*", filepath.Base(c.historyFile), tag)
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(c.historyFile), pattern))
+	if err != nil {
+		return "", false, fmt.Errorf("glob tagged backups: %w", err)
+	}
+
+	latestPath := ""
+	latestIndex := -1
+	prefix := fmt.Sprintf("%s.%s.", c.historyFile, tag)
+	for _, match := range matches {
+		if !strings.HasPrefix(match, prefix) {
+			continue
+		}
+		indexText := strings.TrimPrefix(match, prefix)
+		index, err := strconv.Atoi(indexText)
+		if err != nil {
+			continue
+		}
+		if index > latestIndex {
+			latestIndex = index
+			latestPath = match
+		}
+	}
+	if latestIndex == -1 {
+		return "", false, nil
+	}
+	return latestPath, true, nil
 }
 
 // rebuildUntilCheckpoint 从备份文件重建 history，直到指定检查点。

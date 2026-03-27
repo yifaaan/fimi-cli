@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"fimi-cli/internal/contextstore"
 	runtimeevents "fimi-cli/internal/runtime/events"
@@ -14,6 +15,7 @@ import (
 const DefaultReplyHistoryTurnLimit = 4
 const DefaultMaxStepsPerRun = 100
 const DefaultMaxRetriesPerStep = 3
+const checkpointPromptPreviewMaxLen = 60
 
 var ErrUnknownStepKind = errors.New("unknown runtime step kind")
 var ErrUnknownStepStatus = errors.New("unknown runtime step status")
@@ -293,6 +295,13 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		return Result{Status: RunStatusFinished}, nil
 	}
 
+	if _, err := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		PromptPreview: checkpointPromptPreview(prompt),
+	}); err != nil {
+		return Result{Status: RunStatusFailed}, fmt.Errorf("append checkpoint record: %w", err)
+	}
+
 	// 关键语义：用户 prompt 只在一次 run 的开始时追加到 history。
 	// 后续 step 不再重复注入 prompt，而是完全基于增长的 history 驱动。
 	userRecord := contextstore.NewUserTextRecord(prompt)
@@ -353,6 +362,15 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 
 	result.Status = RunStatusMaxSteps
 	return result, nil
+}
+
+func checkpointPromptPreview(prompt string) string {
+	preview := strings.Join(strings.Fields(strings.TrimSpace(prompt)), " ")
+	if len(preview) <= checkpointPromptPreviewMaxLen {
+		return preview
+	}
+
+	return preview[:checkpointPromptPreviewMaxLen-3] + "..."
 }
 
 func isInterruptedError(err error) bool {

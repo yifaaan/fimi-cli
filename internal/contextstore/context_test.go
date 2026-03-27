@@ -175,3 +175,189 @@ func TestContextReadRecentTurnsReturnsEmptyWhenLimitNonPositive(t *testing.T) {
 		t.Fatalf("len(ReadRecentTurns()) = %d, want 0", len(got))
 	}
 }
+
+func TestContextRewriteTextRecordsOverwritesExistingHistory(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	for _, record := range []TextRecord{
+		NewSystemTextRecord("boot"),
+		NewUserTextRecord("before"),
+		NewAssistantTextRecord("before reply"),
+	} {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+	if err := ctx.AppendUsage(123); err != nil {
+		t.Fatalf("AppendUsage() error = %v", err)
+	}
+
+	want := []TextRecord{
+		NewSystemTextRecord("boot compacted"),
+		NewUserTextRecord("current goal"),
+		NewAssistantTextRecord("working summary"),
+	}
+	if err := ctx.RewriteTextRecords(want); err != nil {
+		t.Fatalf("RewriteTextRecords() error = %v", err)
+	}
+
+	got, err := ctx.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReadAll() after rewrite = %#v, want %#v", got, want)
+	}
+
+	snapshot, err := ctx.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.Count != len(want) {
+		t.Fatalf("Snapshot().Count = %d, want %d", snapshot.Count, len(want))
+	}
+	if !snapshot.HasLastRecord {
+		t.Fatal("Snapshot().HasLastRecord = false, want true")
+	}
+	if snapshot.LastRecord != want[len(want)-1] {
+		t.Fatalf("Snapshot().LastRecord = %#v, want %#v", snapshot.LastRecord, want[len(want)-1])
+	}
+}
+
+func TestContextRewriteTextRecordsPreservingBackupRotatesPreviousHistory(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	before := []TextRecord{
+		NewSystemTextRecord("boot"),
+		NewUserTextRecord("before"),
+		NewAssistantTextRecord("before reply"),
+	}
+	for _, record := range before {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+
+	after := []TextRecord{
+		NewSystemTextRecord("boot compacted"),
+		NewUserTextRecord("current goal"),
+		NewAssistantTextRecord("working summary"),
+	}
+	if err := ctx.RewriteTextRecordsPreservingBackup(after); err != nil {
+		t.Fatalf("RewriteTextRecordsPreservingBackup() error = %v", err)
+	}
+
+	got, err := ctx.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, after) {
+		t.Fatalf("ReadAll() after preserved rewrite = %#v, want %#v", got, after)
+	}
+
+	backup := New(historyFile + ".1")
+	backupRecords, err := backup.ReadAll()
+	if err != nil {
+		t.Fatalf("backup ReadAll() error = %v", err)
+	}
+	if !reflect.DeepEqual(backupRecords, before) {
+		t.Fatalf("backup records = %#v, want %#v", backupRecords, before)
+	}
+}
+
+func TestContextRewriteTextRecordsPreservingNamedBackupUsesTaggedRotationPath(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	before := []TextRecord{
+		NewUserTextRecord("before"),
+		NewAssistantTextRecord("before reply"),
+	}
+	for _, record := range before {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+
+	after := []TextRecord{NewAssistantTextRecord("working summary")}
+	if err := ctx.RewriteTextRecordsPreservingNamedBackup(after, "compact"); err != nil {
+		t.Fatalf("RewriteTextRecordsPreservingNamedBackup() error = %v", err)
+	}
+
+	backup := New(historyFile + ".compact.1")
+	backupRecords, err := backup.ReadAll()
+	if err != nil {
+		t.Fatalf("compact backup ReadAll() error = %v", err)
+	}
+	if !reflect.DeepEqual(backupRecords, before) {
+		t.Fatalf("compact backup records = %#v, want %#v", backupRecords, before)
+	}
+}
+
+func TestContextLatestTaggedBackupPathReturnsNewestCompactBackup(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	for _, content := range []string{"before one", "before two"} {
+		if err := ctx.Append(NewUserTextRecord(content)); err != nil {
+			t.Fatalf("Append() error = %v", err)
+		}
+		if err := ctx.RewriteTextRecordsPreservingNamedBackup([]TextRecord{NewAssistantTextRecord("summary")}, "compact"); err != nil {
+			t.Fatalf("RewriteTextRecordsPreservingNamedBackup() error = %v", err)
+		}
+	}
+
+	got, ok, err := ctx.LatestTaggedBackupPath("compact")
+	if err != nil {
+		t.Fatalf("LatestTaggedBackupPath() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("LatestTaggedBackupPath() ok = false, want true")
+	}
+	want := historyFile + ".compact.2"
+	if got != want {
+		t.Fatalf("LatestTaggedBackupPath() = %q, want %q", got, want)
+	}
+}
+
+func TestContextLatestTaggedBackupPathReturnsNotFoundWhenMissing(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	got, ok, err := ctx.LatestTaggedBackupPath("compact")
+	if err != nil {
+		t.Fatalf("LatestTaggedBackupPath() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("LatestTaggedBackupPath() ok = true, want false with path %q", got)
+	}
+	if got != "" {
+		t.Fatalf("LatestTaggedBackupPath() path = %q, want empty", got)
+	}
+}
+
+func TestContextRewriteTextRecordsPreservingBackupCreatesHistoryWhenMissing(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+	want := []TextRecord{
+		NewUserTextRecord("current goal"),
+		NewAssistantTextRecord("working summary"),
+	}
+
+	if err := ctx.RewriteTextRecordsPreservingBackup(want); err != nil {
+		t.Fatalf("RewriteTextRecordsPreservingBackup() error = %v", err)
+	}
+
+	got, err := ctx.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReadAll() after initial preserved rewrite = %#v, want %#v", got, want)
+	}
+	if _, err := os.Stat(historyFile + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("backup file exists unexpectedly, stat err = %v", err)
+	}
+}

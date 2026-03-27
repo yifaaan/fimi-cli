@@ -66,6 +66,11 @@ type ResumeSwitchMsg struct {
 	Err     error
 }
 
+// CheckpointListMsg 表示当前 session 的 checkpoint 列表查询结果。
+type CheckpointListMsg struct {
+	Checkpoints []contextstore.CheckpointRecord
+	Err         error
+}
 // SessionDeleteMsg 表示 session 删除结果。
 type SessionDeleteMsg struct {
 	SessionID string
