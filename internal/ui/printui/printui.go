@@ -2,6 +2,7 @@ package printui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -153,4 +154,72 @@ func clampInline(text string) string {
 	}
 
 	return text[:maxInlineSummaryLength-3] + "..."
+}
+
+// VisualizeStreamJSON 返回一个 JSON 行序列化器，每行一个事件。
+// 每个事件序列化为 {"type":"step_begin","number":1} 这样的 JSON 对象。
+func VisualizeStreamJSON(w io.Writer) ui.VisualizeFunc {
+	if w == nil {
+		w = io.Discard
+	}
+
+	return func(ctx context.Context, events <-chan runtimeevents.Event) error {
+		for event := range events {
+			// 手动构建 JSON 行以精确控制字段名和结构
+			line, err := marshalEventJSON(event)
+			if err != nil {
+				return fmt.Errorf("marshal event to json: %w", err)
+			}
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return fmt.Errorf("write json line: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+// marshalEventJSON 将单个 runtime 事件序列化为 JSON 对象字符串。
+// 不使用 json.Marshal 直接序列化结构体，而是手动构建以确保字段名符合测试期望。
+func marshalEventJSON(event runtimeevents.Event) (string, error) {
+	switch e := event.(type) {
+	case runtimeevents.StepBegin:
+		return fmt.Sprintf(`{"type":"step_begin","number":%d}`, e.Number), nil
+	case runtimeevents.StepInterrupted:
+		return `{"type":"step_interrupted"}`, nil
+	case runtimeevents.StatusUpdate:
+		if e.Status.ContextUsage > 0 {
+			return fmt.Sprintf(`{"type":"status_update","context_usage":%.2f}`, e.Status.ContextUsage), nil
+		}
+		return `{"type":"status_update"}`, nil
+	case runtimeevents.TextPart:
+		// JSON 字符串需要转义
+		escaped, err := json.Marshal(e.Text)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf(`{"type":"text_part","text":%s}`, string(escaped)), nil
+	case runtimeevents.ToolCall:
+		name, _ := json.Marshal(e.Name)
+		args, _ := json.Marshal(e.Arguments)
+		sub, _ := json.Marshal(e.Subtitle)
+		return fmt.Sprintf(`{"type":"tool_call","name":%s,"subtitle":%s,"arguments":%s}`,
+			string(name), string(sub), string(args)), nil
+	case runtimeevents.ToolCallPart:
+		id, _ := json.Marshal(e.ToolCallID)
+		delta, _ := json.Marshal(e.Delta)
+		return fmt.Sprintf(`{"type":"tool_call_part","tool_call_id":%s,"delta":%s}`,
+			string(id), string(delta)), nil
+	case runtimeevents.ToolResult:
+		name, _ := json.Marshal(e.ToolName)
+		output, _ := json.Marshal(e.Output)
+		return fmt.Sprintf(`{"type":"tool_result","tool_name":%s,"output":%s,"is_error":%t}`,
+			string(name), string(output), e.IsError), nil
+	default:
+		// 兜底：使用反射获取 type
+		escaped, err := json.Marshal(event.Kind())
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf(`{"type":%s}`, string(escaped)), nil
+	}
 }

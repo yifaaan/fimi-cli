@@ -3,6 +3,7 @@ package printui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -315,6 +316,62 @@ func TestVisualizeTextReturnsWriteError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "write print ui event") {
 		t.Fatalf("visualize() error = %q, want write wrapper", err.Error())
+	}
+}
+
+func TestVisualizeStreamJSONWritesEventPerLine(t *testing.T) {
+	var out bytes.Buffer
+	visualize := VisualizeStreamJSON(&out)
+
+	events := make(chan runtimeevents.Event, 3)
+	events <- runtimeevents.StepBegin{Number: 1}
+	events <- runtimeevents.TextPart{Text: "hello"}
+	events <- runtimeevents.ToolResult{ToolName: "bash", Output: "ok"}
+	close(events)
+
+	if err := visualize(context.Background(), events); err != nil {
+		t.Fatalf("visualize() error = %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("printed line count = %d, want 3", len(lines))
+	}
+
+	var got0 map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &got0); err != nil {
+		t.Fatalf("json.Unmarshal(step) error = %v", err)
+	}
+	if got0["type"] != "step_begin" {
+		t.Fatalf("step event type = %#v, want %q", got0["type"], "step_begin")
+	}
+	if got0["number"] != float64(1) {
+		t.Fatalf("step event number = %#v, want %v", got0["number"], 1)
+	}
+
+	var got1 map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &got1); err != nil {
+		t.Fatalf("json.Unmarshal(text) error = %v", err)
+	}
+	if got1["type"] != "text_part" {
+		t.Fatalf("text event type = %#v, want %q", got1["type"], "text_part")
+	}
+	if got1["text"] != "hello" {
+		t.Fatalf("text event text = %#v, want %q", got1["text"], "hello")
+	}
+
+	var got2 map[string]any
+	if err := json.Unmarshal([]byte(lines[2]), &got2); err != nil {
+		t.Fatalf("json.Unmarshal(tool result) error = %v", err)
+	}
+	if got2["type"] != "tool_result" {
+		t.Fatalf("tool result event type = %#v, want %q", got2["type"], "tool_result")
+	}
+	if got2["tool_name"] != "bash" {
+		t.Fatalf("tool result tool_name = %#v, want %q", got2["tool_name"], "bash")
+	}
+	if got2["output"] != "ok" {
+		t.Fatalf("tool result output = %#v, want %q", got2["output"], "ok")
 	}
 }
 
