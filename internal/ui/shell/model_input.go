@@ -46,6 +46,13 @@ func (m InputModel) Clear() InputModel {
 	return m
 }
 
+// SetValue 设置输入值。
+func (m InputModel) SetValue(v string) InputModel {
+	m.value = v
+	m.historyIdx = -1
+	return m
+}
+
 // AppendHistory 添加一条历史记录。
 func (m *InputModel) AppendHistory(entry string) {
 	if strings.TrimSpace(entry) == "" {

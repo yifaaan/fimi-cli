@@ -28,6 +28,8 @@ const (
 	ModeStreaming
 	// ModeSessionSelect 选择 session 的交互模式
 	ModeSessionSelect
+	// ModeCommandSelect 选择命令的交互模式
+	ModeCommandSelect
 )
 
 // Model 是 Bubble Tea 的根模型。
@@ -61,6 +63,28 @@ type Model struct {
 	selectedSession     int
 	sessionScrollOffset int // 滚动偏移量
 	inSessionSelect     bool
+
+	// Command 选择相关状态
+	commandList         []CommandInfo
+	selectedCommand     int
+	commandScrollOffset int
+}
+
+// CommandInfo 表示一个可用的命令。
+type CommandInfo struct {
+	Name        string
+	Description string
+}
+
+// availableCommands 返回所有可用的命令列表。
+func availableCommands() []CommandInfo {
+	return []CommandInfo{
+		{Name: "/help", Description: "Show this help message"},
+		{Name: "/clear", Description: "Clear the screen"},
+		{Name: "/exit", Description: "Exit the shell"},
+		{Name: "/quit", Description: "Exit the shell"},
+		{Name: "/resume", Description: "List available sessions"},
+	}
 }
 
 // NewModel 创建一个新的 Bubble Tea 模型。
@@ -99,6 +123,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// 如果在 command 选择模式，特殊处理键盘输入
+		if m.mode == ModeCommandSelect {
+			return m.handleCommandSelectKeyPress(msg)
+		}
 		// 如果在 session 选择模式，特殊处理键盘输入
 		if m.mode == ModeSessionSelect {
 			return m.handleSessionSelectKeyPress(msg)
@@ -177,6 +205,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View 实现 tea.Model 接口。
 // 渲染整个 UI。
 func (m Model) View() string {
+	// 如果在 command 选择模式，渲染命令选择界面
+	if m.mode == ModeCommandSelect {
+		return m.renderCommandSelectView()
+	}
 	// 如果在 session 选择模式，渲染选择界面
 	if m.mode == ModeSessionSelect {
 		return m.renderSessionSelectView()
@@ -301,6 +333,15 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// 如果正在处理，忽略大部分输入
 	if m.mode != ModeIdle {
+		return m, nil
+	}
+
+	// 检测 "/" 键，进入命令选择模式
+	if msg.String() == "/" && m.input.Value() == "" {
+		m.mode = ModeCommandSelect
+		m.commandList = availableCommands()
+		m.selectedCommand = 0
+		m.input = m.input.SetValue("/")
 		return m, nil
 	}
 
@@ -665,6 +706,93 @@ func (m Model) renderSessionSelectView() string {
 		Foreground(styles.ColorMuted).
 		Italic(true)
 	sections = append(sections, helpStyle.Render("↑/↓ or j/k to navigate, Enter to select, Ctrl+D to delete, Esc/q to cancel"))
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+// handleCommandSelectKeyPress 处理命令选择模式的键盘输入。
+func (m Model) handleCommandSelectKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+	total := len(m.commandList)
+
+	switch keyStr {
+	case "up", "k":
+		if m.selectedCommand > 0 {
+			m.selectedCommand--
+		}
+	case "down", "j":
+		if m.selectedCommand < total-1 {
+			m.selectedCommand++
+		}
+	case "enter", "tab":
+		// 选中命令，填入输入框
+		if m.selectedCommand < len(m.commandList) {
+			cmd := m.commandList[m.selectedCommand]
+			m.input = m.input.SetValue(cmd.Name + " ")
+		}
+		m.mode = ModeIdle
+		m.commandList = nil
+		m.selectedCommand = 0
+		return m, nil
+	case "esc", "q":
+		// 取消选择
+		m.mode = ModeIdle
+		m.commandList = nil
+		m.selectedCommand = 0
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// renderCommandSelectView 渲染命令选择界面。
+func (m Model) renderCommandSelectView() string {
+	var sections []string
+
+	// 标题
+	titleStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorPrimary).
+		Bold(true)
+	sections = append(sections, titleStyle.Render("Commands"))
+	sections = append(sections, "")
+
+	// 选中项样式（淡蓝色）
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("14")). // bright cyan
+		Bold(true)
+	selectedDescStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("14"))
+
+	// 普通项样式
+	normalStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted)
+	normalDescStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted)
+
+	// 命令列表
+	for i, cmd := range m.commandList {
+		var block string
+		if i == m.selectedCommand {
+			// 选中项
+			line1 := selectedStyle.Render(fmt.Sprintf("> %s", cmd.Name))
+			line2 := selectedDescStyle.Render(fmt.Sprintf("  %s", cmd.Description))
+			block = fmt.Sprintf("%s\n%s", line1, line2)
+		} else {
+			// 普通项
+			line1 := normalStyle.Render(fmt.Sprintf("  %s", cmd.Name))
+			line2 := normalDescStyle.Render(fmt.Sprintf("  %s", cmd.Description))
+			block = fmt.Sprintf("%s\n%s", line1, line2)
+		}
+		sections = append(sections, block)
+	}
+
+	sections = append(sections, "")
+
+	// 帮助提示
+	helpStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted).
+		Italic(true)
+	sections = append(sections, helpStyle.Render("↑/↓ or j/k to navigate, Enter/Tab to select, Esc/q to cancel"))
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
