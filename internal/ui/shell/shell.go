@@ -126,15 +126,26 @@ func Run(ctx context.Context, deps Dependencies) error {
 	// 在 goroutine 中运行，以便处理 context 取消
 	done := make(chan error, 1)
 	go func() {
-		_, err := p.Run()
-		done <- err
+		_, runErr := p.Run()
+		done <- runErr
 	}()
 
+	var runResult error
 	select {
-	case err := <-done:
-		return err
+	case runResult = <-done:
 	case <-ctx.Done():
 		p.Quit()
-		return ctx.Err()
+		runResult = ctx.Err()
 	}
+
+	// 退出时打印恢复提示
+	if deps.StartupInfo.SessionID != "" {
+		shortID := deps.StartupInfo.SessionID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		fmt.Fprintf(output, "\nTo resume this session, run:\n  fimi -resume %s\n", shortID)
+	}
+
+	return runResult
 }
