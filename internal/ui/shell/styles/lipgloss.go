@@ -13,7 +13,8 @@ var (
 	// 用户消息样式
 	UserStyle = lipgloss.NewStyle().
 			Foreground(ColorUser).
-			Bold(true)
+			Background(ColorInputBg).
+			Padding(0, 1)
 
 	// 助手消息样式
 	AssistantStyle = lipgloss.NewStyle().

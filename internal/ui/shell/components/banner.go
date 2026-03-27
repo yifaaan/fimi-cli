@@ -49,7 +49,9 @@ func RenderBanner(info BannerInfo) string {
 			role = "last"
 		}
 		// 摘要只做展示截断，不改变真实上下文数据。
-		lines = append(lines, summaryStyle.Render(fmt.Sprintf("%s: %s", role, truncateBannerText(info.LastSummary, 72))))
+		if role != "user" {
+			lines = append(lines, summaryStyle.Render(fmt.Sprintf("%s: %s", role, truncateBannerText(info.LastSummary, 72))))
+		}
 	}
 
 	lines = append(lines, mutedStyle.Render("commands: /help /clear /exit"))

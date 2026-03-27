@@ -723,20 +723,18 @@ func (m Model) startRuntimeExecution(prompt string, eventsCh chan runtimeevents.
 
 // renderLiveStatus 渲染实时状态区域。
 func (m Model) renderLiveStatus() string {
-	var parts []string
-
-	// Spinner
-	spinner := m.runtime.SpinnerView()
-	if spinner != "" {
-		parts = append(parts, spinner)
+	statusText := m.renderLiveStatusText()
+	if statusText == "" {
+		return ""
 	}
+	return styles.HelpStyle.Render(m.runtime.SpinnerView() + " " + statusText)
+}
 
-	// 工具信息
-	if toolCard := m.runtime.ToolCardView(m.width - 4); toolCard != "" {
-		parts = append(parts, toolCard)
+func (m Model) renderLiveStatusText() string {
+	if m.runtime.CurrentTool != nil && m.runtime.CurrentTool.Status == ToolStatusRunning {
+		return "Running " + formatToolCallLine(*m.runtime.CurrentTool) + "..."
 	}
-
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return "Running..."
 }
 
 // handleResumeListResult 处理 session 列表查询结果。

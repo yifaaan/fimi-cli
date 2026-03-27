@@ -74,7 +74,7 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 		m.CurrentTool = nil
 		m.stepLines = []TranscriptLine{{
 			Type:    LineTypeSystem,
-			Content: fmt.Sprintf("[step %d]", e.Number),
+			Content: fmt.Sprintf("Step %d", e.Number),
 		}}
 		m.Interrupted = false
 
@@ -116,7 +116,7 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 		m.Interrupted = true
 		m.stepLines = append(m.stepLines, TranscriptLine{
 			Type:    LineTypeSystem,
-			Content: "[interrupted]",
+			Content: "Interrupted",
 		})
 	}
 
@@ -188,16 +188,53 @@ func (m *RuntimeModel) appendToolResultLine() {
 	}
 	m.stepLines = append(m.stepLines, TranscriptLine{
 		Type:    lineType,
-		Content: m.CurrentTool.Output,
+		Content: toolResultSummary(*m.CurrentTool),
 	})
 }
 
 func formatToolCallLine(tool ToolCallInfo) string {
-	if summary := strings.TrimSpace(tool.Args); summary != "" {
-		return summary
+	summary := strings.TrimSpace(tool.Args)
+	if summary == "" {
+		return tool.Name
 	}
 
-	return tool.Name
+	switch tool.Name {
+	case "bash":
+		return "Bash(" + summary + ")"
+	case "read_file":
+		return summary
+	case "write_file":
+		return strings.Replace(summary, "Wrote ", "Write(", 1) + ")"
+	case "replace_file", "patch_file":
+		summary = strings.Replace(summary, "Updated ", "", 1)
+		summary = strings.Replace(summary, "Patched ", "", 1)
+		return "Update(" + summary + ")"
+	default:
+		return summary
+	}
+}
+
+func toolResultSummary(tool ToolCallInfo) string {
+	output := strings.TrimSpace(tool.Output)
+	if output == "" {
+		if tool.IsError {
+			return "Error"
+		}
+		return "No output"
+	}
+
+	lines := strings.Split(output, "\n")
+	preview := strings.TrimSpace(lines[0])
+	if preview == "" {
+		if tool.IsError {
+			return "Error"
+		}
+		return "No output"
+	}
+	if len(preview) > 80 {
+		preview = preview[:77] + "..."
+	}
+	return preview
 }
 
 func toolCallDisplaySummary(name string, subtitle string, arguments string) string {

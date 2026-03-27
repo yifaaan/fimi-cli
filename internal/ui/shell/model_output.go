@@ -1,7 +1,6 @@
 package shell
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"fimi-cli/internal/ui/shell/styles"
 
 	"github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wrap"
 )
 
@@ -234,36 +232,22 @@ func (m OutputModel) View() string {
 // renderLine 渲染单行。
 // idx 参数用于查找该行的折叠状态（仅对 ToolResult 有效）。
 func (m OutputModel) renderLine(line TranscriptLine, idx int) string {
-	var prefix string
-	var content string
-
 	switch line.Type {
 	case LineTypeUser:
-		prefix = styles.UserStyle.Render("You:")
-		content = line.Content
+		return styles.UserStyle.Render(line.Content)
 	case LineTypeAssistant:
-		prefix = styles.AssistantStyle.Render("Assistant:")
-		content = line.Content
+		return line.Content
 	case LineTypeToolCall:
-		prefix = styles.ToolNameStyle.Render("[Tool]")
-		content = line.Content
+		return styles.ToolNameStyle.Render("● " + line.Content)
 	case LineTypeToolResult:
-		prefix = styles.ToolNameStyle.Render("[Result]")
-		content = m.renderToolResult(line.Content, idx)
+		return m.renderToolResult(line.Content, idx)
 	case LineTypeSystem:
-		prefix = styles.SystemStyle.Render("[System]")
-		content = styles.SystemStyle.Render(line.Content)
+		return styles.SystemStyle.Render(line.Content)
 	case LineTypeError:
-		prefix = styles.ErrorStyle.Render("[Error]")
-		content = styles.ErrorStyle.Render(line.Content)
+		return styles.ErrorStyle.Render(line.Content)
 	default:
-		content = line.Content
+		return line.Content
 	}
-
-	if prefix != "" {
-		return lipgloss.JoinHorizontal(lipgloss.Top, prefix, " ", content)
-	}
-	return content
 }
 
 // renderToolResult 渲染工具结果，默认隐藏正文，展开后才显示完整内容。
@@ -272,16 +256,15 @@ func (m OutputModel) renderToolResult(content string, idx int) string {
 		return styles.SystemStyle.Render(content)
 	}
 
-	lines := strings.Split(content, "\n")
-	preview := strings.TrimSpace(lines[0])
+	preview := strings.TrimSpace(content)
 	if preview == "" {
-		preview = "Tool output hidden"
+		preview = "No output"
 	}
-	if len(preview) > 60 {
-		preview = preview[:57] + "..."
+	if len(preview) > 80 {
+		preview = preview[:77] + "..."
 	}
 
-	return styles.HelpStyle.Render(fmt.Sprintf("Output hidden. %s (Ctrl+O to expand)", preview))
+	return styles.HelpStyle.Render("  ⎿  " + preview + "  (Ctrl+O to expand)")
 }
 
 func (m OutputModel) visibleHeight() int {

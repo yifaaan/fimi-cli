@@ -12,6 +12,43 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestRenderLiveStatusTextUsesCurrentToolSummary(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeThinking
+	model.runtime.CurrentTool = &ToolCallInfo{
+		Name:   "bash",
+		Status: ToolStatusRunning,
+		Args:   "go test ./internal/ui/shell",
+	}
+
+	if got := model.renderLiveStatusText(); got != "Running Bash(go test ./internal/ui/shell)..." {
+		t.Fatalf("renderLiveStatusText() = %q, want %q", got, "Running Bash(go test ./internal/ui/shell)...")
+	}
+}
+
+func TestRenderLiveStatusTextFallsBackWithoutCurrentTool(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeStreaming
+
+	if got := model.renderLiveStatusText(); got != "Running..." {
+		t.Fatalf("renderLiveStatusText() = %q, want %q", got, "Running...")
+	}
+}
+
+func TestRenderLiveStatusTextIgnoresFinishedTool(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeThinking
+	model.runtime.CurrentTool = &ToolCallInfo{
+		Name:   "bash",
+		Status: ToolStatusCompleted,
+		Args:   "go test ./internal/ui/shell",
+	}
+
+	if got := model.renderLiveStatusText(); got != "Running..." {
+		t.Fatalf("renderLiveStatusText() = %q, want %q", got, "Running...")
+	}
+}
+
 func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
 	model := NewModel(Dependencies{ModelName: "test-model", SystemPrompt: "system"}, nil)
 	model.output = model.output.SetPending([]TranscriptLine{{Type: LineTypeAssistant, Content: "pending assistant output"}})

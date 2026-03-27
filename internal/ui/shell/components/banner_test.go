@@ -31,6 +31,17 @@ func TestRenderBannerIncludesLogoModelAndWorkDir(t *testing.T) {
 	}
 }
 
+func TestRenderBannerOmitsUserSummaryLine(t *testing.T) {
+	got := RenderBanner(BannerInfo{
+		LastRole:    "user",
+		LastSummary: "please continue from here",
+	})
+
+	if strings.Contains(got, "user: please continue from here") {
+		t.Fatalf("RenderBanner() = %q, want no user summary line", got)
+	}
+}
+
 func TestRenderBannerFallsBackWithoutSession(t *testing.T) {
 	got := RenderBanner(BannerInfo{})
 
