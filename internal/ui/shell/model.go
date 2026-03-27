@@ -64,10 +64,9 @@ type Model struct {
 	sessionScrollOffset int // 滚动偏移量
 	inSessionSelect     bool
 
-	// Command 选择相关状态
-	commandList         []CommandInfo
-	selectedCommand     int
-	commandScrollOffset int
+	// Command 建议相关状态
+	showCommandSuggestions bool
+	selectedSuggestion     int
 }
 
 // CommandInfo 表示一个可用的命令。
@@ -123,10 +122,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// 如果在 command 选择模式，特殊处理键盘输入
-		if m.mode == ModeCommandSelect {
-			return m.handleCommandSelectKeyPress(msg)
-		}
 		// 如果在 session 选择模式，特殊处理键盘输入
 		if m.mode == ModeSessionSelect {
 			return m.handleSessionSelectKeyPress(msg)
@@ -205,10 +200,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View 实现 tea.Model 接口。
 // 渲染整个 UI。
 func (m Model) View() string {
-	// 如果在 command 选择模式，渲染命令选择界面
-	if m.mode == ModeCommandSelect {
-		return m.renderCommandSelectView()
-	}
 	// 如果在 session 选择模式，渲染选择界面
 	if m.mode == ModeSessionSelect {
 		return m.renderSessionSelectView()
@@ -239,6 +230,14 @@ func (m Model) View() string {
 
 	// 3. 输入区域
 	sections = append(sections, m.input.View())
+
+	// 3.5 命令建议（内联下拉框）
+	if m.showCommandSuggestions {
+		suggestions := m.renderCommandSuggestions()
+		if suggestions != "" {
+			sections = append(sections, suggestions)
+		}
+	}
 
 	// 4. 状态栏
 	statusBar := m.renderStatusBar()
@@ -336,19 +335,126 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// 检测 "/" 键，进入命令选择模式
-	if msg.String() == "/" && m.input.Value() == "" {
-		m.mode = ModeCommandSelect
-		m.commandList = availableCommands()
-		m.selectedCommand = 0
-		m.input = m.input.SetValue("/")
-		return m, nil
+	// 如果显示命令建议，处理导航和选择
+	if m.showCommandSuggestions {
+		filtered := m.filteredCommands()
+		if len(filtered) == 0 {
+			m.showCommandSuggestions = false
+			m.selectedSuggestion = 0
+		} else {
+			switch msg.String() {
+			case "up", "ctrl+p":
+				m.selectedSuggestion--
+				if m.selectedSuggestion < 0 {
+					m.selectedSuggestion = len(filtered) - 1
+				}
+				return m, nil
+			case "down", "ctrl+n":
+				m.selectedSuggestion++
+				if m.selectedSuggestion >= len(filtered) {
+					m.selectedSuggestion = 0
+				}
+				return m, nil
+			case "enter", "tab":
+				// 接受选中的建议
+				if m.selectedSuggestion < len(filtered) {
+					cmd := filtered[m.selectedSuggestion]
+					m.input = m.input.SetValue(cmd.Name + " ")
+					m.showCommandSuggestions = false
+					m.selectedSuggestion = 0
+				}
+				return m, nil
+			case "esc":
+				// 关闭建议
+				m.showCommandSuggestions = false
+				m.selectedSuggestion = 0
+				return m, nil
+			}
+		}
 	}
 
 	// 转发给输入模型处理
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg, m.width)
+
+	// 检查是否需要显示命令建议
+	input := m.input.Value()
+	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
+		filtered := m.filteredCommands()
+		if len(filtered) > 0 {
+			m.showCommandSuggestions = true
+			if m.selectedSuggestion >= len(filtered) {
+				m.selectedSuggestion = 0
+			}
+		} else {
+			m.showCommandSuggestions = false
+			m.selectedSuggestion = 0
+		}
+	} else {
+		m.showCommandSuggestions = false
+		m.selectedSuggestion = 0
+	}
+
 	return m, cmd
+}
+
+// filteredCommands 返回根据当前输入过滤的命令列表。
+func (m Model) filteredCommands() []CommandInfo {
+	input := m.input.Value()
+	if !strings.HasPrefix(input, "/") {
+		return availableCommands()
+	}
+
+	// 过滤匹配的命令
+	var filtered []CommandInfo
+	for _, cmd := range availableCommands() {
+		if strings.HasPrefix(cmd.Name, input) {
+			filtered = append(filtered, cmd)
+		}
+	}
+	return filtered
+}
+
+// renderCommandSuggestions 渲染内联的命令建议下拉框。
+func (m Model) renderCommandSuggestions() string {
+	filtered := m.filteredCommands()
+	if len(filtered) == 0 {
+		return ""
+	}
+
+	// 下拉框样式
+	dropdownStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(styles.ColorMuted).
+		Padding(0, 1)
+
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("14")). // bright cyan
+		Bold(true)
+
+	normalStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted)
+
+	var lines []string
+	maxDisplay := 5 // 最多显示5个建议
+	if len(filtered) < maxDisplay {
+		maxDisplay = len(filtered)
+	}
+
+	for i := 0; i < maxDisplay; i++ {
+		cmd := filtered[i]
+		if i == m.selectedSuggestion {
+			lines = append(lines, selectedStyle.Render(fmt.Sprintf("> %s", cmd.Name)))
+		} else {
+			lines = append(lines, normalStyle.Render(fmt.Sprintf("  %s", cmd.Name)))
+		}
+	}
+
+	if len(filtered) > maxDisplay {
+		lines = append(lines, normalStyle.Render(fmt.Sprintf("  ... %d more", len(filtered)-maxDisplay)))
+	}
+
+	return dropdownStyle.Render(strings.Join(lines, "\n"))
 }
 
 // handleSubmit 处理用户提交的 prompt。
@@ -710,92 +816,6 @@ func (m Model) renderSessionSelectView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-// handleCommandSelectKeyPress 处理命令选择模式的键盘输入。
-func (m Model) handleCommandSelectKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	keyStr := msg.String()
-	total := len(m.commandList)
-
-	switch keyStr {
-	case "up", "k":
-		if m.selectedCommand > 0 {
-			m.selectedCommand--
-		}
-	case "down", "j":
-		if m.selectedCommand < total-1 {
-			m.selectedCommand++
-		}
-	case "enter", "tab":
-		// 选中命令，填入输入框
-		if m.selectedCommand < len(m.commandList) {
-			cmd := m.commandList[m.selectedCommand]
-			m.input = m.input.SetValue(cmd.Name + " ")
-		}
-		m.mode = ModeIdle
-		m.commandList = nil
-		m.selectedCommand = 0
-		return m, nil
-	case "esc", "q":
-		// 取消选择
-		m.mode = ModeIdle
-		m.commandList = nil
-		m.selectedCommand = 0
-		return m, nil
-	}
-
-	return m, nil
-}
-
-// renderCommandSelectView 渲染命令选择界面。
-func (m Model) renderCommandSelectView() string {
-	var sections []string
-
-	// 标题
-	titleStyle := lipgloss.NewStyle().
-		Foreground(styles.ColorPrimary).
-		Bold(true)
-	sections = append(sections, titleStyle.Render("Commands"))
-	sections = append(sections, "")
-
-	// 选中项样式（淡蓝色）
-	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("14")). // bright cyan
-		Bold(true)
-	selectedDescStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("14"))
-
-	// 普通项样式
-	normalStyle := lipgloss.NewStyle().
-		Foreground(styles.ColorMuted)
-	normalDescStyle := lipgloss.NewStyle().
-		Foreground(styles.ColorMuted)
-
-	// 命令列表
-	for i, cmd := range m.commandList {
-		var block string
-		if i == m.selectedCommand {
-			// 选中项
-			line1 := selectedStyle.Render(fmt.Sprintf("> %s", cmd.Name))
-			line2 := selectedDescStyle.Render(fmt.Sprintf("  %s", cmd.Description))
-			block = fmt.Sprintf("%s\n%s", line1, line2)
-		} else {
-			// 普通项
-			line1 := normalStyle.Render(fmt.Sprintf("  %s", cmd.Name))
-			line2 := normalDescStyle.Render(fmt.Sprintf("  %s", cmd.Description))
-			block = fmt.Sprintf("%s\n%s", line1, line2)
-		}
-		sections = append(sections, block)
-	}
-
-	sections = append(sections, "")
-
-	// 帮助提示
-	helpStyle := lipgloss.NewStyle().
-		Foreground(styles.ColorMuted).
-		Italic(true)
-	sections = append(sections, helpStyle.Render("↑/↓ or j/k to navigate, Enter/Tab to select, Esc/q to cancel"))
-
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
-}
 
 // formatFileSize 返回友好的文件大小描述（kB / MB / GB）。
 func formatFileSize(size int64) string {
