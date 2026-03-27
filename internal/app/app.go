@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ type sessionContinuer func(workDir string) (session.Session, error)
 type sessionCreator func(workDir string) (session.Session, error)
 type llmClientBuilder func(cfg config.Config) (llm.Client, error)
 type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
-type runtimeVisualizerBuilder func() ui.VisualizeFunc
+type runtimeVisualizerBuilder func(mode string, w io.Writer) ui.VisualizeFunc
 type shellUIRunner func(ctx context.Context, deps shell.Dependencies) error
 type agentLoader func(workDir string, registry tools.Registry) (loadedAgent, error)
 type toolRegistryBuilder func() tools.Registry
@@ -146,6 +147,11 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 
+	// 非 shell 模式（text / stream-json）走一次性打印流程
+	if input.outputMode != "" && input.outputMode != "shell" {
+		return d.runPrint(context.Background(), cfg, agent, workDir, input)
+	}
+
 	return d.runShell(context.Background(), cfg, agent, workDir, input)
 }
 
@@ -155,6 +161,7 @@ type runInput struct {
 	forceNewSession bool
 	continueSession bool
 	modelAlias      string
+	outputMode      string // "shell"（默认）, "text", "stream-json"
 	showHelp        bool
 }
 
@@ -200,6 +207,25 @@ func parseRunInput(args []string) (runInput, error) {
 			i++
 			continue
 		}
+		if parseFlags && arg == "--output" {
+			if i+1 >= len(args) {
+				return runInput{}, fmt.Errorf("%w: %s", ErrCLIFlagValueRequired, arg)
+			}
+
+			value := strings.TrimSpace(args[i+1])
+			if value == "" || strings.HasPrefix(value, "-") {
+				return runInput{}, fmt.Errorf("%w: %s", ErrCLIFlagValueRequired, arg)
+			}
+
+			switch value {
+			case "text", "stream-json", "shell":
+				input.outputMode = value
+			default:
+				return runInput{}, fmt.Errorf("invalid --output value %q: must be text, stream-json, or shell", value)
+			}
+			i++
+			continue
+		}
 		if parseFlags && strings.HasPrefix(arg, "-") {
 			return runInput{}, fmt.Errorf("%w: %s", ErrUnknownCLIFlag, arg)
 		}
@@ -217,6 +243,7 @@ func parseRunInput(args []string) (runInput, error) {
 		forceNewSession: input.forceNewSession,
 		continueSession: input.continueSession,
 		modelAlias:      input.modelAlias,
+		outputMode:      input.outputMode,
 		showHelp:        input.showHelp,
 	}, nil
 }
@@ -590,7 +617,7 @@ func (d dependencies) runRuntime(
 		buildVisualizer = defaultRuntimeVisualizer
 	}
 
-	visualize := buildVisualizer()
+	visualize := buildVisualizer("text", os.Stdout)
 
 	return ui.Run(
 		ctx,
@@ -607,8 +634,14 @@ func (d dependencies) runRuntime(
 }
 
 
-func defaultRuntimeVisualizer() ui.VisualizeFunc {
-	return printui.VisualizeText(os.Stdout)
+func defaultRuntimeVisualizer(mode string, w io.Writer) ui.VisualizeFunc {
+	if w == nil {
+		w = os.Stdout
+	}
+	if mode == "stream-json" {
+		return printui.VisualizeStreamJSON(w)
+	}
+	return printui.VisualizeText(w)
 }
 
 func containsTool(definitions []tools.Definition, name string) bool {
@@ -686,6 +719,80 @@ func (d dependencies) runShell(
 			LastSummary:    startupLastSummary(state),
 		},
 	})
+}
+
+// runPrint 处理 text / stream-json 模式的单次执行。
+// prompt 从参数读取，如果没有则尝试从 stdin 读取一行。
+func (d dependencies) runPrint(
+	ctx context.Context,
+	cfg config.Config,
+	agent loadedAgent,
+	workDir string,
+	input runInput,
+) error {
+	prompt := input.prompt
+
+	// 如果没有命令行 prompt，尝试从 stdin 读取一行
+	if prompt == "" {
+		var stdinPrompt string
+		_, err := fmt.Fscanln(os.Stdin, &stdinPrompt)
+		if err != nil && err.Error() != "expected newline" {
+			// stdin 有内容但读取失败
+			return fmt.Errorf("read prompt from stdin: %w", err)
+		}
+		prompt = stdinPrompt
+	}
+
+	if prompt == "" {
+		return fmt.Errorf("no prompt provided; pass as argument or via stdin")
+	}
+
+	cfg = resolveModelOverride(cfg, agent)
+
+	// 创建临时 session（不使用历史）
+	createSession := d.createSession
+	if createSession == nil {
+		createSession = session.New
+	}
+	sess, err := createSession(workDir)
+	if err != nil {
+		return fmt.Errorf("create print session: %w", err)
+	}
+	store := contextstore.New(sess.HistoryFile)
+
+	// 记录 user prompt
+	if err := store.Append(contextstore.NewUserTextRecord(prompt)); err != nil {
+		return fmt.Errorf("append user prompt to history: %w", err)
+	}
+
+	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
+	if err != nil {
+		return err
+	}
+
+	// 构建运行时输入
+	runInput := runtime.Input{
+		Prompt:       prompt,
+		Model:        resolveRuntimeModelName(cfg),
+		SystemPrompt: agent.SystemPrompt,
+	}
+
+	// 使用 outputMode 对应的可视化器
+	buildVisualizer := d.buildVisualizer
+	if buildVisualizer == nil {
+		buildVisualizer = defaultRuntimeVisualizer
+	}
+	visualize := buildVisualizer(input.outputMode, os.Stdout)
+
+	_, err = ui.Run(ctx, func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
+		eventfulRunner, ok := runner.(eventSinkCapableRunner)
+		if !ok {
+			return runner.Run(ctx, store, runInput)
+		}
+		return eventfulRunner.WithEventSink(sink).Run(ctx, store, runInput)
+	}, visualize)
+
+	return err
 }
 
 // loadRunAgent 负责解析当前运行使用的默认 agent。
@@ -1092,7 +1199,7 @@ func helpSectionLines(title string, lines []string) []string {
 
 func helpUsageLines() []string {
 	return []string{
-		"  fimi [--continue] [--model <alias>] [--help] [prompt...]",
+		"  fimi [--continue] [--model <alias>] [--output <mode>] [--help] [prompt...]",
 		"  fimi [options] -- [prompt text starting with flags]",
 	}
 }
@@ -1102,6 +1209,7 @@ func helpFlagLines() []string {
 		"  --continue, -C   Continue the previous session for this work dir",
 		"  --new-session    Explicitly start a fresh session for this run",
 		"  --model <alias>  Override the configured model for this run",
+		"  --output <mode>  Output mode: shell (default), text, stream-json",
 		"  -h, --help       Show this help message",
 	}
 }

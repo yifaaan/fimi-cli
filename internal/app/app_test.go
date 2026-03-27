@@ -18,6 +18,7 @@ import (
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/runtime"
+	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
 	"fimi-cli/internal/tools"
 	"fimi-cli/internal/ui"
@@ -810,13 +811,14 @@ func TestHelpText(t *testing.T) {
 	got := helpText()
 	want := "" +
 		"Usage:\n" +
-		"  fimi [--continue] [--model <alias>] [--help] [prompt...]\n" +
+		"  fimi [--continue] [--model <alias>] [--output <mode>] [--help] [prompt...]\n" +
 		"  fimi [options] -- [prompt text starting with flags]\n" +
 		"\n" +
 		"Flags:\n" +
 		"  --continue, -C   Continue the previous session for this work dir\n" +
 		"  --new-session    Explicitly start a fresh session for this run\n" +
 		"  --model <alias>  Override the configured model for this run\n" +
+		"  --output <mode>  Output mode: shell (default), text, stream-json\n" +
 		"  -h, --help       Show this help message\n" +
 		"\n" +
 		"Prompt Rules:\n" +
@@ -999,11 +1001,57 @@ func TestParseRunInput(t *testing.T) {
 			args:    []string{"--new-session", "--continue", "fix"},
 			wantErr: ErrConflictingSessionFlags,
 		},
+		{
+			name: "output stream-json mode",
+			args: []string{"--output", "stream-json", "fix tests"},
+			want: runInput{
+				prompt:     "fix tests",
+				outputMode: "stream-json",
+			},
+		},
+		{
+			name: "output text mode",
+			args: []string{"--output", "text", "fix tests"},
+			want: runInput{
+				prompt:     "fix tests",
+				outputMode: "text",
+			},
+		},
+		{
+			name: "output shell mode",
+			args: []string{"--output", "shell", "fix tests"},
+			want: runInput{
+				prompt:     "fix tests",
+				outputMode: "shell",
+			},
+		},
+		{
+			name:    "output flag requires value",
+			args:    []string{"--output"},
+			wantErr: ErrCLIFlagValueRequired,
+		},
+		{
+			name:    "output flag rejects invalid value",
+			args:    []string{"--output", "invalid", "fix"},
+			wantErr: nil, // 这个 case 用字符串匹配，不用 errors.Is
+		},
+		{
+			name:    "output flag rejects another flag as value",
+			args:    []string{"--output", "--help", "fix"},
+			wantErr: ErrCLIFlagValueRequired,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := parseRunInput(tt.args)
+			if tt.name == "output flag rejects invalid value" {
+				// 特殊情况：验证错误消息包含预期内容
+				if err == nil || !strings.Contains(err.Error(), `invalid --output value "invalid"`) {
+					t.Fatalf("parseRunInput() error = %v, want contains 'invalid --output value \"invalid\"'", err)
+				}
+				return
+			}
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("parseRunInput() error = %v, want wrapped %v", err, tt.wantErr)
 			}
@@ -1986,7 +2034,7 @@ func TestDependenciesBuildRunnerForAgentRunsWithResolvedAgentTools(t *testing.T)
 func TestDependenciesRunRuntimeStreamsPrintUIForEventfulRunner(t *testing.T) {
 	var out bytes.Buffer
 	deps := dependencies{
-		buildVisualizer: func() ui.VisualizeFunc {
+		buildVisualizer: func(mode string, w io.Writer) ui.VisualizeFunc {
 			return printui.VisualizeText(&out)
 		},
 	}
@@ -2016,7 +2064,7 @@ func TestDependenciesRunRuntimeStreamsPrintUIForEventfulRunner(t *testing.T) {
 func TestDependenciesRunRuntimeKeepsLegacyRunnerCompatible(t *testing.T) {
 	var out bytes.Buffer
 	deps := dependencies{
-		buildVisualizer: func() ui.VisualizeFunc {
+		buildVisualizer: func(mode string, w io.Writer) ui.VisualizeFunc {
 			return printui.VisualizeText(&out)
 		},
 	}
@@ -2039,6 +2087,22 @@ func TestDependenciesRunRuntimeKeepsLegacyRunnerCompatible(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("print ui output = %q, want empty output for legacy runner", out.String())
+	}
+}
+
+func TestDefaultRuntimeVisualizerBuildsStreamJSON(t *testing.T) {
+	var out bytes.Buffer
+	visualize := defaultRuntimeVisualizer("stream-json", &out)
+
+	events := make(chan runtimeevents.Event, 1)
+	events <- runtimeevents.StepBegin{Number: 1}
+	close(events)
+
+	if err := visualize(context.Background(), events); err != nil {
+		t.Fatalf("visualize() error = %v", err)
+	}
+	if got := out.String(); got != "{\"type\":\"step_begin\",\"number\":1}\n" {
+		t.Fatalf("stream-json output = %q, want step_begin json line", got)
 	}
 }
 
