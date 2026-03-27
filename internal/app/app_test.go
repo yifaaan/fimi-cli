@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -563,6 +564,30 @@ agent:
 	}
 	if !errors.Is(err, tools.ErrToolNotRegistered) {
 		t.Fatalf("loadAgentFromWorkDir() error = %v, want wrapped %v", err, tools.ErrToolNotRegistered)
+	}
+}
+
+func TestLoadAgentFromWorkDirDefaultAgentIncludesWebTools(t *testing.T) {
+	workDir, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+
+	got, err := loadAgentFromWorkDir(workDir, tools.BuiltinRegistry())
+	if err != nil {
+		t.Fatalf("loadAgentFromWorkDir() error = %v", err)
+	}
+
+	toolNames := make([]string, 0, len(got.Tools))
+	for _, definition := range got.Tools {
+		toolNames = append(toolNames, definition.Name)
+	}
+
+	if !slices.Contains(toolNames, tools.ToolSearchWeb) {
+		t.Fatalf("default agent tools = %#v, want to contain %q", toolNames, tools.ToolSearchWeb)
+	}
+	if !slices.Contains(toolNames, tools.ToolFetchURL) {
+		t.Fatalf("default agent tools = %#v, want to contain %q", toolNames, tools.ToolFetchURL)
 	}
 }
 
@@ -1220,6 +1245,9 @@ func TestDependenciesRunDelegatesToShellByDefault(t *testing.T) {
 	}
 	if gotDeps.StartupInfo.ModelName != "actual-model" {
 		t.Fatalf("shell startup model = %q, want %q", gotDeps.StartupInfo.ModelName, "actual-model")
+	}
+	if gotDeps.StartupInfo.AppVersion == "" {
+		t.Fatalf("shell startup app version = empty, want non-empty")
 	}
 	if gotDeps.StartupInfo.ConversationDB != historyFile {
 		t.Fatalf("shell startup history = %q, want %q", gotDeps.StartupInfo.ConversationDB, historyFile)
