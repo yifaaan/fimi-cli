@@ -161,10 +161,10 @@ Updated: 2026-03-27
 | Streaming text/tool deltas | yes | yes | `done` |
 | Runtime events | 7 types | 7 types | `done` |
 | Print UI: text | yes | yes | `done` |
-| Print UI: stream-json | yes | no | `missing` |
+| Print UI: stream-json | yes | yes (via --output stream-json) | `done` |
 | Shell UI: basic REPL | yes | yes | `done` |
 | Shell UI: live rendering | Rich-based | Bubble Tea | `partial` |
-| Shell: `/compact` | yes | no | `missing` |
+| Shell: `/compact` | yes | yes | `done` |
 | Shell: `/init` | yes | no | `missing` |
 | Shell: `/release-notes` | yes | no | `missing` |
 | Shell: file mention (`@`) | yes | no | `missing` |
@@ -223,7 +223,8 @@ Go has `search_web` with DuckDuckGo, and now has `fetch_url` with built-in reada
 
 ### Phase 10: Print / Transport Parity
 
-- [ ] Add `stream-json` print output mode
+- [x] Add `stream-json` print output mode
+- [x] Add `--output` CLI flag for mode selection (`text`, `stream-json`, `shell`)
 - [ ] Add ACP server mode
 - [ ] Project runtime events onto ACP transport messages
 - [ ] Support cancellation across ACP boundary
@@ -260,9 +261,9 @@ Go has `search_web` with DuckDuckGo, and now has `fetch_url` with built-in reada
 
 ## Immediate Next Steps
 
-1. **Startup banner version line** - finish the new shell banner with real version text
-2. **`/compact` meta command** - important shell feature
-3. **`stream-json` print mode** - machine-readable output
+1. ~~**Startup banner version line**~~ - ✅ done
+2. ~~**`/compact` meta command**~~ - ✅ done
+3. ~~**`stream-json` print mode**~~ - ✅ done (with `--output stream-json`)
 4. **MCP integration** - external tool support
 5. **ACP server mode** - IDE/extension integration
 6. **D-Mail / rollback** - time-travel debugging

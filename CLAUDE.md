@@ -156,6 +156,7 @@ For every teaching unit, strictly follow this order:
    - Always show the exact commit message explicitly.
    - If no commit is made in the current step, explicitly state:
      `No commit in this step; waiting for the next closely related change.`
+   - Do not add coauthor:claude
 
 5. **Local Module Diagram**
    - Show the logic and components inside this module.
