@@ -84,6 +84,7 @@ type StartupInfo struct {
 	SessionID      string
 	SessionReused  bool
 	ModelName      string
+	AppVersion     string
 	ConversationDB string
 	LastRole       string
 	LastSummary    string

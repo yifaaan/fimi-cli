@@ -680,6 +680,7 @@ func (d dependencies) runShell(
 			SessionID:      sess.ID,
 			SessionReused:  sessionReused,
 			ModelName:      resolveRuntimeModelName(cfg),
+			AppVersion:     resolveAppVersion(),
 			ConversationDB: sess.HistoryFile,
 			LastRole:       startupLastRole(state),
 			LastSummary:    startupLastSummary(state),
