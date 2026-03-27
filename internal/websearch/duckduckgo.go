@@ -1,8 +1,8 @@
 package websearch
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"fimi-cli/internal/tools"
+	"golang.org/x/net/html"
 )
 
 const defaultDuckDuckGoPath = "/html/"
@@ -27,17 +28,6 @@ type DuckDuckGoSearcher struct {
 	baseURL   string
 	userAgent string
 	client    *http.Client
-}
-
-type duckDuckGoResult struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet"`
-	Content string `json:"content"`
-}
-
-type duckDuckGoResponse struct {
-	Results []duckDuckGoResult `json:"results"`
 }
 
 func NewDuckDuckGoSearcher(cfg DuckDuckGoConfig) (*DuckDuckGoSearcher, error) {
@@ -61,6 +51,9 @@ func NewDuckDuckGoSearcher(cfg DuckDuckGoConfig) (*DuckDuckGoSearcher, error) {
 	if parsedURL.Scheme == "" || parsedURL.Host == "" {
 		return nil, fmt.Errorf("duckduckgo base url must include scheme and host")
 	}
+	if strings.TrimSpace(parsedURL.Path) == "" {
+		parsedURL.Path = defaultDuckDuckGoPath
+	}
 
 	return &DuckDuckGoSearcher{
 		baseURL:   parsedURL.String(),
@@ -75,20 +68,19 @@ func (s *DuckDuckGoSearcher) Search(
 	limit int,
 	includeContent bool,
 ) ([]tools.WebSearchResult, error) {
-	form := url.Values{}
-	form.Set("q", query)
-	form.Set("limit", fmt.Sprintf("%d", limit))
-	if includeContent {
-		form.Set("include_content", "true")
+	_ = includeContent
+
+	requestURL, err := buildDuckDuckGoSearchURL(s.baseURL, query)
+	if err != nil {
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build duckduckgo request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -109,20 +101,171 @@ func (s *DuckDuckGoSearcher) Search(
 		return nil, fmt.Errorf("duckduckgo search failed with status %d: %s", resp.StatusCode, message)
 	}
 
-	var payload duckDuckGoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode duckduckgo response: %w", err)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read duckduckgo response: %w", err)
 	}
 
-	results := make([]tools.WebSearchResult, 0, len(payload.Results))
-	for _, item := range payload.Results {
-		results = append(results, tools.WebSearchResult{
-			Title:   strings.TrimSpace(item.Title),
-			URL:     strings.TrimSpace(item.URL),
-			Snippet: strings.TrimSpace(item.Snippet),
-			Content: strings.TrimSpace(item.Content),
-		})
+	results, err := parseDuckDuckGoHTML(body, limit)
+	if err != nil {
+		return nil, err
 	}
 
 	return results, nil
+}
+
+func buildDuckDuckGoSearchURL(baseURL, query string) (string, error) {
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse duckduckgo base url: %w", err)
+	}
+
+	values := parsedURL.Query()
+	values.Set("q", query)
+	parsedURL.RawQuery = values.Encode()
+
+	return parsedURL.String(), nil
+}
+
+func parseDuckDuckGoHTML(body []byte, limit int) ([]tools.WebSearchResult, error) {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("parse duckduckgo response html: %w", err)
+	}
+
+	resultNodes := findAllNodes(doc, func(node *html.Node) bool {
+		return node.Type == html.ElementNode && hasClass(node, "result") && hasClass(node, "web-result")
+	})
+
+	results := make([]tools.WebSearchResult, 0, len(resultNodes))
+	for _, resultNode := range resultNodes {
+		titleNode := findFirstNode(resultNode, func(node *html.Node) bool {
+			return node.Type == html.ElementNode && node.Data == "a" && hasClass(node, "result__a")
+		})
+		if titleNode == nil {
+			continue
+		}
+
+		snippetNode := findFirstNode(resultNode, func(node *html.Node) bool {
+			return node.Type == html.ElementNode && node.Data == "a" && hasClass(node, "result__snippet")
+		})
+
+		result := tools.WebSearchResult{
+			Title:   strings.TrimSpace(nodeText(titleNode)),
+			URL:     extractDuckDuckGoResultURL(attributeValue(titleNode, "href")),
+			Snippet: strings.TrimSpace(nodeText(snippetNode)),
+		}
+		if result.Title == "" && result.URL == "" && result.Snippet == "" {
+			continue
+		}
+
+		results = append(results, result)
+		if limit > 0 && len(results) >= limit {
+			break
+		}
+	}
+
+	return results, nil
+}
+
+func extractDuckDuckGoResultURL(rawHref string) string {
+	rawHref = strings.TrimSpace(rawHref)
+	if rawHref == "" {
+		return ""
+	}
+	if strings.HasPrefix(rawHref, "//") {
+		rawHref = "https:" + rawHref
+	}
+
+	parsedURL, err := url.Parse(rawHref)
+	if err == nil {
+		target := strings.TrimSpace(parsedURL.Query().Get("uddg"))
+		if target != "" {
+			return target
+		}
+		if parsedURL.Scheme != "" && parsedURL.Host != "" {
+			return parsedURL.String()
+		}
+	}
+
+	return rawHref
+}
+
+func findAllNodes(root *html.Node, match func(*html.Node) bool) []*html.Node {
+	var nodes []*html.Node
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node == nil {
+			return
+		}
+		if match(node) {
+			nodes = append(nodes, node)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+
+	return nodes
+}
+
+func findFirstNode(root *html.Node, match func(*html.Node) bool) *html.Node {
+	if root == nil {
+		return nil
+	}
+	if match(root) {
+		return root
+	}
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if found := findFirstNode(child, match); found != nil {
+			return found
+		}
+	}
+
+	return nil
+}
+
+func hasClass(node *html.Node, className string) bool {
+	for _, attr := range node.Attr {
+		if attr.Key != "class" {
+			continue
+		}
+		for _, item := range strings.Fields(attr.Val) {
+			if item == className {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func attributeValue(node *html.Node, key string) string {
+	if node == nil {
+		return ""
+	}
+	for _, attr := range node.Attr {
+		if attr.Key == key {
+			return attr.Val
+		}
+	}
+
+	return ""
+}
+
+func nodeText(node *html.Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Type == html.TextNode {
+		return node.Data
+	}
+
+	var builder strings.Builder
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		builder.WriteString(nodeText(child))
+	}
+
+	return builder.String()
 }
