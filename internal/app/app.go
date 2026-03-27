@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"fimi-cli/internal/acp"
 	"fimi-cli/internal/agentspec"
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
@@ -105,6 +106,11 @@ func Run(args []string) error {
 }
 
 func (d dependencies) run(args []string) error {
+	// 检查是否是 ACP 子命令
+	if len(args) > 0 && args[0] == "acp" {
+		return d.runACP(context.Background())
+	}
+
 	input, err := parseRunInput(args)
 	if err != nil {
 		return err
@@ -637,6 +643,9 @@ func (r *mcpAwareRunner) Run(ctx context.Context, store contextstore.Context, in
 	return r.Runner.Run(ctx, store, input)
 }
 
+// Inner 返回内嵌的 runtime.Runner。
+func (r *mcpAwareRunner) Inner() runtime.Runner { return r.Runner }
+
 // buildMCPTools is a dependency injection point for testing.
 type mcpToolBuilder func(cfg config.MCPConfig) *mcp.Manager
 
@@ -883,6 +892,58 @@ func (d dependencies) resolveToolRegistry() tools.Registry {
 	}
 
 	return buildRegistry()
+}
+
+// runACP 启动 ACP JSON-RPC 服务器。
+func (d dependencies) runACP(ctx context.Context) error {
+	loadConfig := d.loadConfig
+	if loadConfig == nil {
+		loadConfig = config.Load
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	conn := acp.NewFramedConn(os.Stdin, os.Stdout)
+
+	resolveWorkDir := d.resolveWorkDir
+	if resolveWorkDir == nil {
+		resolveWorkDir = os.Getwd
+	}
+
+	workDir, err := resolveWorkDir()
+	if err != nil {
+		return fmt.Errorf("get work dir: %w", err)
+	}
+
+	registry := d.resolveToolRegistry()
+	agent, err := d.loadRunAgent(workDir, registry)
+	if err != nil {
+		return fmt.Errorf("load agent: %w", err)
+	}
+
+	// runner 工厂：每次 prompt 调用时创建新的 runner
+	newRunner := func() runtime.Runner {
+		r, err := d.buildRunnerForAgent(cfg, agent, workDir)
+		if err != nil {
+			log.Printf("[ACP] build runner: %v", err)
+			return runtime.Runner{}
+		}
+		// mcpAwareRunner 内嵌了 runtime.Runner
+		type hasInner interface{ Inner() runtime.Runner }
+		if h, ok := r.(hasInner); ok {
+			return h.Inner()
+		}
+		return runtime.Runner{}
+	}
+
+	// 包装 ui.Run 为 acp.RunFunc
+	runFn := acp.AdaptRunFunc(ui.Run, newRunner)
+
+	server := acp.NewServer(conn, cfg, runFn)
+	return server.Serve(ctx)
 }
 
 // defaultAgentFile 返回工作目录下的默认 agent 文件位置。
