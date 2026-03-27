@@ -285,6 +285,78 @@ func TestDecodeSearchWebArgumentsRejectsInvalidLimit(t *testing.T) {
 	}
 }
 
+func TestNewFetchURLHandlerUsesInjectedFetcher(t *testing.T) {
+	ctx := context.Background()
+	fetcher := &stubURLFetcher{
+		content: "Example page content",
+	}
+	handler := NewFetchURLHandler(fetcher, NewOutputShaperWithLimits(1000, 1000))
+
+	got, err := handler(ctx, runtime.ToolCall{
+		Name:      ToolFetchURL,
+		Arguments: `{"url":"https://example.com/page"}`,
+	}, Definition{Name: ToolFetchURL, Kind: KindUtility})
+	if err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+	if fetcher.gotURL != "https://example.com/page" {
+		t.Fatalf("fetcher url = %q, want %q", fetcher.gotURL, "https://example.com/page")
+	}
+	if !strings.Contains(got.Output, "Example page content") {
+		t.Fatalf("handler output %q missing %q", got.Output, "Example page content")
+	}
+}
+
+func TestNewFetchURLHandlerReturnsErrorOnEmptyURL(t *testing.T) {
+	ctx := context.Background()
+	fetcher := &stubURLFetcher{}
+	handler := NewFetchURLHandler(fetcher, NewOutputShaper())
+
+	_, err := handler(ctx, runtime.ToolCall{
+		Name:      ToolFetchURL,
+		Arguments: `{"url":"   "}`,
+	}, Definition{Name: ToolFetchURL, Kind: KindUtility})
+	if !errors.Is(err, ErrToolURLRequired) {
+		t.Fatalf("handler() error = %v, want wrapped %v", err, ErrToolURLRequired)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
+}
+
+func TestNewFetchURLHandlerReturnsErrorOnFetcherError(t *testing.T) {
+	ctx := context.Background()
+	fetcher := &stubURLFetcher{
+		err: errors.New("network timeout"),
+	}
+	handler := NewFetchURLHandler(fetcher, NewOutputShaper())
+
+	_, err := handler(ctx, runtime.ToolCall{
+		Name:      ToolFetchURL,
+		Arguments: `{"url":"https://example.com/timeout"}`,
+	}, Definition{Name: ToolFetchURL, Kind: KindUtility})
+	if err == nil {
+		t.Fatalf("handler() error = nil, want error")
+	}
+	if !runtime.IsTemporary(err) {
+		t.Fatalf("runtime.IsTemporary(error) = false, want true")
+	}
+}
+
+type stubURLFetcher struct {
+	gotURL  string
+	content string
+	err     error
+}
+
+func (s *stubURLFetcher) Fetch(ctx context.Context, url string) (string, error) {
+	s.gotURL = url
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.content, nil
+}
+
 func TestNewBuiltinExecutorSetTodoListRendersTodos(t *testing.T) {
 	ctx := context.Background()
 	executor := NewBuiltinExecutor([]Definition{

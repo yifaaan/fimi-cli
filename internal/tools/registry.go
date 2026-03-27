@@ -27,6 +27,7 @@ const (
 	ToolThink       = "think"
 	ToolSetTodoList = "set_todo_list"
 	ToolSearchWeb   = "search_web"
+	ToolFetchURL    = "fetch_url"
 	ToolReadFile    = "read_file"
 	ToolGlob        = "glob"
 	ToolGrep        = "grep"
@@ -100,6 +101,11 @@ func BuiltinRegistry() Registry {
 			Name:        ToolSearchWeb,
 			Kind:        KindUtility,
 			Description: "Search the web for recent information and relevant pages.",
+		},
+		Definition{
+			Name:        ToolFetchURL,
+			Kind:        KindUtility,
+			Description: "Fetch a URL and return its main text content.",
 		},
 		Definition{
 			Name:        ToolReadFile,

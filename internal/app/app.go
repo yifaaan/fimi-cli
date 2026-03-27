@@ -19,6 +19,7 @@ import (
 	"fimi-cli/internal/ui"
 	"fimi-cli/internal/ui/printui"
 	"fimi-cli/internal/ui/shell"
+	"fimi-cli/internal/webfetch"
 	"fimi-cli/internal/websearch"
 )
 
@@ -376,6 +377,10 @@ func toolParametersSchema(name string) map[string]any {
 			schemaProperty("path", "string", "Workspace-relative file path to patch."),
 			schemaProperty("diff", "string", "Unified diff patch content."),
 		))
+	case tools.ToolFetchURL:
+		return objectSchema(requiredProperties(
+			schemaProperty("url", "string", "HTTP or HTTPS URL to fetch."),
+		))
 	default:
 		return map[string]any{
 			"type":                 "object",
@@ -525,6 +530,13 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		}
 		toolHandlers[tools.ToolSearchWeb] = tools.NewSearchWebHandler(searcher, tools.NewOutputShaper())
 	}
+	if containsTool(agent.Tools, tools.ToolFetchURL) {
+		fetcher, err := buildURLFetcher(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("build url fetcher: %w", err)
+		}
+		toolHandlers[tools.ToolFetchURL] = tools.NewFetchURLHandler(fetcher, tools.NewOutputShaper())
+	}
 
 	toolExecutor := tools.NewBuiltinExecutorWithExtraHandlers(
 		agent.Tools,
@@ -556,6 +568,11 @@ func buildWebSearcher(cfg config.Config) (tools.WebSearcher, error) {
 		BaseURL:   cfg.Web.DuckDuckGo.BaseURL,
 		UserAgent: cfg.Web.DuckDuckGo.UserAgent,
 	})
+}
+
+func buildURLFetcher(cfg config.Config) (tools.URLFetcher, error) {
+	// URL fetcher 使用内建默认配置，暂不暴露用户配置入口。
+	return webfetch.NewHTTPFetcher(webfetch.HTTPFetcherConfig{})
 }
 
 type eventSinkCapableRunner interface {

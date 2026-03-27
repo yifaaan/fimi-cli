@@ -40,6 +40,7 @@ var ErrToolThoughtRequired = errors.New("tool thought is required")
 var ErrToolTodosRequired = errors.New("tool todos are required")
 var ErrToolTodoTitleRequired = errors.New("tool todo title is required")
 var ErrToolTodoStatusInvalid = errors.New("tool todo status is invalid")
+var ErrToolURLRequired       = errors.New("tool url is required")
 
 type bashArguments struct {
 	Command string `json:"command"`
@@ -62,6 +63,14 @@ type searchWebArguments struct {
 	Query          string `json:"query"`
 	Limit          int    `json:"limit"`
 	IncludeContent bool   `json:"include_content"`
+}
+
+type fetchURLArguments struct {
+	URL string `json:"url"`
+}
+
+type URLFetcher interface {
+	Fetch(ctx context.Context, url string) (string, error)
 }
 
 type WebSearchResult struct {
@@ -443,6 +452,38 @@ func NewSearchWebHandler(searcher WebSearcher, shaper OutputShaper) HandlerFunc 
 	return newSearchWebHandler(searcher, shaper)
 }
 
+func newFetchURLHandler(fetcher URLFetcher, shaper OutputShaper) HandlerFunc {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeFetchURLArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+		if fetcher == nil {
+			return runtime.ToolExecution{}, markTemporary(errors.New("url fetcher is not configured"))
+		}
+
+		content, err := fetcher.Fetch(ctx, args.URL)
+		if err != nil {
+			return runtime.ToolExecution{}, markTemporary(fmt.Errorf("fetch url: %w", err))
+		}
+
+		shaped := shaper.Shape(content)
+		output := shaped.Output
+		if shaped.Message != "" {
+			output += "\n\n[" + shaped.Message + "]"
+		}
+
+		return runtime.ToolExecution{
+			Call:   call,
+			Output: output,
+		}, nil
+	}
+}
+
+func NewFetchURLHandler(fetcher URLFetcher, shaper OutputShaper) HandlerFunc {
+	return newFetchURLHandler(fetcher, shaper)
+}
+
 func formatWebSearchResults(results []WebSearchResult, includeContent bool) string {
 	if len(results) == 0 {
 		return "No web results found."
@@ -733,6 +774,20 @@ func decodePatchFileArguments(raw string) (patchFileArguments, error) {
 	}
 	if strings.TrimSpace(args.Diff) == "" {
 		return patchFileArguments{}, markRefused(ErrToolPatchDiffRequired)
+	}
+
+	return args, nil
+}
+
+func decodeFetchURLArguments(raw string) (fetchURLArguments, error) {
+	var args fetchURLArguments
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return fetchURLArguments{}, markRefused(fmt.Errorf("%w: decode fetch_url arguments: %v", ErrToolArgumentsInvalid, err))
+	}
+
+	args.URL = strings.TrimSpace(args.URL)
+	if args.URL == "" {
+		return fetchURLArguments{}, markRefused(ErrToolURLRequired)
 	}
 
 	return args, nil
