@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/llm"
+	"fimi-cli/internal/mcp"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
@@ -82,6 +84,7 @@ type dependencies struct {
 	buildRuntimeRunner runtimeRunnerBuilder
 	buildVisualizer    runtimeVisualizerBuilder
 	runShellUI         shellUIRunner
+	buildMCPTools      mcpToolBuilder
 	printHelp          helpPrinter
 	printStartupState  startupStatePrinter
 }
@@ -293,10 +296,15 @@ func buildLLMToolDefinitions(definitions []tools.Definition) []llm.ToolDefinitio
 
 	toolDefs := make([]llm.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
+		// Use InputSchema if provided (MCP tools), otherwise use builtin schema
+		params := definition.InputSchema
+		if params == nil {
+			params = toolParametersSchema(definition.Name)
+		}
 		toolDefs = append(toolDefs, llm.ToolDefinition{
 			Name:        definition.Name,
 			Description: definition.Description,
-			Parameters:  toolParametersSchema(definition.Name),
+			Parameters:  params,
 		})
 	}
 
@@ -510,6 +518,10 @@ func (d dependencies) buildEngine(cfg config.Config) (llm.Engine, error) {
 }
 
 func (d dependencies) buildEngineForAgent(cfg config.Config, agent loadedAgent) (llm.Engine, error) {
+	return d.buildEngineForAgentWithTools(cfg, agent, agent.Tools)
+}
+
+func (d dependencies) buildEngineForAgentWithTools(cfg config.Config, agent loadedAgent, tools []tools.Definition) (llm.Engine, error) {
 	cfg = resolveModelOverride(cfg, agent)
 
 	buildClient := d.buildLLMClient
@@ -523,7 +535,7 @@ func (d dependencies) buildEngineForAgent(cfg config.Config, agent loadedAgent) 
 	}
 
 	llmCfg := buildLLMConfig(cfg)
-	llmCfg.Tools = buildLLMToolDefinitions(agent.Tools)
+	llmCfg.Tools = buildLLMToolDefinitions(tools)
 
 	return llm.NewEngine(client, llmCfg), nil
 }
@@ -537,11 +549,31 @@ func (d dependencies) buildRunner(cfg config.Config) (runtimeRunner, error) {
 func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, workDir string) (runtimeRunner, error) {
 	cfg = resolveModelOverride(cfg, agent)
 
+	// Build MCP manager and discover tools
+	var mcpManager *mcp.Manager
+	if d.buildMCPTools == nil {
+		mcpManager = mcp.NewManager(context.Background(), cfg.MCP)
+	} else {
+		mcpManager = d.buildMCPTools(cfg.MCP)
+	}
+
+	// Merge MCP tools into agent tools
+	allTools := make([]tools.Definition, 0, len(agent.Tools)+len(mcpManager.Tools()))
+	allTools = append(allTools, agent.Tools...)
+	for _, tool := range mcpManager.Tools() {
+		allTools = append(allTools, tools.Definition{
+			Name:        tool.Name,
+			Kind:        tools.KindUtility,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
+		})
+	}
+
 	if d.buildRuntimeRunner != nil {
 		return d.buildRuntimeRunner(cfg)
 	}
 
-	engine, err := d.buildEngineForAgent(cfg, agent)
+	engine, err := d.buildEngineForAgentWithTools(cfg, agent, allTools)
 	if err != nil {
 		return nil, err
 	}
@@ -565,14 +597,48 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		toolHandlers[tools.ToolFetchURL] = tools.NewFetchURLHandler(fetcher, tools.NewOutputShaper())
 	}
 
+	// Register MCP tool handlers
+	for _, mcptool := range mcpManager.Tools() {
+		mc := mcpManager.ClientForTool(mcptool.Name)
+		if mc != nil {
+			toolHandlers[mcptool.Name] = tools.NewMCPToolHandler(mc, mcptool)
+		}
+	}
+
 	toolExecutor := tools.NewBuiltinExecutorWithExtraHandlers(
-		agent.Tools,
+		allTools,
 		workDir,
 		toolHandlers,
 	)
 
-	return runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent)), nil
+	runner := runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent))
+
+	// Wrap runner to close MCP manager after use
+	return &mcpAwareRunner{
+		Runner:      runner,
+		mcpManager:  mcpManager,
+	}, nil
 }
+
+// mcpAwareRunner wraps a runtime.Runner to close the MCP manager after the run.
+type mcpAwareRunner struct {
+	runtime.Runner
+	mcpManager *mcp.Manager
+}
+
+func (r *mcpAwareRunner) Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
+	defer func() {
+		if r.mcpManager != nil {
+			if err := r.mcpManager.Close(); err != nil {
+				log.Printf("[MCP] error closing manager: %v", err)
+			}
+		}
+	}()
+	return r.Runner.Run(ctx, store, input)
+}
+
+// buildMCPTools is a dependency injection point for testing.
+type mcpToolBuilder func(cfg config.MCPConfig) *mcp.Manager
 
 
 func buildEngine(cfg config.Config) (llm.Engine, error) {

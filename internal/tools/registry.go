@@ -52,6 +52,9 @@ type Definition struct {
 	Name        string
 	Kind        Kind
 	Description string
+	// InputSchema is the JSON Schema for the tool's parameters.
+	// Used by MCP tools that bring their own schema.
+	InputSchema map[string]any
 }
 
 // Registry 是工具名到定义的显式映射表。

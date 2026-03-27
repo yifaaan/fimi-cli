@@ -31,6 +31,19 @@ type DuckDuckGoConfig struct {
 	UserAgent string `json:"user_agent"`
 }
 
+// MCPServer describes a single MCP server to connect to.
+type MCPServer struct {
+	Command string            `json:"command"` // e.g. "npx", "python", "/path/to/binary"
+	Args    []string          `json:"args"`    // e.g. ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+	Env     map[string]string `json:"env"`     // Optional environment variables
+}
+
+// MCPConfig holds MCP server connections.
+type MCPConfig struct {
+	Enabled bool                   `json:"enabled"`
+	Servers map[string]MCPServer  `json:"servers"`
+}
+
 type WebConfig struct {
 	Enabled       bool             `json:"enabled"`
 	SearchBackend string           `json:"search_backend"`
@@ -47,6 +60,7 @@ type Config struct {
 	Providers     map[string]ProviderConfig `json:"providers"`
 	Services      ServicesConfig            `json:"services"`
 	Web           WebConfig                 `json:"web"`
+	MCP           MCPConfig                 `json:"mcp"`
 }
 
 // LoopControl 对应 Python 版本里的 agent loop 控制参数。
@@ -121,6 +135,9 @@ func Default() Config {
 				UserAgent: DefaultDuckDuckGoUserAgent,
 			},
 		},
+		MCP: MCPConfig{
+			Enabled: false,
+		},
 	}
 }
 
@@ -194,6 +211,9 @@ func validate(cfg Config) error {
 	if err := validateWebConfig(cfg.Web); err != nil {
 		return err
 	}
+	if err := validateMCPConfig(cfg.MCP); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -248,6 +268,19 @@ func validateWebConfig(cfg WebConfig) error {
 	}
 	if cfg.DuckDuckGo.UserAgent == "" {
 		return errors.New("web.duckduckgo.user_agent is required when web.enabled is true")
+	}
+
+	return nil
+}
+
+func validateMCPConfig(cfg MCPConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	for name, server := range cfg.Servers {
+		if server.Command == "" {
+			return fmt.Errorf("mcp.servers.%s.command is required", name)
+		}
 	}
 
 	return nil
