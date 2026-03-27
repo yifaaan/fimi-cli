@@ -5,12 +5,14 @@ agent:
   system_prompt_args:
     ROLE: coding agent
   tools:
-    - agent
-    - think
-    - set_todo_list
-    - bash
-    - read_file
-    - glob
-    - grep
-    - write_file
-    - replace_file
+     - agent
+     - think
+     - set_todo_list
+     - bash
+     - read_file
+     - glob
+     - grep
+     - write_file
+     - replace_file
+     - search_web
+     - fetch_url
