@@ -214,7 +214,7 @@ Updated: 2026-03-27
 | Shell: approval panel | yes | no | `missing` |
 | Shell: mode toggle (agent/shell) | yes | no | `missing` |
 | Shell: prompt history | yes | store exists, no UI | `partial` |
-| ACP server mode | yes (multi-session) | no | `missing` |
+| ACP server mode | yes (multi-session) | yes (multi-session) | `done` |
 | Agent spec | 7 fields | 8 fields (has `model`) | `done+extra` |
 | Subagent model override | passes parent | passes parent | `same` |
 | **Subagent: continuation prompt** | yes (< 200 chars re-run) | no | `missing` |
@@ -273,17 +273,17 @@ Updated: 2026-03-27
 
 ### Phase 10: ACP Server Mode
 
-- [ ] ACP server entry point (`cmd/fimi acp`)
-- [ ] Multi-session ACP server with JSON-RPC over stdio
-- [ ] ACP event projection: runtime events -> ACP update messages
-- [ ] ACP session lifecycle: `new_session`, `load_session`, `resume_session`, `list_sessions`
-- [ ] ACP `prompt` RPC delegation
-- [ ] ACP `cancel` RPC with turn state cancellation
-- [ ] ACP `set_session_model` RPC
-- [ ] ACP content block conversion (Text, Image, Audio, Resource)
-- [ ] ACP tool result conversion back to ACP schema
-- [ ] ACP authentication flow
-- [ ] Support cancellation across ACP boundary
+- [x] ACP server entry point (`fimi acp` subcommand)
+- [x] Multi-session ACP server with JSON-RPC over stdio
+- [x] ACP event projection: runtime events -> ACP update messages
+- [x] ACP session lifecycle: `new_session`, `load_session`, `resume_session`, `list_sessions`
+- [x] ACP `prompt` RPC delegation (async with streaming)
+- [x] ACP `cancel` RPC with turn state cancellation
+- [x] ACP `set_session_model` RPC
+- [ ] ACP content block conversion (Image, Audio, Resource) — text only for now
+- [ ] ACP tool result conversion back to full ACP schema
+- [ ] ACP authentication flow — stubbed, no auth required
+- [x] Support cancellation across ACP boundary
 
 ### Phase 11: D-Mail / Rollback Integration
 
