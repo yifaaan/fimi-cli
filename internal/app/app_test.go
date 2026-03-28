@@ -84,102 +84,6 @@ func TestBuildLLMToolDefinitions(t *testing.T) {
 	}
 }
 
-func TestBuildLLMToolDefinitionsForAgentTool(t *testing.T) {
-	got := buildLLMToolDefinitions([]tools.Definition{
-		{
-			Name:        tools.ToolAgent,
-			Description: "Run a declared subagent for a focused task.",
-		},
-	})
-
-	if len(got) != 1 {
-		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
-	}
-	properties, ok := got[0].Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
-	}
-	for _, name := range []string{"description", "prompt", "subagent_name"} {
-		if _, ok := properties[name]; !ok {
-			t.Fatalf("tool parameters missing %q property", name)
-		}
-	}
-}
-
-func TestBuildLLMToolDefinitionsForThinkTool(t *testing.T) {
-	got := buildLLMToolDefinitions([]tools.Definition{
-		{
-			Name:        tools.ToolThink,
-			Description: "Log a private reasoning note without changing workspace state.",
-		},
-	})
-
-	if len(got) != 1 {
-		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
-	}
-	properties, ok := got[0].Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
-	}
-	if _, ok := properties["thought"]; !ok {
-		t.Fatalf("tool parameters missing %q property", "thought")
-	}
-}
-
-func TestBuildLLMToolDefinitionsForSetTodoListTool(t *testing.T) {
-	got := buildLLMToolDefinitions([]tools.Definition{
-		{
-			Name:        tools.ToolSetTodoList,
-			Description: "Update the whole todo list.",
-		},
-	})
-
-	if len(got) != 1 {
-		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
-	}
-	defs, ok := got[0].Parameters["$defs"].(map[string]any)
-	if !ok {
-		t.Fatalf("tool parameters $defs type = %T, want map[string]any", got[0].Parameters["$defs"])
-	}
-	if _, ok := defs["Todo"]; !ok {
-		t.Fatalf("tool parameters missing %q definition", "Todo")
-	}
-	properties, ok := got[0].Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
-	}
-	if _, ok := properties["todos"]; !ok {
-		t.Fatalf("tool parameters missing %q property", "todos")
-	}
-}
-
-func TestBuildLLMToolDefinitionsForSearchWebTool(t *testing.T) {
-	got := buildLLMToolDefinitions([]tools.Definition{{
-		Name:        tools.ToolSearchWeb,
-		Description: "Search the web for recent information and relevant pages.",
-	}})
-
-	if len(got) != 1 {
-		t.Fatalf("len(buildLLMToolDefinitions()) = %d, want 1", len(got))
-	}
-	properties, ok := got[0].Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("tool parameters properties type = %T, want map[string]any", got[0].Parameters["properties"])
-	}
-	for _, name := range []string{"query", "limit", "include_content"} {
-		if _, ok := properties[name]; !ok {
-			t.Fatalf("tool parameters missing %q property", name)
-		}
-	}
-	required, ok := got[0].Parameters["required"].([]string)
-	if !ok {
-		t.Fatalf("tool parameters required type = %T, want []string", got[0].Parameters["required"])
-	}
-	if len(required) != 1 || required[0] != "query" {
-		t.Fatalf("tool parameters required = %#v, want []string{\"query\"}", required)
-	}
-}
-
 func TestBuildWebSearcherReturnsNilWhenDisabled(t *testing.T) {
 	searcher, err := buildWebSearcher(config.Default())
 	if err != nil {
@@ -331,13 +235,6 @@ func TestApplyRunInputToConfigReturnsErrorForUnknownModelAlias(t *testing.T) {
 	}
 	if err.Error() != `model "missing-model" not found in config.models` {
 		t.Fatalf("applyRunInputToConfig() error = %q, want %q", err.Error(), `model "missing-model" not found in config.models`)
-	}
-}
-
-func TestSummarizeStartupContentCompactsWhitespaceAndTruncates(t *testing.T) {
-	got := summarizeStartupContent("line one\n\n   line two   line three", 18)
-	if got != "line one line t..." {
-		t.Fatalf("summarizeStartupContent() = %q, want %q", got, "line one line t...")
 	}
 }
 
@@ -1175,7 +1072,6 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 	var resolveWorkDirCalled bool
 	var createSessionCalled bool
 	var buildRunnerCalled bool
-	var helpCalled bool
 
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
@@ -1194,9 +1090,6 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 			buildRunnerCalled = true
 			return &stubRunner{}, nil
 		},
-		printHelp: func() {
-			helpCalled = true
-		},
 	}
 
 	err := deps.run([]string{"--help"})
@@ -1204,9 +1097,6 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 
-	if !helpCalled {
-		t.Fatalf("printHelp() called = false, want true")
-	}
 	if loadConfigCalled {
 		t.Fatalf("loadConfig() called = true, want false")
 	}
@@ -1224,7 +1114,6 @@ func TestDependenciesRunPrintsHelpBeforeLoadingConfig(t *testing.T) {
 func TestDependenciesRunDelegatesToShellByDefault(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	var gotDeps shell.Dependencies
-	var printedState bool
 
 	deps := dependencies{
 		loadConfig: func() (config.Config, error) {
@@ -1255,15 +1144,6 @@ func TestDependenciesRunDelegatesToShellByDefault(t *testing.T) {
 		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
 			gotDeps = deps
 			return nil
-		},
-		printStartupState: func(
-			sess session.Session,
-			ctx contextstore.Context,
-			state startupState,
-			sessionReused bool,
-			model string,
-		) {
-			printedState = true
 		},
 	}
 
@@ -1308,10 +1188,6 @@ func TestDependenciesRunDelegatesToShellByDefault(t *testing.T) {
 	if gotDeps.InitialPrompt != "fix tests" {
 		t.Fatalf("shell deps initial prompt = %q, want %q", gotDeps.InitialPrompt, "fix tests")
 	}
-	if printedState {
-		t.Fatalf("printStartupState() called = true, want false in shell mode")
-	}
-
 	records, err := contextstore.New(historyFile).ReadAll()
 	if err != nil {
 		t.Fatalf("ReadAll() error = %v", err)

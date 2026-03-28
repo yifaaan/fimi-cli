@@ -52,15 +52,6 @@ type runtimeRunnerBuilder func(cfg config.Config) (runtimeRunner, error)
 type runtimeVisualizerBuilder func(mode string, w io.Writer) ui.VisualizeFunc
 type shellUIRunner func(ctx context.Context, deps shell.Dependencies) error
 type agentLoader func(workDir string, registry tools.Registry) (loadedAgent, error)
-type toolRegistryBuilder func() tools.Registry
-type helpPrinter func()
-type startupStatePrinter func(
-	sess session.Session,
-	ctx contextstore.Context,
-	state startupState,
-	sessionReused bool,
-	model string,
-)
 
 // runtimeRunner 是 app 对 runtime 的最小消费边界。
 // 在消费方定义接口，避免 app 依赖 runtime 的具体装配细节。
@@ -82,7 +73,6 @@ type dependencies struct {
 	loadConfig         configLoader
 	resolveWorkDir     workDirResolver
 	loadAgent          agentLoader
-	buildToolRegistry  toolRegistryBuilder
 	continueSession    sessionContinuer
 	createSession      sessionCreator
 	buildLLMClient     llmClientBuilder
@@ -90,17 +80,6 @@ type dependencies struct {
 	buildVisualizer    runtimeVisualizerBuilder
 	runShellUI         shellUIRunner
 	buildMCPTools      mcpToolBuilder
-	printHelp          helpPrinter
-	printStartupState  startupStatePrinter
-}
-
-// startupState 聚合启动阶段需要展示的状态信息。
-type startupState struct {
-	historyExists bool
-	historySeeded bool
-	historyCount  int
-	lastRecord    contextstore.TextRecord
-	hasLastRecord bool
 }
 
 // Run 是当前应用装配层的最小入口。
@@ -120,11 +99,7 @@ func (d dependencies) run(args []string) error {
 		return err
 	}
 	if input.showHelp {
-		help := d.printHelp
-		if help == nil {
-			help = printHelp
-		}
-		help()
+		printHelp()
 		return nil
 	}
 
@@ -279,16 +254,13 @@ func applyRunInputToConfig(cfg config.Config, input runInput) (config.Config, er
 
 func defaultDependencies() dependencies {
 	return dependencies{
-		loadConfig:        config.Load,
-		resolveWorkDir:    os.Getwd,
-		loadAgent:         loadAgentFromWorkDir,
-		buildToolRegistry: tools.BuiltinRegistry,
-		continueSession:   session.Continue,
-		createSession:     session.New,
-		buildLLMClient:    buildLLMClientFromConfig,
-		buildVisualizer:   defaultRuntimeVisualizer,
-		printHelp:         printHelp,
-		printStartupState: printStartupState,
+		loadConfig:      config.Load,
+		resolveWorkDir:  os.Getwd,
+		loadAgent:       loadAgentFromWorkDir,
+		continueSession: session.Continue,
+		createSession:   session.New,
+		buildLLMClient:  buildLLMClientFromConfig,
+		buildVisualizer: defaultRuntimeVisualizer,
 	}
 }
 
@@ -309,7 +281,7 @@ func buildLLMToolDefinitions(definitions []tools.Definition) []llm.ToolDefinitio
 		// Use InputSchema if provided (MCP tools), otherwise use builtin schema
 		params := definition.InputSchema
 		if params == nil {
-			params = toolParametersSchema(definition.Name)
+			params = tools.ToolParametersSchema(definition.Name)
 		}
 		toolDefs = append(toolDefs, llm.ToolDefinition{
 			Name:        definition.Name,
@@ -319,178 +291,6 @@ func buildLLMToolDefinitions(definitions []tools.Definition) []llm.ToolDefinitio
 	}
 
 	return toolDefs
-}
-
-func toolParametersSchema(name string) map[string]any {
-	switch name {
-	case tools.ToolAgent:
-		return objectSchema(requiredProperties(
-			schemaProperty("description", "string", "Short task description for the subagent."),
-			schemaProperty("prompt", "string", "Detailed task prompt for the subagent."),
-			schemaProperty("subagent_name", "string", "Declared subagent name to run."),
-		))
-	case tools.ToolThink:
-		return objectSchema(requiredProperties(
-			schemaProperty("thought", "string", "Private reasoning note to log for the current step."),
-		))
-	case tools.ToolSetTodoList:
-		return map[string]any{
-			"type": "object",
-			"$defs": map[string]any{
-				"Todo": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"title": map[string]any{
-							"type":        "string",
-							"description": "The title of the todo",
-							"minLength":   1,
-						},
-						"status": map[string]any{
-							"type":        "string",
-							"description": "The status of the todo",
-							"enum":        []string{"Pending", "In Progress", "Done"},
-						},
-					},
-					"required": []string{"title", "status"},
-				},
-			},
-			"properties": map[string]any{
-				"todos": map[string]any{
-					"type":        "array",
-					"description": "The updated todo list",
-					"items": map[string]any{
-						"$ref": "#/$defs/Todo",
-					},
-				},
-			},
-			"required": []string{"todos"},
-		}
-	case tools.ToolBash:
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"command": map[string]any{
-					"type":        "string",
-					"description": "Shell command to run inside the workspace.",
-				},
-				"timeout": map[string]any{
-					"type":        "integer",
-					"description": "Timeout in seconds (0 = default 120s, max 300s).",
-					"minimum":     0,
-					"maximum":     300,
-				},
-				"background": map[string]any{
-					"type":        "boolean",
-					"description": "Run in background and return task ID immediately.",
-					"default":     false,
-				},
-				"task_id": map[string]any{
-					"type":        "string",
-					"description": "Query status of a background task by its ID.",
-				},
-			},
-			"required":             []string{"command"},
-			"additionalProperties": false,
-		}
-	case tools.ToolSearchWeb:
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "Search query to run on the web.",
-				},
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Maximum number of results to return.",
-					"minimum":     1,
-					"maximum":     20,
-					"default":     5,
-				},
-				"include_content": map[string]any{
-					"type":        "boolean",
-					"description": "Include fetched page content when the backend can provide it.",
-					"default":     false,
-				},
-			},
-			"required":             []string{"query"},
-			"additionalProperties": false,
-		}
-	case tools.ToolReadFile:
-		return objectSchema(requiredProperties(
-			schemaProperty("path", "string", "Workspace-relative file path to read."),
-		))
-	case tools.ToolGlob:
-		return objectSchema(requiredProperties(
-			schemaProperty("pattern", "string", "Glob pattern relative to the workspace root."),
-		))
-	case tools.ToolGrep:
-		return objectSchema(requiredProperties(
-			schemaProperty("pattern", "string", "Regular expression to search for."),
-			schemaProperty("path", "string", "Workspace-relative file or directory path to search."),
-		))
-	case tools.ToolWriteFile:
-		return objectSchema(requiredProperties(
-			schemaProperty("path", "string", "Workspace-relative file path to write."),
-			schemaProperty("content", "string", "Full file contents to write."),
-		))
-	case tools.ToolReplaceFile:
-		return objectSchema(requiredProperties(
-			schemaProperty("path", "string", "Workspace-relative file path to edit."),
-			schemaProperty("old", "string", "Exact text to replace."),
-			schemaProperty("new", "string", "Replacement text."),
-		))
-	case tools.ToolPatchFile:
-		return objectSchema(requiredProperties(
-			schemaProperty("path", "string", "Workspace-relative file path to patch."),
-			schemaProperty("diff", "string", "Unified diff patch content."),
-		))
-	case tools.ToolFetchURL:
-		return objectSchema(requiredProperties(
-			schemaProperty("url", "string", "HTTP or HTTPS URL to fetch."),
-		))
-	default:
-		return map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{},
-			"additionalProperties": true,
-		}
-	}
-}
-
-func requiredProperties(properties ...schemaEntry) []schemaEntry {
-	return properties
-}
-
-type schemaEntry struct {
-	name   string
-	schema map[string]any
-}
-
-func schemaProperty(name, typeName, description string) schemaEntry {
-	return schemaEntry{
-		name: name,
-		schema: map[string]any{
-			"type":        typeName,
-			"description": description,
-		},
-	}
-}
-
-func objectSchema(entries []schemaEntry) map[string]any {
-	properties := make(map[string]any, len(entries))
-	required := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		properties[entry.name] = entry.schema
-		required = append(required, entry.name)
-	}
-
-	return map[string]any{
-		"type":                 "object",
-		"properties":           properties,
-		"required":             required,
-		"additionalProperties": false,
-	}
 }
 
 // buildRuntimeConfig 把全局配置映射为 runtime 模块自己的最小配置。
@@ -649,8 +449,8 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 
 	// Wrap runner to close MCP manager after use
 	return &mcpAwareRunner{
-		Runner:      runner,
-		mcpManager:  mcpManager,
+		Runner:     runner,
+		mcpManager: mcpManager,
 	}, nil
 }
 
@@ -676,7 +476,6 @@ func (r *mcpAwareRunner) Inner() runtime.Runner { return r.Runner }
 
 // buildMCPTools is a dependency injection point for testing.
 type mcpToolBuilder func(cfg config.MCPConfig) *mcp.Manager
-
 
 func buildEngine(cfg config.Config) (llm.Engine, error) {
 	return defaultDependencies().buildEngine(cfg)
@@ -711,27 +510,104 @@ func (d dependencies) runRuntime(
 	store contextstore.Context,
 	input runtime.Input,
 ) (runtime.Result, error) {
+	return ui.Run(ctx, d.runWithOptionalEventSink(runner, store, input), d.resolveVisualizer("text"))
+}
+
+func (d dependencies) runWithOptionalEventSink(
+	runner runtimeRunner,
+	store contextstore.Context,
+	input runtime.Input,
+) func(context.Context, runtimeevents.Sink) (runtime.Result, error) {
+	return func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
+		eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner)
+		if !ok {
+			return runner.Run(ctx, store, input)
+		}
+
+		return eventfulRunner.WithEventSink(sink).Run(ctx, store, input)
+	}
+}
+
+func resolvePrintPrompt(input runInput) (string, error) {
+	prompt := input.prompt
+
+	if prompt == "" {
+		var stdinPrompt string
+		_, err := fmt.Fscanln(os.Stdin, &stdinPrompt)
+		if err != nil && err.Error() != "expected newline" {
+			return "", fmt.Errorf("read prompt from stdin: %w", err)
+		}
+		prompt = stdinPrompt
+	}
+
+	if prompt == "" {
+		return "", fmt.Errorf("no prompt provided; pass as argument or via stdin")
+	}
+
+	return prompt, nil
+}
+
+func (d dependencies) preparePrintStore(workDir, prompt string) (contextstore.Context, error) {
+	createSession := d.createSession
+	if createSession == nil {
+		createSession = session.New
+	}
+
+	sess, err := createSession(workDir)
+	if err != nil {
+		return contextstore.Context{}, fmt.Errorf("create print session: %w", err)
+	}
+
+	store := contextstore.New(sess.HistoryFile)
+	if err := store.Append(contextstore.NewUserTextRecord(prompt)); err != nil {
+		return contextstore.Context{}, fmt.Errorf("append user prompt to history: %w", err)
+	}
+
+	return store, nil
+}
+
+func buildPrintRuntimeInput(cfg config.Config, agent loadedAgent, prompt string) runtime.Input {
+	return runtime.Input{
+		Prompt:       prompt,
+		Model:        resolveRuntimeModelName(cfg),
+		SystemPrompt: agent.SystemPrompt,
+	}
+}
+
+func buildSubagentRuntimeInput(cfg config.Config, agent loadedAgent, prompt string) runtime.Input {
+	return runtime.Input{
+		Prompt:       prompt,
+		Model:        resolveRuntimeModelName(cfg),
+		SystemPrompt: agent.SystemPrompt,
+	}
+}
+
+func runSubagentOnce(
+	ctx context.Context,
+	runner runtimeRunner,
+	historyFile string,
+	input runtime.Input,
+) (runtime.Result, error) {
+	return runner.Run(ctx, contextstore.New(historyFile), input)
+}
+
+func (d dependencies) resolveVisualizer(mode string) ui.VisualizeFunc {
 	buildVisualizer := d.buildVisualizer
 	if buildVisualizer == nil {
 		buildVisualizer = defaultRuntimeVisualizer
 	}
 
-	visualize := buildVisualizer("text", os.Stdout)
-
-	return ui.Run(
-		ctx,
-		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-			eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner)
-			if !ok {
-				return runner.Run(ctx, store, input)
-			}
-
-			return eventfulRunner.WithEventSink(sink).Run(ctx, store, input)
-		},
-		visualize,
-	)
+	return buildVisualizer(mode, os.Stdout)
 }
 
+func (d dependencies) resolveShellUIRunner() shellUIRunner {
+	runShellUI := d.runShellUI
+	if runShellUI == nil {
+		runShellUI = shell.Run
+	}
+
+	return runShellUI
+}
 
 func defaultRuntimeVisualizer(mode string, w io.Writer) ui.VisualizeFunc {
 	if w == nil {
@@ -772,13 +648,9 @@ func (d dependencies) runShell(
 	if err != nil {
 		return err
 	}
-	historyTurnLimit := cfg.HistoryWindow.RuntimeTurns
-	if historyTurnLimit <= 0 {
-		historyTurnLimit = config.DefaultRuntimeTurns
-	}
-	initialRecords, err := store.ReadRecentTurns(historyTurnLimit)
+	initialRecords, err := loadShellInitialRecords(cfg, store)
 	if err != nil {
-		return fmt.Errorf("read recent turns for shell startup: %w", err)
+		return err
 	}
 
 	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
@@ -786,38 +658,23 @@ func (d dependencies) runShell(
 		return err
 	}
 
-	runShellUI := d.runShellUI
-	if runShellUI == nil {
-		runShellUI = shell.Run
-	}
-
 	historyFile, err := session.ShellHistoryFileForWorkDir(sess.WorkDir)
 	if err != nil {
 		return fmt.Errorf("resolve shell history file: %w", err)
 	}
+	modelName := resolveRuntimeModelName(cfg)
 
-	return runShellUI(ctx, shell.Dependencies{
-		Runner:         runner,
-		Store:          store,
-		Input:          os.Stdin,
-		Output:         os.Stdout,
-		ErrOutput:      os.Stderr,
-		HistoryFile:    historyFile,
-		ModelName:      resolveRuntimeModelName(cfg),
-		SystemPrompt:   agent.SystemPrompt,
-		WorkDir:        sess.WorkDir,
-		InitialPrompt:  input.prompt,
-		InitialRecords: initialRecords,
-		StartupInfo: shell.StartupInfo{
-			SessionID:      sess.ID,
-			SessionReused:  sessionReused,
-			ModelName:      resolveRuntimeModelName(cfg),
-			AppVersion:     resolveAppVersion(),
-			ConversationDB: sess.HistoryFile,
-			LastRole:       startupLastRole(state),
-			LastSummary:    startupLastSummary(state),
-		},
-	})
+	return d.resolveShellUIRunner()(ctx, buildShellDependencies(
+		runner,
+		store,
+		agent,
+		sess,
+		input,
+		modelName,
+		historyFile,
+		initialRecords,
+		buildShellStartupInfo(sess, state, sessionReused, modelName),
+	))
 }
 
 // runPrint 处理 text / stream-json 模式的单次执行。
@@ -829,39 +686,16 @@ func (d dependencies) runPrint(
 	workDir string,
 	input runInput,
 ) error {
-	prompt := input.prompt
-
-	// 如果没有命令行 prompt，尝试从 stdin 读取一行
-	if prompt == "" {
-		var stdinPrompt string
-		_, err := fmt.Fscanln(os.Stdin, &stdinPrompt)
-		if err != nil && err.Error() != "expected newline" {
-			// stdin 有内容但读取失败
-			return fmt.Errorf("read prompt from stdin: %w", err)
-		}
-		prompt = stdinPrompt
-	}
-
-	if prompt == "" {
-		return fmt.Errorf("no prompt provided; pass as argument or via stdin")
+	prompt, err := resolvePrintPrompt(input)
+	if err != nil {
+		return err
 	}
 
 	cfg = resolveModelOverride(cfg, agent)
 
-	// 创建临时 session（不使用历史）
-	createSession := d.createSession
-	if createSession == nil {
-		createSession = session.New
-	}
-	sess, err := createSession(workDir)
+	store, err := d.preparePrintStore(workDir, prompt)
 	if err != nil {
-		return fmt.Errorf("create print session: %w", err)
-	}
-	store := contextstore.New(sess.HistoryFile)
-
-	// 记录 user prompt
-	if err := store.Append(contextstore.NewUserTextRecord(prompt)); err != nil {
-		return fmt.Errorf("append user prompt to history: %w", err)
+		return err
 	}
 
 	runner, err := d.buildRunnerForAgent(cfg, agent, workDir)
@@ -869,27 +703,9 @@ func (d dependencies) runPrint(
 		return err
 	}
 
-	// 构建运行时输入
-	runInput := runtime.Input{
-		Prompt:       prompt,
-		Model:        resolveRuntimeModelName(cfg),
-		SystemPrompt: agent.SystemPrompt,
-	}
+	runInput := buildPrintRuntimeInput(cfg, agent, prompt)
 
-	// 使用 outputMode 对应的可视化器
-	buildVisualizer := d.buildVisualizer
-	if buildVisualizer == nil {
-		buildVisualizer = defaultRuntimeVisualizer
-	}
-	visualize := buildVisualizer(input.outputMode, os.Stdout)
-
-	_, err = ui.Run(ctx, func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-		eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner)
-		if !ok {
-			return runner.Run(ctx, store, runInput)
-		}
-		return eventfulRunner.WithEventSink(sink).Run(ctx, store, runInput)
-	}, visualize)
+	_, err = ui.Run(ctx, d.runWithOptionalEventSink(runner, store, runInput), d.resolveVisualizer(input.outputMode))
 
 	return err
 }
@@ -910,12 +726,7 @@ func (d dependencies) loadRunAgent(workDir string, registry tools.Registry) (loa
 }
 
 func (d dependencies) resolveToolRegistry() tools.Registry {
-	buildRegistry := d.buildToolRegistry
-	if buildRegistry == nil {
-		buildRegistry = tools.BuiltinRegistry
-	}
-
-	return buildRegistry()
+	return tools.BuiltinRegistry()
 }
 
 // runACP 启动 ACP JSON-RPC 服务器。
@@ -1056,11 +867,7 @@ func (d dependencies) runDeclaredSubagent(
 		return runtime.ToolExecution{}, fmt.Errorf("build subagent runner: %w", err)
 	}
 
-	result, err := runner.Run(ctx, contextstore.New(historyFile), runtime.Input{
-		Prompt:       args.Prompt,
-		Model:        resolveRuntimeModelName(cfg),
-		SystemPrompt: subagent.SystemPrompt,
-	})
+	result, err := runSubagentOnce(ctx, runner, historyFile, buildSubagentRuntimeInput(cfg, subagent, args.Prompt))
 	if err != nil {
 		return runtime.ToolExecution{}, fmt.Errorf("run subagent %q: %w", args.SubagentName, err)
 	}
@@ -1084,11 +891,7 @@ func (d dependencies) runDeclaredSubagent(
 
 	// 回复过短时追加一轮 continuation prompt，让子代理输出更多细节
 	if len(output) < subagentMinResponseLen {
-		contResult, contErr := runner.Run(ctx, contextstore.New(historyFile), runtime.Input{
-			Prompt:       subagentContinuePrompt,
-			Model:        resolveRuntimeModelName(cfg),
-			SystemPrompt: subagent.SystemPrompt,
-		})
+		contResult, contErr := runSubagentOnce(ctx, runner, historyFile, buildSubagentRuntimeInput(cfg, subagent, subagentContinuePrompt))
 		if contErr == nil && contResult.Status != runtime.RunStatusFailed {
 			if continued := finalAssistantText(contResult); continued != "" {
 				output = continued
@@ -1235,180 +1038,4 @@ func renderContinueSessionError(workDir string, err error) error {
 	}
 
 	return fmt.Errorf("continue session: %w", err)
-}
-
-// advanceStartupState 根据刚写入的记录推进启动阶段的内存状态。
-func advanceStartupState(
-	state startupState,
-	record contextstore.TextRecord,
-) startupState {
-	state.historyExists = true
-	state.historyCount++
-	state.lastRecord = record
-	state.hasLastRecord = true
-
-	return state
-}
-
-// buildInitialRecord 构造启动时写入 history 的第一条记录。
-func buildInitialRecord() contextstore.TextRecord {
-	return contextstore.NewSystemTextRecord(initialRecordContent)
-}
-
-// applyRuntimeResult 把 runtime 的输出折叠回当前启动阶段状态。
-func applyRuntimeResult(state startupState, result runtime.Result) startupState {
-	for _, step := range result.Steps {
-		for _, record := range step.AppendedRecords {
-			state = advanceStartupState(state, record)
-		}
-	}
-
-	return state
-}
-
-// bootstrapStartupState 统一完成启动期的 history 初始化与状态收集。
-func bootstrapStartupState(ctx contextstore.Context) (startupState, error) {
-	result, err := ctx.Bootstrap(buildInitialRecord())
-	if err != nil {
-		return startupState{}, fmt.Errorf("bootstrap history: %w", err)
-	}
-
-	return startupState{
-		historyExists: result.HistoryExists,
-		historySeeded: result.HistorySeeded,
-		historyCount:  result.Snapshot.Count,
-		lastRecord:    result.Snapshot.LastRecord,
-		hasLastRecord: result.Snapshot.HasLastRecord,
-	}, nil
-}
-
-// printStartupState 统一输出当前启动阶段的关键信息。
-func printStartupState(
-	sess session.Session,
-	ctx contextstore.Context,
-	state startupState,
-	sessionReused bool,
-	model string,
-) {
-	fmt.Printf("session: %s\n", sess.ID)
-	fmt.Printf("session reused: %t\n", sessionReused)
-	fmt.Printf("model: %s\n", model)
-	fmt.Printf("history: %s\n", ctx.Path())
-	fmt.Printf("history exists: %t\n", state.historyExists)
-	fmt.Printf("history seeded: %t\n", state.historySeeded)
-	fmt.Printf("history records: %d\n", state.historyCount)
-	if state.hasLastRecord {
-		fmt.Printf("last history role: %s\n", state.lastRecord.Role)
-		fmt.Printf("last history content: %s\n", state.lastRecord.Content)
-	}
-}
-
-func startupLastRole(state startupState) string {
-	if !shouldShowStartupLastRecord(state) {
-		return ""
-	}
-
-	return state.lastRecord.Role
-}
-
-func startupLastSummary(state startupState) string {
-	if !shouldShowStartupLastRecord(state) {
-		return ""
-	}
-
-	return summarizeStartupContent(state.lastRecord.Content, 80)
-}
-
-func shouldShowStartupLastRecord(state startupState) bool {
-	if !state.hasLastRecord {
-		return false
-	}
-	if state.lastRecord.Role == contextstore.RoleSystem && state.lastRecord.Content == initialRecordContent {
-		return false
-	}
-
-	return true
-}
-
-func summarizeStartupContent(content string, maxLen int) string {
-	compact := strings.Join(strings.Fields(content), " ")
-	if maxLen <= 0 || len(compact) <= maxLen {
-		return compact
-	}
-	if maxLen <= 3 {
-		return compact[:maxLen]
-	}
-
-	return compact[:maxLen-3] + "..."
-}
-
-// printHelp 输出当前 CLI 入口支持的最小帮助信息。
-func printHelp() {
-	fmt.Print(helpText())
-}
-
-// helpText 返回当前 CLI 入口支持的最小帮助文本。
-func helpText() string {
-	lines := make([]string, 0, 16)
-	for _, section := range helpSections() {
-		lines = append(lines, helpSectionLines(section.title, section.lines)...)
-		lines = append(lines, "")
-	}
-
-	return strings.Join(lines, "\n")
-}
-
-type helpSection struct {
-	title string
-	lines []string
-}
-
-func helpSections() []helpSection {
-	return []helpSection{
-		{title: "Usage", lines: helpUsageLines()},
-		{title: "Flags", lines: helpFlagLines()},
-		{title: "Prompt Rules", lines: helpPromptRuleLines()},
-		{title: "Examples", lines: helpExampleLines()},
-	}
-}
-
-func helpSectionLines(title string, lines []string) []string {
-	section := make([]string, 0, len(lines)+1)
-	section = append(section, title+":")
-	section = append(section, lines...)
-
-	return section
-}
-
-func helpUsageLines() []string {
-	return []string{
-		"  fimi [--continue] [--model <alias>] [--output <mode>] [--help] [prompt...]",
-		"  fimi [options] -- [prompt text starting with flags]",
-	}
-}
-
-func helpFlagLines() []string {
-	return []string{
-		"  --continue, -C   Continue the previous session for this work dir",
-		"  --new-session    Explicitly start a fresh session for this run",
-		"  --model <alias>  Override the configured model for this run",
-		"  --output <mode>  Output mode: shell (default), text, stream-json",
-		"  -h, --help       Show this help message",
-	}
-}
-
-func helpPromptRuleLines() []string {
-	return []string{
-		"  --                Stop parsing flags; everything after it is prompt text",
-		"  prompt...         Remaining args are joined into the shell's initial prompt",
-	}
-}
-
-func helpExampleLines() []string {
-	return []string{
-		"  fimi fix the flaky test",
-		"  fimi --continue continue the refactor from the last session",
-		"  fimi --model fast-model refactor the session loader",
-		"  fimi -- --help should be treated as prompt text",
-	}
 }
