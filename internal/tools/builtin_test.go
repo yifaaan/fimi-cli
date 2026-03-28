@@ -25,7 +25,7 @@ func TestNewBuiltinExecutorReadFileReadsWorkspaceFile(t *testing.T) {
 			Name: ToolReadFile,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReadFile,
@@ -47,7 +47,7 @@ func TestNewBuiltinExecutorReadFileRejectsPathOutsideWorkspace(t *testing.T) {
 			Name: ToolReadFile,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReadFile,
@@ -74,7 +74,7 @@ func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
 			Name: ToolBash,
 			Kind: KindCommand,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolBash,
@@ -109,7 +109,7 @@ func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 			Name: ToolBash,
 			Kind: KindCommand,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolBash,
@@ -165,8 +165,9 @@ func TestNewBuiltinExecutorWithExtraHandlersUsesInjectedHandler(t *testing.T) {
 					Output: "delegated",
 				}, nil
 			},
-		},
-	)
+			},
+			nil,
+		)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolAgent,
@@ -187,7 +188,7 @@ func TestNewBuiltinExecutorThinkLogsThought(t *testing.T) {
 			Name: ToolThink,
 			Kind: KindUtility,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolThink,
@@ -208,7 +209,7 @@ func TestNewBuiltinExecutorThinkRejectsEmptyThought(t *testing.T) {
 			Name: ToolThink,
 			Kind: KindUtility,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolThink,
@@ -364,7 +365,7 @@ func TestNewBuiltinExecutorSetTodoListRendersTodos(t *testing.T) {
 			Name: ToolSetTodoList,
 			Kind: KindUtility,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolSetTodoList,
@@ -385,7 +386,7 @@ func TestNewBuiltinExecutorSetTodoListRejectsInvalidStatus(t *testing.T) {
 			Name: ToolSetTodoList,
 			Kind: KindUtility,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolSetTodoList,
@@ -445,7 +446,7 @@ func TestNewBuiltinExecutorGlobMatchesWorkspacePaths(t *testing.T) {
 	executor := NewBuiltinExecutor([]Definition{{
 		Name: ToolGlob,
 		Kind: KindFile,
-	}}, workDir)
+	}}, workDir, nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGlob,
@@ -464,7 +465,7 @@ func TestNewBuiltinExecutorGlobRejectsPatternOutsideWorkspace(t *testing.T) {
 	executor := NewBuiltinExecutor([]Definition{{
 		Name: ToolGlob,
 		Kind: KindFile,
-	}}, t.TempDir())
+	}}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGlob,
@@ -491,7 +492,7 @@ func TestNewBuiltinExecutorGrepSearchesDirectoryRecursively(t *testing.T) {
 	executor := NewBuiltinExecutor([]Definition{{
 		Name: ToolGrep,
 		Kind: KindFile,
-	}}, workDir)
+	}}, workDir, nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
@@ -510,7 +511,7 @@ func TestNewBuiltinExecutorGrepRejectsPathOutsideWorkspace(t *testing.T) {
 	executor := NewBuiltinExecutor([]Definition{{
 		Name: ToolGrep,
 		Kind: KindFile,
-	}}, t.TempDir())
+	}}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
@@ -531,7 +532,7 @@ func TestNewBuiltinExecutorGrepRejectsEmptyPattern(t *testing.T) {
 			Name: ToolGrep,
 			Kind: KindFile,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
@@ -557,7 +558,7 @@ func TestNewBuiltinExecutorGrepRejectsInvalidRegexPattern(t *testing.T) {
 			Name: ToolGrep,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolGrep,
@@ -579,7 +580,7 @@ func TestNewBuiltinExecutorWriteFileCreatesParentDirectories(t *testing.T) {
 			Name: ToolWriteFile,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolWriteFile,
@@ -614,7 +615,7 @@ func TestNewBuiltinExecutorWriteFileOverwritesExistingFile(t *testing.T) {
 			Name: ToolWriteFile,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolWriteFile,
@@ -640,7 +641,7 @@ func TestNewBuiltinExecutorWriteFileRejectsPathOutsideWorkspace(t *testing.T) {
 			Name: ToolWriteFile,
 			Kind: KindFile,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolWriteFile,
@@ -664,7 +665,7 @@ func TestNewBuiltinExecutorReplaceFileReplacesSingleOccurrence(t *testing.T) {
 			Name: ToolReplaceFile,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
@@ -707,7 +708,7 @@ func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetMissing(t *testing.T
 			Name: ToolReplaceFile,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
@@ -737,7 +738,7 @@ func TestNewBuiltinExecutorReplaceFileReturnsErrorWhenTargetNotUnique(t *testing
 			Name: ToolReplaceFile,
 			Kind: KindFile,
 		},
-	}, workDir)
+	}, workDir, nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
@@ -755,7 +756,7 @@ func TestNewBuiltinExecutorReplaceFileRejectsEmptyOldText(t *testing.T) {
 			Name: ToolReplaceFile,
 			Kind: KindFile,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,
@@ -773,7 +774,7 @@ func TestNewBuiltinExecutorReplaceFileRejectsPathOutsideWorkspace(t *testing.T) 
 			Name: ToolReplaceFile,
 			Kind: KindFile,
 		},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 
 	_, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolReplaceFile,

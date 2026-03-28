@@ -366,9 +366,32 @@ func toolParametersSchema(name string) map[string]any {
 			"required": []string{"todos"},
 		}
 	case tools.ToolBash:
-		return objectSchema(requiredProperties(
-			schemaProperty("command", "string", "Shell command to run inside the workspace."),
-		))
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Shell command to run inside the workspace.",
+				},
+				"timeout": map[string]any{
+					"type":        "integer",
+					"description": "Timeout in seconds (0 = default 120s, max 300s).",
+					"minimum":     0,
+					"maximum":     300,
+				},
+				"background": map[string]any{
+					"type":        "boolean",
+					"description": "Run in background and return task ID immediately.",
+					"default":     false,
+				},
+				"task_id": map[string]any{
+					"type":        "string",
+					"description": "Query status of a background task by its ID.",
+				},
+			},
+			"required":             []string{"command"},
+			"additionalProperties": false,
+		}
 	case tools.ToolSearchWeb:
 		return map[string]any{
 			"type": "object",
@@ -619,6 +642,7 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		allTools,
 		workDir,
 		toolHandlers,
+		nil, // TODO: wire BackgroundManager here
 	)
 
 	runner := runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent))

@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	DefaultBashCommandTimeout = 120 * time.Second
-	MaxBashCommandTimeout     = 300 * time.Second
+	DefaultBashCommandTimeout      = 120 * time.Second
+	MaxBashCommandTimeout          = 300 * time.Second
+	DefaultBashBackgroundTimeout   = 24 * time.Hour
 )
 
 var ErrToolArgumentsInvalid = errors.New("tool arguments are invalid")
@@ -46,8 +47,10 @@ var ErrToolTodoStatusInvalid = errors.New("tool todo status is invalid")
 var ErrToolURLRequired       = errors.New("tool url is required")
 
 type bashArguments struct {
-	Command string `json:"command"`
-	Timeout int    `json:"timeout"` // 秒，0 = 使用默认值，最大 300
+	Command    string `json:"command"`
+	Timeout    int    `json:"timeout"`     // 秒，0 = 使用默认值，最大 300
+	Background bool   `json:"background"`  // 为 true 时后台运行，立即返回 task ID
+	TaskID     string `json:"task_id"`     // 非空时查询指定后台任务的状态
 }
 
 type thinkArguments struct {
@@ -121,26 +124,28 @@ type patchFileArguments struct {
 // NewBuiltinExecutor 返回带内建 handler 的最小工具执行器。
 // 当前先接通最小可用的一组本地工具能力。
 // shaper 用于对工具输出进行塑形，防止超大输出消耗模型上下文。
-func NewBuiltinExecutor(definitions []Definition, workDir string) Executor {
-	return NewBuiltinExecutorWithShaper(definitions, workDir, NewOutputShaper())
+func NewBuiltinExecutor(definitions []Definition, workDir string, bgMgr *BackgroundManager) Executor {
+	return NewBuiltinExecutorWithShaper(definitions, workDir, NewOutputShaper(), bgMgr)
 }
 
 func NewBuiltinExecutorWithExtraHandlers(
 	definitions []Definition,
 	workDir string,
 	extraHandlers map[string]HandlerFunc,
+	bgMgr *BackgroundManager,
 ) Executor {
 	return NewBuiltinExecutorWithShaperAndExtraHandlers(
 		definitions,
 		workDir,
 		NewOutputShaper(),
 		extraHandlers,
+		bgMgr,
 	)
 }
 
 // NewBuiltinExecutorWithShaper 创建带自定义塑形器的执行器。
-func NewBuiltinExecutorWithShaper(definitions []Definition, workDir string, shaper OutputShaper) Executor {
-	return NewBuiltinExecutorWithShaperAndExtraHandlers(definitions, workDir, shaper, nil)
+func NewBuiltinExecutorWithShaper(definitions []Definition, workDir string, shaper OutputShaper, bgMgr *BackgroundManager) Executor {
+	return NewBuiltinExecutorWithShaperAndExtraHandlers(definitions, workDir, shaper, nil, bgMgr)
 }
 
 func NewBuiltinExecutorWithShaperAndExtraHandlers(
@@ -148,8 +153,9 @@ func NewBuiltinExecutorWithShaperAndExtraHandlers(
 	workDir string,
 	shaper OutputShaper,
 	extraHandlers map[string]HandlerFunc,
+	bgMgr *BackgroundManager,
 ) Executor {
-	handlers := builtinHandlers(workDir, shaper)
+	handlers := builtinHandlers(workDir, shaper, bgMgr)
 	for name, handler := range extraHandlers {
 		handlers[name] = handler
 	}
@@ -157,11 +163,11 @@ func NewBuiltinExecutorWithShaperAndExtraHandlers(
 	return NewExecutor(definitions, handlers)
 }
 
-func builtinHandlers(workDir string, shaper OutputShaper) map[string]HandlerFunc {
+func builtinHandlers(workDir string, shaper OutputShaper, bgMgr *BackgroundManager) map[string]HandlerFunc {
 	return map[string]HandlerFunc{
 		ToolThink:       newThinkHandler(),
 		ToolSetTodoList: newSetTodoListHandler(),
-		ToolBash:        newBashHandler(workDir, shaper),
+		ToolBash:        newBashHandler(workDir, shaper, bgMgr),
 		ToolGlob:        newGlobHandler(workDir, shaper),
 		ToolGrep:        newGrepHandler(workDir, shaper),
 		ToolReadFile:    newReadFileHandler(workDir, shaper),
@@ -210,79 +216,146 @@ func newSetTodoListHandler() HandlerFunc {
 	}
 }
 
-func newBashHandler(workDir string, shaper OutputShaper) HandlerFunc {
+func newBashHandler(workDir string, shaper OutputShaper, bgMgr *BackgroundManager) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeBashArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
 		}
 
-		// 从参数计算超时：0 → 默认值，超过上限则截断
-		timeout := DefaultBashCommandTimeout
-		if args.Timeout > 0 {
-			timeout = time.Duration(args.Timeout) * time.Second
-			if timeout > MaxBashCommandTimeout {
-				timeout = MaxBashCommandTimeout
-			}
+		// 模式 1：查询后台任务状态
+		if args.TaskID != "" {
+			return handleBashTaskQuery(call, args, bgMgr)
 		}
 
-		// 使用传入的 ctx 作为父 context，这样外部取消也能中断 bash 执行
-		ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-
-		cmd := exec.CommandContext(ctx, "bash", "-lc", args.Command)
-		if strings.TrimSpace(workDir) != "" {
-			cmd.Dir = workDir
+		// 模式 2：后台执行
+		if args.Background {
+			return handleBashBackground(call, args, workDir, bgMgr)
 		}
 
-		var stdout bytes.Buffer
-		var stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		err = cmd.Run()
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return runtime.ToolExecution{}, markTemporary(fmt.Errorf("%w: %s", ErrToolCommandTimedOut, args.Command))
-		}
-		if err != nil && !isExitError(err) {
-			return runtime.ToolExecution{}, markTemporary(fmt.Errorf("run bash command: %w", err))
-		}
-
-		// 对 stdout 进行塑形
-		rawStdout := stdout.String()
-		shapedStdout := shaper.Shape(rawStdout)
-
-		// 对 stderr 进行塑形（使用相同的限制）
-		rawStderr := stderr.String()
-		shapedStderr := shaper.Shape(rawStderr)
-
-		// 构建最终输出：stdout + stderr + 截断提示
-		var outputParts []string
-		outputParts = append(outputParts, shapedStdout.Output)
-		if shapedStderr.Output != "" {
-			outputParts = append(outputParts, "STDERR:", shapedStderr.Output)
-		}
-
-		// 添加截断提示
-		var truncationMsgs []string
-		if shapedStdout.Message != "" {
-			truncationMsgs = append(truncationMsgs, "stdout: "+shapedStdout.Message)
-		}
-		if shapedStderr.Message != "" {
-			truncationMsgs = append(truncationMsgs, "stderr: "+shapedStderr.Message)
-		}
-		if len(truncationMsgs) > 0 {
-			outputParts = append(outputParts, "\n["+strings.Join(truncationMsgs, "; ")+"]")
-		}
-
-		return runtime.ToolExecution{
-			Call:     call,
-			Output:   strings.Join(outputParts, "\n"),
-			Stdout:   shapedStdout.Output,
-			Stderr:   shapedStderr.Output,
-			ExitCode: exitCodeFromError(err),
-		}, nil
+		// 模式 3：前台执行（原有逻辑）
+		return handleBashForeground(ctx, call, args, workDir, shaper)
 	}
+}
+
+// handleBashTaskQuery 查询后台任务状态并格式化输出。
+func handleBashTaskQuery(call runtime.ToolCall, args bashArguments, bgMgr *BackgroundManager) (runtime.ToolExecution, error) {
+	if bgMgr == nil {
+		return runtime.ToolExecution{}, markRefused(fmt.Errorf("background task manager not available"))
+	}
+
+	result, err := bgMgr.Status(args.TaskID)
+	if err != nil {
+		return runtime.ToolExecution{}, markRefused(err)
+	}
+
+	var outputParts []string
+	outputParts = append(outputParts, fmt.Sprintf("Task %s [%s]", result.ID, result.Status))
+	outputParts = append(outputParts, fmt.Sprintf("Command: %s", result.Command))
+	outputParts = append(outputParts, fmt.Sprintf("Duration: %s", result.Duration.Round(time.Millisecond)))
+	if result.ExitCode != 0 {
+		outputParts = append(outputParts, fmt.Sprintf("Exit code: %d", result.ExitCode))
+	}
+	if result.Stdout != "" {
+		outputParts = append(outputParts, "STDOUT:", result.Stdout)
+	}
+	if result.Stderr != "" {
+		outputParts = append(outputParts, "STDERR:", result.Stderr)
+	}
+
+	return runtime.ToolExecution{
+		Call:   call,
+		Output: strings.Join(outputParts, "\n"),
+	}, nil
+}
+
+// handleBashBackground 在后台启动命令，立即返回任务 ID。
+func handleBashBackground(call runtime.ToolCall, args bashArguments, workDir string, bgMgr *BackgroundManager) (runtime.ToolExecution, error) {
+	if bgMgr == nil {
+		return runtime.ToolExecution{}, markRefused(fmt.Errorf("background task manager not available"))
+	}
+	if strings.TrimSpace(args.Command) == "" {
+		return runtime.ToolExecution{}, markRefused(ErrToolCommandRequired)
+	}
+
+	taskID, err := bgMgr.Start(args.Command, workDir, 0)
+	if err != nil {
+		return runtime.ToolExecution{}, markTemporary(fmt.Errorf("start background task: %w", err))
+	}
+
+	return runtime.ToolExecution{
+		Call:   call,
+		Output: fmt.Sprintf("Background task started: %s (use task_id=\"%s\" to check status)", taskID, taskID),
+	}, nil
+}
+
+// handleBashForeground 是原有的同步前台执行逻辑。
+func handleBashForeground(ctx context.Context, call runtime.ToolCall, args bashArguments, workDir string, shaper OutputShaper) (runtime.ToolExecution, error) {
+	// 从参数计算超时：0 → 默认值，超过上限则截断
+	timeout := DefaultBashCommandTimeout
+	if args.Timeout > 0 {
+		timeout = time.Duration(args.Timeout) * time.Second
+		if timeout > MaxBashCommandTimeout {
+			timeout = MaxBashCommandTimeout
+		}
+	}
+
+	// 使用传入的 ctx 作为父 context，这样外部取消也能中断 bash 执行
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-lc", args.Command)
+	if strings.TrimSpace(workDir) != "" {
+		cmd.Dir = workDir
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return runtime.ToolExecution{}, markTemporary(fmt.Errorf("%w: %s", ErrToolCommandTimedOut, args.Command))
+	}
+	if err != nil && !isExitError(err) {
+		return runtime.ToolExecution{}, markTemporary(fmt.Errorf("run bash command: %w", err))
+	}
+
+	// 对 stdout 进行塑形
+	rawStdout := stdout.String()
+	shapedStdout := shaper.Shape(rawStdout)
+
+	// 对 stderr 进行塑形（使用相同的限制）
+	rawStderr := stderr.String()
+	shapedStderr := shaper.Shape(rawStderr)
+
+	// 构建最终输出：stdout + stderr + 截断提示
+	var outputParts []string
+	outputParts = append(outputParts, shapedStdout.Output)
+	if shapedStderr.Output != "" {
+		outputParts = append(outputParts, "STDERR:", shapedStderr.Output)
+	}
+
+	// 添加截断提示
+	var truncationMsgs []string
+	if shapedStdout.Message != "" {
+		truncationMsgs = append(truncationMsgs, "stdout: "+shapedStdout.Message)
+	}
+	if shapedStderr.Message != "" {
+		truncationMsgs = append(truncationMsgs, "stderr: "+shapedStderr.Message)
+	}
+	if len(truncationMsgs) > 0 {
+		outputParts = append(outputParts, "\n["+strings.Join(truncationMsgs, "; ")+"]")
+	}
+
+	return runtime.ToolExecution{
+		Call:     call,
+		Output:   strings.Join(outputParts, "\n"),
+		Stdout:   shapedStdout.Output,
+		Stderr:   shapedStderr.Output,
+		ExitCode: exitCodeFromError(err),
+	}, nil
 }
 
 // newBashHandlerWithTimeout 提供固定超时的 bash handler，仅用于测试。

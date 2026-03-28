@@ -223,7 +223,7 @@ Updated: 2026-03-27
 | **Subagent: resume logic** | SubagentStore | no | `missing` |
 | Local file tools | 6 tools | 5 tools | `partial` |
 | `replace_file` replace-all | yes | yes | `done` |
-| `bash` background tasks | yes | no | `missing` |
+| `bash` background tasks | yes | yes | `done` |
 | `bash` approval gate | yes | no | `missing` |
 | `bash` streaming output | yes | no | `missing` |
 | `bash` timeout default | 60s, max 300s | 120s default, max 300s | `done` |
@@ -236,7 +236,7 @@ Updated: 2026-03-27
 
 | Python Tool | Go Equivalent | Status |
 | --- | --- | --- |
-| `Bash` | `bash` | `partial` (30s vs 300s, no streaming, no background, no approval) |
+| `Bash` | `bash` | `partial` (no streaming, no approval gate) |
 | `ReadFile` | `read_file` | `done` |
 | `WriteFile` | `write_file` | `done` |
 | `Glob` | `glob` | `done` |
@@ -314,7 +314,7 @@ Updated: 2026-03-27
 - [x] Add subagent continuation prompt (when response < 200 chars)
 - [x] Add `replace_file` with replace-all support and batch edits
 - [x] Increase bash timeout to 300s and add streaming output
-- [ ] Add bash background task support
+- [x] Add bash background task support
 
 ### Phase 14: Runtime Parity
 
