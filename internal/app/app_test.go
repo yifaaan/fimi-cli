@@ -774,8 +774,8 @@ agent:
 	if err != nil {
 		t.Fatalf("runDeclaredSubagent() error = %v", err)
 	}
-	if got.Output != "assistant placeholder reply: explain the test setup" {
-		t.Fatalf("runDeclaredSubagent().Output = %q, want %q", got.Output, "assistant placeholder reply: explain the test setup")
+	if got.Output != "assistant placeholder reply: "+subagentContinuePrompt {
+		t.Fatalf("runDeclaredSubagent().Output = %q, want continuation response", got.Output)
 	}
 
 	rootRecords, err := rootHistory.ReadAll()
@@ -801,6 +801,8 @@ agent:
 	wantSubagentRecords := []contextstore.TextRecord{
 		contextstore.NewUserTextRecord("explain the test setup"),
 		contextstore.NewAssistantTextRecord("assistant placeholder reply: explain the test setup"),
+		contextstore.NewUserTextRecord(subagentContinuePrompt),
+		contextstore.NewAssistantTextRecord("assistant placeholder reply: " + subagentContinuePrompt),
 	}
 	if !reflect.DeepEqual(subagentRecords, wantSubagentRecords) {
 		t.Fatalf("subagent history records = %#v, want %#v", subagentRecords, wantSubagentRecords)

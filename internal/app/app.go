@@ -32,6 +32,10 @@ const (
 	defaultAgentsDirName    = "agents"
 	defaultAgentProfileName = "default"
 	defaultAgentFileName    = "agent.yaml"
+
+	// 子代理回复过短时，用 continuation prompt 要求更详细的输出
+	subagentContinuePrompt = "Your previous response was too brief. Please provide a more comprehensive summary that includes:\n\n1. Specific technical details and implementations\n2. Complete code examples if relevant\n3. Detailed findings and analysis\n4. All important information that should be aware of by the caller"
+	subagentMinResponseLen = 200
 )
 
 var ErrUnknownCLIFlag = errors.New("unknown cli flag")
@@ -1041,9 +1045,41 @@ func (d dependencies) runDeclaredSubagent(
 		return runtime.ToolExecution{}, fmt.Errorf("run subagent %q: %w", args.SubagentName, err)
 	}
 
+	// 步数耗尽时提示拆分任务
+	if result.Status == runtime.RunStatusMaxSteps {
+		return runtime.ToolExecution{}, fmt.Errorf(
+			"subagent %q reached max steps. Please try splitting the task into smaller subtasks",
+			args.SubagentName,
+		)
+	}
+
+	output := finalAssistantText(result)
+
+	// 无输出时的兜底错误
+	if output == "" {
+		return runtime.ToolExecution{}, fmt.Errorf(
+			"subagent %q did not produce any output", args.SubagentName,
+		)
+	}
+
+	// 回复过短时追加一轮 continuation prompt，让子代理输出更多细节
+	if len(output) < subagentMinResponseLen {
+		contResult, contErr := runner.Run(ctx, contextstore.New(historyFile), runtime.Input{
+			Prompt:       subagentContinuePrompt,
+			Model:        resolveRuntimeModelName(cfg),
+			SystemPrompt: subagent.SystemPrompt,
+		})
+		if contErr == nil && contResult.Status != runtime.RunStatusFailed {
+			if continued := finalAssistantText(contResult); continued != "" {
+				output = continued
+			}
+		}
+		// continuation 失败时静默忽略，使用原始短回复
+	}
+
 	return runtime.ToolExecution{
 		Call:   call,
-		Output: finalAssistantText(result),
+		Output: output,
 	}, nil
 }
 
