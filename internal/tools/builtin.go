@@ -20,7 +20,10 @@ import (
 	"fimi-cli/internal/runtime"
 )
 
-const DefaultBashCommandTimeout = 30 * time.Second
+const (
+	DefaultBashCommandTimeout = 120 * time.Second
+	MaxBashCommandTimeout     = 300 * time.Second
+)
 
 var ErrToolArgumentsInvalid = errors.New("tool arguments are invalid")
 var ErrToolCommandRequired = errors.New("tool command is required")
@@ -44,6 +47,7 @@ var ErrToolURLRequired       = errors.New("tool url is required")
 
 type bashArguments struct {
 	Command string `json:"command"`
+	Timeout int    `json:"timeout"` // 秒，0 = 使用默认值，最大 300
 }
 
 type thinkArguments struct {
@@ -103,9 +107,10 @@ type writeFileArguments struct {
 }
 
 type replaceFileArguments struct {
-	Path string `json:"path"`
-	Old  string `json:"old"`
-	New  string `json:"new"`
+	Path       string `json:"path"`
+	Old        string `json:"old"`
+	New        string `json:"new"`
+	ReplaceAll bool   `json:"replace_all"` // 为 true 时替换所有匹配，否则要求恰好匹配一次
 }
 
 type patchFileArguments struct {
@@ -206,14 +211,19 @@ func newSetTodoListHandler() HandlerFunc {
 }
 
 func newBashHandler(workDir string, shaper OutputShaper) HandlerFunc {
-	return newBashHandlerWithTimeout(workDir, shaper, DefaultBashCommandTimeout)
-}
-
-func newBashHandlerWithTimeout(workDir string, shaper OutputShaper, timeout time.Duration) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 		args, err := decodeBashArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
+		}
+
+		// 从参数计算超时：0 → 默认值，超过上限则截断
+		timeout := DefaultBashCommandTimeout
+		if args.Timeout > 0 {
+			timeout = time.Duration(args.Timeout) * time.Second
+			if timeout > MaxBashCommandTimeout {
+				timeout = MaxBashCommandTimeout
+			}
 		}
 
 		// 使用传入的 ctx 作为父 context，这样外部取消也能中断 bash 执行
@@ -270,6 +280,38 @@ func newBashHandlerWithTimeout(workDir string, shaper OutputShaper, timeout time
 			Output:   strings.Join(outputParts, "\n"),
 			Stdout:   shapedStdout.Output,
 			Stderr:   shapedStderr.Output,
+			ExitCode: exitCodeFromError(err),
+		}, nil
+	}
+}
+
+// newBashHandlerWithTimeout 提供固定超时的 bash handler，仅用于测试。
+func newBashHandlerWithTimeout(workDir string, shaper OutputShaper, timeout time.Duration) HandlerFunc {
+	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "bash", "-lc", call.Arguments)
+		if workDir != "" {
+			cmd.Dir = workDir
+		}
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return runtime.ToolExecution{}, markTemporary(fmt.Errorf("%w: %s", ErrToolCommandTimedOut, call.Arguments))
+			}
+			if !isExitError(err) {
+				return runtime.ToolExecution{}, markTemporary(fmt.Errorf("run bash command: %w", err))
+			}
+		}
+		return runtime.ToolExecution{
+			Call:     call,
+			Output:   stdout.String(),
+			Stdout:   stdout.String(),
+			Stderr:   stderr.String(),
 			ExitCode: exitCodeFromError(err),
 		}, nil
 	}
@@ -561,21 +603,34 @@ func newReplaceFileHandler(workDir string) HandlerFunc {
 
 		content := string(data)
 		matchCount := strings.Count(content, args.Old)
-		switch {
-		case matchCount == 0:
+
+		if matchCount == 0 {
 			return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %s", ErrToolReplaceTargetMissing, targetRel))
-		case matchCount > 1:
-			return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %s", ErrToolReplaceTargetNotUnique, targetRel))
 		}
 
-		replaced := strings.Replace(content, args.Old, args.New, 1)
+		var replaced string
+		var outputMsg string
+
+		if args.ReplaceAll {
+			// replace_all 模式：替换所有匹配项
+			replaced = strings.ReplaceAll(content, args.Old, args.New)
+			outputMsg = fmt.Sprintf("replaced %d occurrence(s) in %s", matchCount, targetRel)
+		} else {
+			// 单次替换模式：要求恰好匹配一次
+			if matchCount > 1 {
+				return runtime.ToolExecution{}, markRefused(fmt.Errorf("%w: %s (found %d, set replace_all to true to replace all)", ErrToolReplaceTargetNotUnique, targetRel, matchCount))
+			}
+			replaced = strings.Replace(content, args.Old, args.New, 1)
+			outputMsg = fmt.Sprintf("replaced 1 occurrence in %s", targetRel)
+		}
+
 		if err := os.WriteFile(targetAbs, []byte(replaced), info.Mode().Perm()); err != nil {
 			return runtime.ToolExecution{}, fmt.Errorf("write replaced file %q: %w", targetAbs, err)
 		}
 
 		return runtime.ToolExecution{
 			Call:   call,
-			Output: fmt.Sprintf("replaced 1 occurrence in %s", targetRel),
+			Output: outputMsg,
 		}, nil
 	}
 }
