@@ -704,7 +704,7 @@ func (m Model) startRuntimeExecution(prompt string, eventsCh chan runtimeevents.
 		})
 
 		runner := m.deps.Runner
-		if eventfulRunner, ok := runner.(eventSinkCapableRunner); ok {
+		if eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner); ok {
 			runner = eventfulRunner.WithEventSink(sink)
 		}
 

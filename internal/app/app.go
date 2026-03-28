@@ -705,10 +705,6 @@ func buildURLFetcher(cfg config.Config) (tools.URLFetcher, error) {
 	return webfetch.NewHTTPFetcher(webfetch.HTTPFetcherConfig{})
 }
 
-type eventSinkCapableRunner interface {
-	WithEventSink(sink runtimeevents.Sink) runtime.Runner
-}
-
 func (d dependencies) runRuntime(
 	ctx context.Context,
 	runner runtimeRunner,
@@ -725,7 +721,7 @@ func (d dependencies) runRuntime(
 	return ui.Run(
 		ctx,
 		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-			eventfulRunner, ok := runner.(eventSinkCapableRunner)
+			eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner)
 			if !ok {
 				return runner.Run(ctx, store, input)
 			}
@@ -888,7 +884,7 @@ func (d dependencies) runPrint(
 	visualize := buildVisualizer(input.outputMode, os.Stdout)
 
 	_, err = ui.Run(ctx, func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-		eventfulRunner, ok := runner.(eventSinkCapableRunner)
+		eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner)
 		if !ok {
 			return runner.Run(ctx, store, runInput)
 		}

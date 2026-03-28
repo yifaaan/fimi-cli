@@ -9,15 +9,9 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
-	runtimeevents "fimi-cli/internal/runtime/events"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
-
-// eventSinkCapableRunner 是支持事件接收的 runner 接口。
-type eventSinkCapableRunner interface {
-	WithEventSink(sink runtimeevents.Sink) runtime.Runner
-}
 
 // helpText 返回 shell 的帮助文本。
 func helpText() string {

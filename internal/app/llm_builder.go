@@ -7,7 +7,6 @@ import (
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/llm/openai"
-	"fimi-cli/internal/llm/qwen"
 )
 
 // ErrUnsupportedProviderType 表示当前 llm client 构造器不支持给定 provider 类型。
@@ -91,7 +90,15 @@ func buildPlaceholderClient(
 	return llm.NewPlaceholderClient(), nil
 }
 
-// buildQwenClient 从配置构建 QWEN client。
+const (
+	// DashScope OpenAI 兼容模式的 BaseURL
+	qwenDefaultBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	// 默认使用的 QWEN 模型
+	qwenDefaultModel = "qwen-plus"
+)
+
+// buildQwenClient 从配置构建 QWEN (DashScope) client。
+// 内部使用 OpenAI 兼容 API，默认值直接内联避免不必要的包间接层。
 func buildQwenClient(
 	providerName string,
 	providerCfg config.ProviderConfig,
@@ -101,10 +108,19 @@ func buildQwenClient(
 		return nil, fmt.Errorf("qwen api_key is required; set providers.%s.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)", providerName)
 	}
 
-	return qwen.NewClient(qwen.Config{
+	baseURL := providerCfg.BaseURL
+	if baseURL == "" {
+		baseURL = qwenDefaultBaseURL
+	}
+	model := modelCfg.Model
+	if model == "" {
+		model = qwenDefaultModel
+	}
+
+	return openai.NewClient(openai.Config{
 		APIKey:  providerCfg.APIKey,
-		BaseURL: providerCfg.BaseURL,
-		Model:   modelCfg.Model,
+		BaseURL: baseURL,
+		Model:   model,
 	}), nil
 }
 

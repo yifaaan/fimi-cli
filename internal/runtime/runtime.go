@@ -198,6 +198,13 @@ func formatToolFailureContent(err *ToolExecutionError) string {
 	return fmt.Sprintf("tool execution failed (failure_kind: %s): %s", failureKind, err.Err.Error())
 }
 
+// EventSinkCapableRunner 描述支持事件接收的 Runner 能力。
+// 消费方通过类型断言检测 runner 是否支持事件流，
+// 避免强制所有 Runner 都实现该方法。
+type EventSinkCapableRunner interface {
+	WithEventSink(sink runtimeevents.Sink) Runner
+}
+
 // Engine 负责为 runtime 生成 assistant 回复文本。
 // 这里先保持最小接口，后面再扩展为真正的模型调用边界。
 type Engine interface {
