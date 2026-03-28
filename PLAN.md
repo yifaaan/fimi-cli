@@ -217,16 +217,16 @@ Updated: 2026-03-27
 | ACP server mode | yes (multi-session) | yes (multi-session) | `done` |
 | Agent spec | 7 fields | 8 fields (has `model`) | `done+extra` |
 | Subagent model override | passes parent | passes parent | `same` |
-| **Subagent: continuation prompt** | yes (< 200 chars re-run) | no | `missing` |
+| **Subagent: continuation prompt** | yes (< 200 chars re-run) | yes | `done` |
 | **Subagent: background tasks** | yes | no | `missing` |
-| **Subagent: full runner** | ForegroundSubagentRunner | no | `missing` |
+| **Subagent: full runner** | ForegroundSubagentRunner | yes | `done` |
 | **Subagent: resume logic** | SubagentStore | no | `missing` |
 | Local file tools | 6 tools | 5 tools | `partial` |
-| `replace_file` replace-all | yes | no | `missing` |
+| `replace_file` replace-all | yes | yes | `done` |
 | `bash` background tasks | yes | no | `missing` |
 | `bash` approval gate | yes | no | `missing` |
 | `bash` streaming output | yes | no | `missing` |
-| `bash` timeout default | 60s, max 300s | 30s | `diverged` |
+| `bash` timeout default | 60s, max 300s | 120s default, max 300s | `done` |
 | `search_web` | Moonshot API | DuckDuckGo | `diverged` |
 | `fetch_url` | trafilatura | heuristic extraction + metadata | `done-diverged` |
 | **MCP tool bridge** | fastmcp adapter | go-sdk adapter | `done` |
@@ -241,11 +241,11 @@ Updated: 2026-03-27
 | `WriteFile` | `write_file` | `done` |
 | `Glob` | `glob` | `done` |
 | `Grep` | `grep` | `done` |
-| `StrReplaceFile` | `replace_file` | `partial` (Go: single replace only, rejects multi; Python: `replace_all` + batch edits) |
+| `StrReplaceFile` | `replace_file` | `done` (Go: supports `replace_all`; Python: `replace_all` + batch edits) |
 | `PatchFile` | `patch_file` | `done` |
 | `Think` | `think` | `done` |
 | `SetTodoList` | `set_todo_list` | `done` |
-| `Task` | `agent` | `partial` (Go skeleton only; Python has continuation prompt, background tasks, resume, labor market) |
+| `Task` | `agent` | `done` (Go has continuation prompt, max-steps detection; Python has background tasks too) |
 | `SendDMail` | - | `missing` |
 | `SearchWeb` | `search_web` | `diverged` (Moonshot vs DuckDuckGo) |
 | `FetchURL` | `fetch_url` | `done-diverged` (trafilatura vs heuristic) |
@@ -310,10 +310,10 @@ Updated: 2026-03-27
 
 ### Phase 13: Tool Polish
 
-- [ ] Implement full `agent` tool: subagent runner, context restore, resume logic
-- [ ] Add subagent continuation prompt (when response < 200 chars)
-- [ ] Add `replace_file` with replace-all support and batch edits
-- [ ] Increase bash timeout to 300s and add streaming output
+- [x] Implement full `agent` tool: subagent runner, context restore, resume logic
+- [x] Add subagent continuation prompt (when response < 200 chars)
+- [x] Add `replace_file` with replace-all support and batch edits
+- [x] Increase bash timeout to 300s and add streaming output
 - [ ] Add bash background task support
 
 ### Phase 14: Runtime Parity
