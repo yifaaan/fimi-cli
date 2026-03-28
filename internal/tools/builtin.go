@@ -121,42 +121,36 @@ type patchFileArguments struct {
 	Diff string `json:"diff"`
 }
 
-// NewBuiltinExecutor 返回带内建 handler 的最小工具执行器。
-// 当前先接通最小可用的一组本地工具能力。
-// shaper 用于对工具输出进行塑形，防止超大输出消耗模型上下文。
-func NewBuiltinExecutor(definitions []Definition, workDir string, bgMgr *BackgroundManager) Executor {
-	return NewBuiltinExecutorWithShaper(definitions, workDir, NewOutputShaper(), bgMgr)
+// ExecutorOption 配置 BuiltinExecutor 的可选参数。
+type ExecutorOption func(*executorOpts)
+
+type executorOpts struct {
+	shaper        OutputShaper
+	extraHandlers map[string]HandlerFunc
 }
 
-func NewBuiltinExecutorWithExtraHandlers(
-	definitions []Definition,
-	workDir string,
-	extraHandlers map[string]HandlerFunc,
-	bgMgr *BackgroundManager,
-) Executor {
-	return NewBuiltinExecutorWithShaperAndExtraHandlers(
-		definitions,
-		workDir,
-		NewOutputShaper(),
-		extraHandlers,
-		bgMgr,
-	)
+// WithShaper 设置自定义输出塑形器，默认使用 NewOutputShaper()。
+func WithShaper(shaper OutputShaper) ExecutorOption {
+	return func(o *executorOpts) { o.shaper = shaper }
 }
 
-// NewBuiltinExecutorWithShaper 创建带自定义塑形器的执行器。
-func NewBuiltinExecutorWithShaper(definitions []Definition, workDir string, shaper OutputShaper, bgMgr *BackgroundManager) Executor {
-	return NewBuiltinExecutorWithShaperAndExtraHandlers(definitions, workDir, shaper, nil, bgMgr)
+// WithExtraHandlers 追加自定义工具 handler，覆盖同名内建 handler。
+func WithExtraHandlers(handlers map[string]HandlerFunc) ExecutorOption {
+	return func(o *executorOpts) { o.extraHandlers = handlers }
 }
 
-func NewBuiltinExecutorWithShaperAndExtraHandlers(
-	definitions []Definition,
-	workDir string,
-	shaper OutputShaper,
-	extraHandlers map[string]HandlerFunc,
-	bgMgr *BackgroundManager,
-) Executor {
-	handlers := builtinHandlers(workDir, shaper, bgMgr)
-	for name, handler := range extraHandlers {
+// NewBuiltinExecutor 返回带内建 handler 的工具执行器。
+// 通过 ExecutorOption 可选地注入自定义塑形器或额外 handler。
+func NewBuiltinExecutor(definitions []Definition, workDir string, bgMgr *BackgroundManager, opts ...ExecutorOption) Executor {
+	o := executorOpts{
+		shaper: NewOutputShaper(),
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	handlers := builtinHandlers(workDir, o.shaper, bgMgr)
+	for name, handler := range o.extraHandlers {
 		handlers[name] = handler
 	}
 

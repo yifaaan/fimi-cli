@@ -150,7 +150,7 @@ func (s *stubWebSearcher) Search(ctx context.Context, query string, limit int, i
 
 func TestNewBuiltinExecutorWithExtraHandlersUsesInjectedHandler(t *testing.T) {
 	ctx := context.Background()
-	executor := NewBuiltinExecutorWithExtraHandlers(
+	executor := NewBuiltinExecutor(
 		[]Definition{
 			{
 				Name: ToolAgent,
@@ -158,16 +158,16 @@ func TestNewBuiltinExecutorWithExtraHandlersUsesInjectedHandler(t *testing.T) {
 			},
 		},
 		t.TempDir(),
-		map[string]HandlerFunc{
+		nil,
+		WithExtraHandlers(map[string]HandlerFunc{
 			ToolAgent: func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
 				return runtime.ToolExecution{
 					Call:   call,
 					Output: "delegated",
 				}, nil
 			},
-			},
-			nil,
-		)
+		}),
+	)
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolAgent,

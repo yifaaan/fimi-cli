@@ -638,11 +638,11 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		}
 	}
 
-	toolExecutor := tools.NewBuiltinExecutorWithExtraHandlers(
+	toolExecutor := tools.NewBuiltinExecutor(
 		allTools,
 		workDir,
-		toolHandlers,
 		nil, // TODO: wire BackgroundManager here
+		tools.WithExtraHandlers(toolHandlers),
 	)
 
 	runner := runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent))
