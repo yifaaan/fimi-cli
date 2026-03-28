@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -21,9 +22,9 @@ import (
 )
 
 const (
-	DefaultBashCommandTimeout      = 120 * time.Second
-	MaxBashCommandTimeout          = 300 * time.Second
-	DefaultBashBackgroundTimeout   = 24 * time.Hour
+	DefaultBashCommandTimeout    = 120 * time.Second
+	MaxBashCommandTimeout        = 300 * time.Second
+	DefaultBashBackgroundTimeout = 24 * time.Hour
 )
 
 var ErrToolArgumentsInvalid = errors.New("tool arguments are invalid")
@@ -44,13 +45,13 @@ var ErrToolThoughtRequired = errors.New("tool thought is required")
 var ErrToolTodosRequired = errors.New("tool todos are required")
 var ErrToolTodoTitleRequired = errors.New("tool todo title is required")
 var ErrToolTodoStatusInvalid = errors.New("tool todo status is invalid")
-var ErrToolURLRequired       = errors.New("tool url is required")
+var ErrToolURLRequired = errors.New("tool url is required")
 
 type bashArguments struct {
 	Command    string `json:"command"`
-	Timeout    int    `json:"timeout"`     // 秒，0 = 使用默认值，最大 300
-	Background bool   `json:"background"`  // 为 true 时后台运行，立即返回 task ID
-	TaskID     string `json:"task_id"`     // 非空时查询指定后台任务的状态
+	Timeout    int    `json:"timeout"`    // 秒，0 = 使用默认值，最大 300
+	Background bool   `json:"background"` // 为 true 时后台运行，立即返回 task ID
+	TaskID     string `json:"task_id"`    // 非空时查询指定后台任务的状态
 }
 
 type thinkArguments struct {
@@ -150,9 +151,7 @@ func NewBuiltinExecutor(definitions []Definition, workDir string, bgMgr *Backgro
 	}
 
 	handlers := builtinHandlers(workDir, o.shaper, bgMgr)
-	for name, handler := range o.extraHandlers {
-		handlers[name] = handler
-	}
+	maps.Copy(handlers, o.extraHandlers)
 
 	return NewExecutor(definitions, handlers)
 }
@@ -288,10 +287,7 @@ func handleBashForeground(ctx context.Context, call runtime.ToolCall, args bashA
 	// 从参数计算超时：0 → 默认值，超过上限则截断
 	timeout := DefaultBashCommandTimeout
 	if args.Timeout > 0 {
-		timeout = time.Duration(args.Timeout) * time.Second
-		if timeout > MaxBashCommandTimeout {
-			timeout = MaxBashCommandTimeout
-		}
+		timeout = min(time.Duration(args.Timeout)*time.Second, MaxBashCommandTimeout)
 	}
 
 	// 使用传入的 ctx 作为父 context，这样外部取消也能中断 bash 执行
@@ -355,33 +351,52 @@ func handleBashForeground(ctx context.Context, call runtime.ToolCall, args bashA
 // newBashHandlerWithTimeout 提供固定超时的 bash handler，仅用于测试。
 func newBashHandlerWithTimeout(workDir string, shaper OutputShaper, timeout time.Duration) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+		args, err := decodeBashArguments(call.Arguments)
+		if err != nil {
+			return runtime.ToolExecution{}, err
+		}
+
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "bash", "-lc", call.Arguments)
+		cmd := exec.CommandContext(ctx, "bash", "-lc", args.Command)
 		if workDir != "" {
 			cmd.Dir = workDir
 		}
+
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
-		err := cmd.Run()
+
+		err = cmd.Run()
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return runtime.ToolExecution{}, markTemporary(fmt.Errorf("%w: %s", ErrToolCommandTimedOut, call.Arguments))
+				return runtime.ToolExecution{}, markTemporary(fmt.Errorf("%w: %s", ErrToolCommandTimedOut, args.Command))
 			}
 			if !isExitError(err) {
 				return runtime.ToolExecution{}, markTemporary(fmt.Errorf("run bash command: %w", err))
 			}
 		}
+
+		shapedStdout := shaper.Shape(stdout.String())
+		shapedStderr := shaper.Shape(stderr.String())
+
 		return runtime.ToolExecution{
 			Call:     call,
-			Output:   stdout.String(),
-			Stdout:   stdout.String(),
-			Stderr:   stderr.String(),
+			Output:   shapedStdout.Output,
+			Stdout:   shapedStdout.Output,
+			Stderr:   shapedStderr.Output,
 			ExitCode: exitCodeFromError(err),
 		}, nil
 	}
+}
+
+func appendShapeMessage(output, message string) string {
+	if message == "" {
+		return output
+	}
+
+	return output + "\n\n[" + message + "]"
 }
 
 func newReadFileHandler(workDir string, shaper OutputShaper) HandlerFunc {
@@ -527,7 +542,6 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 		}, nil
 	}
 }
-
 
 func newSearchWebHandler(searcher WebSearcher, shaper OutputShaper) HandlerFunc {
 	return func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {

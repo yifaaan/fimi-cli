@@ -244,9 +244,8 @@ type PromptParams struct {
 
 // ContentBlock 是 prompt 内容的多态边界。
 type ContentBlock struct {
-	Type string          `json:"type"`
-	Text string          `json:"text,omitempty"`
-	Raw  json.RawMessage `json:"-"` // 保留原始 JSON
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 // PromptResult 是 prompt 方法的返回值。
@@ -314,16 +313,4 @@ type AvailableCommandsUpdate struct {
 type AvailableCommand struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-}
-
-// --- Sentinel 类型 ---
-
-// PendingResult 是 prompt handler 返回的哨兵值。
-// Serve 循环检测到它时跳过自动响应，由 handler 自己发送响应。
-type PendingResult struct{}
-
-// IsPending 检查 handler 返回值是否是 PendingResult。
-func IsPending(result any) bool {
-	_, ok := result.(PendingResult)
-	return ok
 }

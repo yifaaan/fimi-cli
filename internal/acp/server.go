@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"path/filepath"
+	"strings"
 	"sync"
 
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
-	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
 	"fimi-cli/internal/ui"
 )
@@ -56,7 +54,7 @@ func (s *Server) registerHandlers() {
 	s.conn.Register("load_session", s.handleLoadSession)
 	s.conn.Register("set_session_mode", s.handleSetSessionMode)
 	s.conn.Register("set_session_model", s.handleSetSessionModel)
-	s.conn.Register("prompt", s.handlePrompt)
+	s.conn.RegisterAsync("prompt", s.handlePrompt)
 	s.conn.Register("cancel", s.handleCancel)
 }
 
@@ -74,8 +72,8 @@ func (s *Server) handleInitialize(id any, params json.RawMessage) (any, error) {
 			LoadSession: true,
 			PromptCapabilities: PromptCapabilities{
 				EmbeddedContext: true,
-				Image:          true,
-				Audio:          false,
+				Image:           false,
+				Audio:           false,
 			},
 			SessionCapabilities: SessionCapabilities{
 				List:   &SessionListCapabilities{},
@@ -102,13 +100,9 @@ func (s *Server) handleNewSession(id any, params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("parse new_session params: %w", err)
 	}
 
-	cwd := p.CWD
-	if cwd == "" {
-		cwd = "."
-	}
-	absCWD, err := filepath.Abs(cwd)
+	absCWD, err := resolveSessionCWD(p.CWD)
 	if err != nil {
-		return nil, fmt.Errorf("resolve cwd: %w", err)
+		return nil, err
 	}
 
 	sess, err := session.New(absCWD)
@@ -116,13 +110,8 @@ func (s *Server) handleNewSession(id any, params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
-	acpSess := NewSession(sess.ID, s.conn, absCWD)
-
-	s.mu.Lock()
-	s.sessions[sess.ID] = acpSess
-	s.mu.Unlock()
-
-	models := s.buildSessionModels()
+	acpSess := s.registerSession(sess)
+	models := s.buildSessionModels(acpSess.CurrentModelID())
 
 	// 发送 available_commands 通知
 	_ = s.conn.SendNotification("session/update", SessionUpdateNotification{
@@ -135,13 +124,8 @@ func (s *Server) handleNewSession(id any, params json.RawMessage) (any, error) {
 
 	return NewSessionResult{
 		SessionID: sess.ID,
-		Modes: SessionModeState{
-			AvailableModes: []SessionMode{
-				{ID: "default", Name: "Default", Description: "The default mode."},
-			},
-			CurrentModeID: "default",
-		},
-		Models: models,
+		Modes:     defaultSessionModes(),
+		Models:    models,
 	}, nil
 }
 
@@ -151,13 +135,9 @@ func (s *Server) handleListSessions(id any, params json.RawMessage) (any, error)
 		return nil, fmt.Errorf("parse list_sessions params: %w", err)
 	}
 
-	cwd := p.CWD
-	if cwd == "" {
-		cwd = "."
-	}
-	absCWD, err := filepath.Abs(cwd)
+	absCWD, err := resolveSessionCWD(p.CWD)
 	if err != nil {
-		return nil, fmt.Errorf("resolve cwd: %w", err)
+		return nil, err
 	}
 
 	sessionInfos, err := session.ListSessions(absCWD)
@@ -184,13 +164,9 @@ func (s *Server) handleResumeSession(id any, params json.RawMessage) (any, error
 		return nil, fmt.Errorf("parse resume_session params: %w", err)
 	}
 
-	cwd := p.CWD
-	if cwd == "" {
-		cwd = "."
-	}
-	absCWD, err := filepath.Abs(cwd)
+	absCWD, err := resolveSessionCWD(p.CWD)
 	if err != nil {
-		return nil, fmt.Errorf("resolve cwd: %w", err)
+		return nil, err
 	}
 
 	sess, err := session.LoadSession(absCWD, p.SessionID)
@@ -198,19 +174,11 @@ func (s *Server) handleResumeSession(id any, params json.RawMessage) (any, error
 		return nil, fmt.Errorf("load session: %w", err)
 	}
 
-	acpSess := NewSession(sess.ID, s.conn, absCWD)
-	s.mu.Lock()
-	s.sessions[sess.ID] = acpSess
-	s.mu.Unlock()
+	acpSess := s.registerSession(sess)
 
 	return ResumeSessionResult{
-		Modes: SessionModeState{
-			AvailableModes: []SessionMode{
-				{ID: "default", Name: "Default", Description: "The default mode."},
-			},
-			CurrentModeID: "default",
-		},
-		Models: s.buildSessionModels(),
+		Modes:  defaultSessionModes(),
+		Models: s.buildSessionModels(acpSess.CurrentModelID()),
 	}, nil
 }
 
@@ -241,9 +209,13 @@ func (s *Server) handleSetSessionModel(id any, params json.RawMessage) (any, err
 	}
 
 	s.mu.Lock()
-	s.cfg.DefaultModel = p.ModelID
+	acpSess, ok := s.sessions[p.SessionID]
 	s.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", p.SessionID)
+	}
 
+	acpSess.SetModelID(p.ModelID)
 	return nil, nil
 }
 
@@ -260,36 +232,25 @@ func (s *Server) handlePrompt(id any, params json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("session not found: %s", p.SessionID)
 	}
 
-	// 从 ACP 内容块中提取文本
-	var promptText string
-	for _, block := range p.Prompt {
-		text, err := ContentBlockToText(block.Raw)
-		if err != nil {
-			log.Printf("[ACP] parse content block: %v", err)
-			continue
-		}
-		promptText += text
-	}
-
-	if promptText == "" {
-		return nil, fmt.Errorf("prompt is empty")
+	promptText, err := promptTextFromBlocks(p.Prompt)
+	if err != nil {
+		return nil, err
 	}
 
 	// 创建可取消的上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	acpSess.SetCancel(cancel)
 
-	// 异步执行 runtime，handler 返回 PendingResult
+	// 异步执行 runtime，由 handler 自己发送响应
 	go func() {
+		// 一次prompt请求对应一个ctx，执行完后ctx对应的cancel也清除
 		defer acpSess.SetCancel(nil)
 
-		store := contextstore.New(
-			filepath.Join(acpSess.WorkDir(), ".fimi", acpSess.ID()+".jsonl"),
-		)
+		store := contextstore.New(acpSess.HistoryFile())
 
 		input := runtime.Input{
 			Prompt:       promptText,
-			Model:        s.cfg.DefaultModel,
+			Model:        acpSess.CurrentModelID(),
 			SystemPrompt: "",
 		}
 
@@ -304,7 +265,7 @@ func (s *Server) handlePrompt(id any, params json.RawMessage) (any, error) {
 		_ = s.conn.SendResponse(id, PromptResult{StopReason: stopReason})
 	}()
 
-	return PendingResult{}, nil
+	return nil, nil
 }
 
 func (s *Server) handleCancel(id any, params json.RawMessage) (any, error) {
@@ -325,7 +286,64 @@ func (s *Server) handleCancel(id any, params json.RawMessage) (any, error) {
 }
 
 // buildSessionModels 从配置中构建可用模型列表。
-func (s *Server) buildSessionModels() SessionModelState {
+func promptTextFromBlocks(blocks []ContentBlock) (string, error) {
+	if len(blocks) == 0 {
+		return "", fmt.Errorf("prompt is empty")
+	}
+
+	var builder strings.Builder
+	for _, block := range blocks {
+		switch block.Type {
+		case "", "text":
+			builder.WriteString(block.Text)
+		default:
+			return "", fmt.Errorf("unsupported prompt content type: %s", block.Type)
+		}
+	}
+
+	promptText := builder.String()
+	if promptText == "" {
+		return "", fmt.Errorf("prompt is empty")
+	}
+
+	return promptText, nil
+}
+
+func resolveSessionCWD(cwd string) (string, error) {
+	if cwd == "" {
+		cwd = "."
+	}
+
+	absCWD, _, err := session.DirForWorkDir(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+
+	return absCWD, nil
+}
+
+func defaultSessionModes() SessionModeState {
+	return SessionModeState{
+		AvailableModes: []SessionMode{{
+			ID:          "default",
+			Name:        "Default",
+			Description: "The default mode.",
+		}},
+		CurrentModeID: "default",
+	}
+}
+
+func (s *Server) registerSession(sess session.Session) *Session {
+	acpSess := NewSession(sess, s.conn, s.cfg.DefaultModel)
+
+	s.mu.Lock()
+	s.sessions[sess.ID] = acpSess
+	s.mu.Unlock()
+
+	return acpSess
+}
+
+func (s *Server) buildSessionModels(currentModelID string) SessionModelState {
 	available := make([]ModelInfo, 0, len(s.cfg.Models))
 	for alias, mc := range s.cfg.Models {
 		available = append(available, ModelInfo{
@@ -337,7 +355,7 @@ func (s *Server) buildSessionModels() SessionModelState {
 
 	return SessionModelState{
 		AvailableModels: available,
-		CurrentModelID:  s.cfg.DefaultModel,
+		CurrentModelID:  currentModelID,
 	}
 }
 
@@ -358,18 +376,7 @@ func mapStopReason(status runtime.RunStatus) string {
 
 // Ensure FramedConn satisfies nothing extra -- it's a standalone type.
 // Session's Visualize method returns a function matching ui.VisualizeFunc.
-// We bridge here via RunFunc.
-var _ RunFunc = func(ctx context.Context, store contextstore.Context, input runtime.Input, visualize ui.VisualizeFunc) (runtime.Result, error) {
-	// This is a default no-op; actual implementation is injected.
+// The actual ACP run closure is assembled at the app boundary.
+var _ RunFunc = func(context.Context, contextstore.Context, runtime.Input, ui.VisualizeFunc) (runtime.Result, error) {
 	return runtime.Result{}, nil
-}
-
-// AdaptRunFunc wraps ui.Run and a runner factory into a RunFunc suitable for the ACP server.
-func AdaptRunFunc(uiRun func(ctx context.Context, runFunc ui.RunFunc, visualize ui.VisualizeFunc) (runtime.Result, error), newRunner func() runtime.Runner) RunFunc {
-	return func(ctx context.Context, store contextstore.Context, input runtime.Input, visualize ui.VisualizeFunc) (runtime.Result, error) {
-		runner := newRunner()
-		return uiRun(ctx, func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-			return runner.WithEventSink(sink).Run(ctx, store, input)
-		}, visualize)
-	}
 }

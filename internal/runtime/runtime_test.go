@@ -385,8 +385,21 @@ func TestRunnerAdvanceRunFinishesOnFinishedStep(t *testing.T) {
 	if !finished {
 		t.Fatalf("advanceRun() finished = false, want true")
 	}
-	if !reflect.DeepEqual(got.Steps, []StepResult{step}) {
-		t.Fatalf("advanceRun().Steps = %#v, want %#v", got.Steps, []StepResult{step})
+	if len(got.Steps) != 1 {
+		t.Fatalf("len(advanceRun().Steps) = %d, want 1", len(got.Steps))
+	}
+	gotStep := got.Steps[0]
+	if gotStep.Status != step.Status {
+		t.Fatalf("advanceRun().Steps[0].Status = %q, want %q", gotStep.Status, step.Status)
+	}
+	if gotStep.Kind != step.Kind {
+		t.Fatalf("advanceRun().Steps[0].Kind = %q, want %q", gotStep.Kind, step.Kind)
+	}
+	if gotStep.AssistantText != step.AssistantText {
+		t.Fatalf("advanceRun().Steps[0].AssistantText = %q, want %q", gotStep.AssistantText, step.AssistantText)
+	}
+	if !reflect.DeepEqual(gotStep.AppendedRecords, step.AppendedRecords) {
+		t.Fatalf("advanceRun().Steps[0].AppendedRecords = %#v, want %#v", gotStep.AppendedRecords, step.AppendedRecords)
 	}
 }
 

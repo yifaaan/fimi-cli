@@ -314,11 +314,7 @@ func TestBuildLLMClientForProviderUsesPlaceholderBuilder(t *testing.T) {
 }
 
 func TestBuildPlaceholderClient(t *testing.T) {
-	client, err := buildPlaceholderClient(
-		config.DefaultProviderName,
-		config.ProviderConfig{Type: config.ProviderTypePlaceholder},
-		config.ModelConfig{Model: "unused"},
-	)
+	client, err := buildPlaceholderClient()
 	if err != nil {
 		t.Fatalf("buildPlaceholderClient() error = %v", err)
 	}

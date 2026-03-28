@@ -2,41 +2,50 @@ package acp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
+	sessionpkg "fimi-cli/internal/session"
 	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
-// Session 封装一个 ACP 宅户端的 session 状态。
+// Session 封装一个 ACP 客户端的 session 状态。
 type Session struct {
-	id      string
+	session sessionpkg.Session
 	conn    *FramedConn
-	workDir string
 	mu      sync.Mutex
+	modelID string
 
 	// 运行中的 prompt 上下文
 	cancelFn context.CancelFunc
 }
 
 // NewSession 创建一个新的 ACP session。
-func NewSession(id string, conn *FramedConn, workDir string) *Session {
+func NewSession(sess sessionpkg.Session, conn *FramedConn, modelID string) *Session {
 	return &Session{
-		id:      id,
+		session: sess,
 		conn:    conn,
-		workDir: workDir,
+		modelID: modelID,
 	}
 }
 
-// ID 返回 session 的唯一标识符。
-func (s *Session) ID() string {
-	return s.id
+// HistoryFile 返回 session 的历史文件路径。
+func (s *Session) HistoryFile() string {
+	return s.session.HistoryFile
 }
 
-// WorkDir 返回 session 的工作目录。
-func (s *Session) WorkDir() string {
-	return s.workDir
+// CurrentModelID 返回 session 当前使用的模型。
+func (s *Session) CurrentModelID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelID
+}
+
+// SetModelID 设置 session 当前使用的模型。
+func (s *Session) SetModelID(modelID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.modelID = modelID
 }
 
 // SetCancel 设置用于取消运行中 prompt 的函数。
@@ -86,7 +95,7 @@ func (s *Session) translateAndSend(event runtimeevents.Event) error {
 
 func (s *Session) sendAgentMessageChunk(text string) error {
 	return s.conn.SendNotification("session/update", SessionUpdateNotification{
-		SessionID: s.id,
+		SessionID: s.session.ID,
 		Update: AgentMessageChunk{
 			SessionUpdate: "agent_message_chunk",
 			Content:       TextContentBlock{Type: "text", Text: text},
@@ -108,7 +117,7 @@ func (s *Session) sendToolCallStart(tc runtimeevents.ToolCall) error {
 	}
 
 	return s.conn.SendNotification("session/update", SessionUpdateNotification{
-		SessionID: s.id,
+		SessionID: s.session.ID,
 		Update: ToolCallStart{
 			SessionUpdate: "tool_call_start",
 			ToolCallID:    tc.ID,
@@ -140,7 +149,7 @@ func (s *Session) sendToolCallProgress(tr runtimeevents.ToolResult) error {
 	}
 
 	return s.conn.SendNotification("session/update", SessionUpdateNotification{
-		SessionID: s.id,
+		SessionID: s.session.ID,
 		Update: ToolCallProgress{
 			SessionUpdate: "tool_call_progress",
 			ToolCallID:    tr.ToolCallID,
@@ -149,22 +158,4 @@ func (s *Session) sendToolCallProgress(tr runtimeevents.ToolResult) error {
 			Content:       content,
 		},
 	})
-}
-
-// ContentBlockFromACP 将 ACP prompt 内容块转换为纯文本。
-func ContentBlockToText(raw json.RawMessage) (string, error) {
-	var block struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &block); err != nil {
-		return "", fmt.Errorf("parse content block: %w", err)
-	}
-
-	switch block.Type {
-	case "text":
-		return block.Text, nil
-	default:
-		return block.Text, nil
-	}
 }

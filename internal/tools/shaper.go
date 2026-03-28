@@ -106,11 +106,12 @@ func splitLinesKeepEnds(s string) []string {
 	start := 0
 
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
+		switch s[i] {
+		case '\n':
 			// 包含换行符
 			lines = append(lines, s[start:i+1])
 			start = i + 1
-		} else if s[i] == '\r' {
+		case '\r':
 			// 处理 \r\n 或单独的 \r
 			if i+1 < len(s) && s[i+1] == '\n' {
 				lines = append(lines, s[start:i+2])

@@ -2012,6 +2012,19 @@ type stubRunner struct {
 	appendToContext bool
 }
 
+type stubEventfulRunner struct {
+	sink runtimeevents.Sink
+}
+
+func (r *stubEventfulRunner) Run(_ context.Context, _ contextstore.Context, _ runtime.Input) (runtime.Result, error) {
+	return runtime.Result{Status: runtime.RunStatusFinished}, nil
+}
+
+func (r *stubEventfulRunner) WithEventSink(sink runtimeevents.Sink) runtime.Runner {
+	r.sink = sink
+	return runtime.Runner{}
+}
+
 func (r *stubRunner) Run(_ context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
 	r.gotCtx = store
 	r.gotInput = input
@@ -2104,6 +2117,65 @@ func TestDependenciesBuildRunnerForAgentSearchWebUsesConfiguredBackend(t *testin
 	}
 	if !strings.Contains(err.Error(), `execute tool call "search_web"`) {
 		t.Fatalf("Run() error = %q, want search_web tool execution error", err.Error())
+	}
+}
+
+func TestBuildRuntimePromptInput(t *testing.T) {
+	cfg := config.Config{
+		DefaultModel: "default-model",
+		Models: map[string]config.ModelConfig{
+			"default-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "resolved-model",
+			},
+		},
+	}
+	agent := loadedAgent{SystemPrompt: "You are the configured agent."}
+
+	got := buildRuntimePromptInput(cfg, agent, "hello")
+	want := runtime.Input{
+		Prompt:       "hello",
+		Model:        "resolved-model",
+		SystemPrompt: "You are the configured agent.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildRuntimePromptInput() = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunWithEventSinkKeepsLegacyRunnerCompatible(t *testing.T) {
+	runner := &stubRunner{
+		result: runtime.Result{Status: runtime.RunStatusFinished},
+	}
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	input := runtime.Input{Prompt: "hello", Model: "test-model"}
+	run := runWithEventSink(runner, store, input)
+
+	result, err := run(context.Background(), runtimeevents.NoopSink{})
+	if err != nil {
+		t.Fatalf("runWithEventSink() error = %v", err)
+	}
+	if result.Status != runtime.RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, runtime.RunStatusFinished)
+	}
+	if runner.gotInput != input {
+		t.Fatalf("runner.gotInput = %#v, want %#v", runner.gotInput, input)
+	}
+}
+
+func TestRunWithEventSinkUsesEventfulRunnerWhenAvailable(t *testing.T) {
+	runner := &stubEventfulRunner{}
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	input := runtime.Input{Prompt: "hello", Model: "test-model"}
+	run := runWithEventSink(runner, store, input)
+	sink := runtimeevents.NoopSink{}
+
+	_, err := run(context.Background(), sink)
+	if err != nil {
+		t.Fatalf("runWithEventSink() error = %v", err)
+	}
+	if runner.sink == nil {
+		t.Fatal("runner.sink = nil, want non-nil")
 	}
 }
 

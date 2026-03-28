@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -382,25 +381,8 @@ func (d dependencies) buildRunner(cfg config.Config) (runtimeRunner, error) {
 func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, workDir string) (runtimeRunner, error) {
 	cfg = resolveModelOverride(cfg, agent)
 
-	// Build MCP manager and discover tools
-	var mcpManager *mcp.Manager
-	if d.buildMCPTools == nil {
-		mcpManager = mcp.NewManager(context.Background(), cfg.MCP)
-	} else {
-		mcpManager = d.buildMCPTools(cfg.MCP)
-	}
-
-	// Merge MCP tools into agent tools
-	allTools := make([]tools.Definition, 0, len(agent.Tools)+len(mcpManager.Tools()))
-	allTools = append(allTools, agent.Tools...)
-	for _, tool := range mcpManager.Tools() {
-		allTools = append(allTools, tools.Definition{
-			Name:        tool.Name,
-			Kind:        tools.KindUtility,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
-		})
-	}
+	mcpManager := d.buildMCPManager(cfg)
+	allTools := mergeAgentAndMCPTools(agent.Tools, mcpManager.Tools())
 
 	if d.buildRuntimeRunner != nil {
 		return d.buildRuntimeRunner(cfg)
@@ -411,6 +393,50 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		return nil, err
 	}
 
+	toolHandlers, err := d.buildRunnerToolHandlers(cfg, agent, workDir, mcpManager)
+	if err != nil {
+		return nil, err
+	}
+
+	toolExecutor := tools.NewBuiltinExecutor(
+		allTools,
+		workDir,
+		nil, // TODO: wire BackgroundManager here
+		tools.WithExtraHandlers(toolHandlers),
+	)
+
+	runner := runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent))
+
+	return &mcpAwareRunner{
+		Runner:     runner,
+		mcpManager: mcpManager,
+	}, nil
+}
+
+func (d dependencies) buildMCPManager(cfg config.Config) *mcp.Manager {
+	if d.buildMCPTools != nil {
+		return d.buildMCPTools(cfg.MCP)
+	}
+
+	return mcp.NewManager(context.Background(), cfg.MCP)
+}
+
+func mergeAgentAndMCPTools(agentTools []tools.Definition, mcpTools []mcp.Tool) []tools.Definition {
+	allTools := make([]tools.Definition, 0, len(agentTools)+len(mcpTools))
+	allTools = append(allTools, agentTools...)
+	for _, tool := range mcpTools {
+		allTools = append(allTools, tools.Definition{
+			Name:        tool.Name,
+			Kind:        tools.KindUtility,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
+		})
+	}
+
+	return allTools
+}
+
+func (d dependencies) buildRunnerToolHandlers(cfg config.Config, agent loadedAgent, workDir string, mcpManager *mcp.Manager) (map[string]tools.HandlerFunc, error) {
 	registry := d.resolveToolRegistry()
 	toolHandlers := map[string]tools.HandlerFunc{
 		tools.ToolAgent: d.newAgentToolHandler(cfg, agent, workDir, registry),
@@ -423,35 +449,21 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		toolHandlers[tools.ToolSearchWeb] = tools.NewSearchWebHandler(searcher, tools.NewOutputShaper())
 	}
 	if containsTool(agent.Tools, tools.ToolFetchURL) {
-		fetcher, err := buildURLFetcher(cfg)
+		fetcher, err := buildURLFetcher()
 		if err != nil {
 			return nil, fmt.Errorf("build url fetcher: %w", err)
 		}
 		toolHandlers[tools.ToolFetchURL] = tools.NewFetchURLHandler(fetcher, tools.NewOutputShaper())
 	}
-
-	// Register MCP tool handlers
-	for _, mcptool := range mcpManager.Tools() {
-		mc := mcpManager.ClientForTool(mcptool.Name)
-		if mc != nil {
-			toolHandlers[mcptool.Name] = tools.NewMCPToolHandler(mc, mcptool)
+	for _, tool := range mcpManager.Tools() {
+		client := mcpManager.ClientForTool(tool.Name)
+		if client == nil {
+			continue
 		}
+		toolHandlers[tool.Name] = tools.NewMCPToolHandler(client, tool)
 	}
 
-	toolExecutor := tools.NewBuiltinExecutor(
-		allTools,
-		workDir,
-		nil, // TODO: wire BackgroundManager here
-		tools.WithExtraHandlers(toolHandlers),
-	)
-
-	runner := runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent))
-
-	// Wrap runner to close MCP manager after use
-	return &mcpAwareRunner{
-		Runner:     runner,
-		mcpManager: mcpManager,
-	}, nil
+	return toolHandlers, nil
 }
 
 // mcpAwareRunner wraps a runtime.Runner to close the MCP manager after the run.
@@ -463,9 +475,7 @@ type mcpAwareRunner struct {
 func (r *mcpAwareRunner) Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
 	defer func() {
 		if r.mcpManager != nil {
-			if err := r.mcpManager.Close(); err != nil {
-				log.Printf("[MCP] error closing manager: %v", err)
-			}
+			_ = r.mcpManager.Close()
 		}
 	}()
 	return r.Runner.Run(ctx, store, input)
@@ -499,25 +509,12 @@ func buildWebSearcher(cfg config.Config) (tools.WebSearcher, error) {
 	})
 }
 
-func buildURLFetcher(cfg config.Config) (tools.URLFetcher, error) {
+func buildURLFetcher() (tools.URLFetcher, error) {
 	// URL fetcher 使用内建默认配置，暂不暴露用户配置入口。
 	return webfetch.NewHTTPFetcher(webfetch.HTTPFetcherConfig{})
 }
 
-func (d dependencies) runRuntime(
-	ctx context.Context,
-	runner runtimeRunner,
-	store contextstore.Context,
-	input runtime.Input,
-) (runtime.Result, error) {
-	return ui.Run(ctx, d.runWithOptionalEventSink(runner, store, input), d.resolveVisualizer("text"))
-}
-
-func (d dependencies) runWithOptionalEventSink(
-	runner runtimeRunner,
-	store contextstore.Context,
-	input runtime.Input,
-) func(context.Context, runtimeevents.Sink) (runtime.Result, error) {
+func runWithEventSink(runner runtimeRunner, store contextstore.Context, input runtime.Input) ui.RunFunc {
 	return func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
 		eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner)
 		if !ok {
@@ -526,6 +523,15 @@ func (d dependencies) runWithOptionalEventSink(
 
 		return eventfulRunner.WithEventSink(sink).Run(ctx, store, input)
 	}
+}
+
+func (d dependencies) runRuntime(
+	ctx context.Context,
+	runner runtimeRunner,
+	store contextstore.Context,
+	input runtime.Input,
+) (runtime.Result, error) {
+	return ui.Run(ctx, runWithEventSink(runner, store, input), d.resolveVisualizer("text"))
 }
 
 func resolvePrintPrompt(input runInput) (string, error) {
@@ -566,15 +572,7 @@ func (d dependencies) preparePrintStore(workDir, prompt string) (contextstore.Co
 	return store, nil
 }
 
-func buildPrintRuntimeInput(cfg config.Config, agent loadedAgent, prompt string) runtime.Input {
-	return runtime.Input{
-		Prompt:       prompt,
-		Model:        resolveRuntimeModelName(cfg),
-		SystemPrompt: agent.SystemPrompt,
-	}
-}
-
-func buildSubagentRuntimeInput(cfg config.Config, agent loadedAgent, prompt string) runtime.Input {
+func buildRuntimePromptInput(cfg config.Config, agent loadedAgent, prompt string) runtime.Input {
 	return runtime.Input{
 		Prompt:       prompt,
 		Model:        resolveRuntimeModelName(cfg),
@@ -703,9 +701,9 @@ func (d dependencies) runPrint(
 		return err
 	}
 
-	runInput := buildPrintRuntimeInput(cfg, agent, prompt)
+	runtimeInput := buildRuntimePromptInput(cfg, agent, prompt)
 
-	_, err = ui.Run(ctx, d.runWithOptionalEventSink(runner, store, runInput), d.resolveVisualizer(input.outputMode))
+	_, err = ui.Run(ctx, runWithEventSink(runner, store, runtimeInput), d.resolveVisualizer(input.outputMode))
 
 	return err
 }
@@ -759,23 +757,15 @@ func (d dependencies) runACP(ctx context.Context) error {
 		return fmt.Errorf("load agent: %w", err)
 	}
 
-	// runner 工厂：每次 prompt 调用时创建新的 runner
-	newRunner := func() runtime.Runner {
+	// 每次 prompt 调用时创建新的 runner，并直接在这里组装 ACP 运行闭包。
+	runFn := func(ctx context.Context, store contextstore.Context, input runtime.Input, visualize ui.VisualizeFunc) (runtime.Result, error) {
 		r, err := d.buildRunnerForAgent(cfg, agent, workDir)
 		if err != nil {
-			log.Printf("[ACP] build runner: %v", err)
-			return runtime.Runner{}
+			return runtime.Result{}, fmt.Errorf("build ACP runner: %w", err)
 		}
-		// mcpAwareRunner 内嵌了 runtime.Runner
-		type hasInner interface{ Inner() runtime.Runner }
-		if h, ok := r.(hasInner); ok {
-			return h.Inner()
-		}
-		return runtime.Runner{}
-	}
 
-	// 包装 ui.Run 为 acp.RunFunc
-	runFn := acp.AdaptRunFunc(ui.Run, newRunner)
+		return ui.Run(ctx, runWithEventSink(r, store, input), visualize)
+	}
 
 	server := acp.NewServer(conn, cfg, runFn)
 	return server.Serve(ctx)
@@ -867,7 +857,7 @@ func (d dependencies) runDeclaredSubagent(
 		return runtime.ToolExecution{}, fmt.Errorf("build subagent runner: %w", err)
 	}
 
-	result, err := runSubagentOnce(ctx, runner, historyFile, buildSubagentRuntimeInput(cfg, subagent, args.Prompt))
+	result, err := runSubagentOnce(ctx, runner, historyFile, buildRuntimePromptInput(cfg, subagent, args.Prompt))
 	if err != nil {
 		return runtime.ToolExecution{}, fmt.Errorf("run subagent %q: %w", args.SubagentName, err)
 	}
@@ -891,7 +881,7 @@ func (d dependencies) runDeclaredSubagent(
 
 	// 回复过短时追加一轮 continuation prompt，让子代理输出更多细节
 	if len(output) < subagentMinResponseLen {
-		contResult, contErr := runSubagentOnce(ctx, runner, historyFile, buildSubagentRuntimeInput(cfg, subagent, subagentContinuePrompt))
+		contResult, contErr := runSubagentOnce(ctx, runner, historyFile, buildRuntimePromptInput(cfg, subagent, subagentContinuePrompt))
 		if contErr == nil && contResult.Status != runtime.RunStatusFailed {
 			if continued := finalAssistantText(contResult); continued != "" {
 				output = continued

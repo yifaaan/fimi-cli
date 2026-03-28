@@ -11,8 +11,13 @@ import (
 
 // Handler 处理一个 JSON-RPC 方法调用。
 // id 是请求的标识符；params 是原始 JSON 参数。
-// 返回 (result, error)。如果 result 是 PendingResult，Serve 不会自动发送响应。
+// 返回 (result, error)。同步 handler 的 result 会由 Serve 自动发送；异步 handler 需要自己发送响应。
 type Handler func(id any, params json.RawMessage) (any, error)
+
+type registeredHandler struct {
+	handler Handler
+	async   bool
+}
 
 // FramedConn 管理 JSON-RPC 2.0 的 stdio 帧通信。
 // 多个 goroutine 可以并发调用 Send* 方法；读循环在 Serve 中串行执行。
@@ -20,7 +25,7 @@ type FramedConn struct {
 	reader   *bufio.Reader
 	writer   io.Writer
 	mu       sync.Mutex
-	handlers map[string]Handler
+	handlers map[string]registeredHandler
 }
 
 // NewFramedConn 创建一个新的 JSON-RPC 帧连接。
@@ -28,13 +33,19 @@ func NewFramedConn(r io.Reader, w io.Writer) *FramedConn {
 	return &FramedConn{
 		reader:   bufio.NewReader(r),
 		writer:   w,
-		handlers: make(map[string]Handler),
+		handlers: make(map[string]registeredHandler),
 	}
 }
 
-// Register 绑定方法名到处理函数。
+// Register 绑定同步方法名到处理函数。
 func (c *FramedConn) Register(method string, handler Handler) {
-	c.handlers[method] = handler
+	c.handlers[method] = registeredHandler{handler: handler}
+}
+
+// RegisterAsync 绑定异步方法名到处理函数。
+// 该类 handler 需要自己调用 SendResponse 或 SendError。
+func (c *FramedConn) RegisterAsync(method string, handler Handler) {
+	c.handlers[method] = registeredHandler{handler: handler, async: true}
 }
 
 // SendResponse 发送一个 JSON-RPC 成功响应。
@@ -101,7 +112,7 @@ func (c *FramedConn) Serve(ctx context.Context) error {
 			continue
 		}
 
-		handler, ok := c.handlers[req.Method]
+		registered, ok := c.handlers[req.Method]
 		if !ok {
 			if req.ID != nil {
 				_ = c.SendError(req.ID, CodeMethodNotFound, "method not found: "+req.Method)
@@ -109,7 +120,7 @@ func (c *FramedConn) Serve(ctx context.Context) error {
 			continue
 		}
 
-		result, err := handler(req.ID, req.Params)
+		result, err := registered.handler(req.ID, req.Params)
 		if err != nil {
 			if req.ID != nil {
 				_ = c.SendError(req.ID, CodeInternalError, err.Error())
@@ -117,8 +128,7 @@ func (c *FramedConn) Serve(ctx context.Context) error {
 			continue
 		}
 
-		// PendingResult 表示 handler 会自己发送响应（如 prompt 的异步流）
-		if IsPending(result) || req.ID == nil {
+		if req.ID == nil || registered.async {
 			continue
 		}
 

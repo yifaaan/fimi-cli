@@ -34,16 +34,16 @@ func buildLLMClientForProvider(
 	providerCfg config.ProviderConfig,
 	modelCfg config.ModelConfig,
 ) (llm.Client, error) {
-	switch providerCfg.Type {
-	case config.ProviderTypePlaceholder:
-		return buildPlaceholderClient(providerName, providerCfg, modelCfg)
-	case config.ProviderTypeQWEN:
-		return buildQwenClient(providerName, providerCfg, modelCfg)
-	case config.ProviderTypeOpenAI:
-		return buildOpenAIClient(providerName, providerCfg, modelCfg)
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProviderType, providerCfg.Type)
-	}
+		switch providerCfg.Type {
+		case config.ProviderTypePlaceholder:
+			return buildPlaceholderClient()
+		case config.ProviderTypeQWEN:
+			return buildQwenClient(providerName, providerCfg, modelCfg)
+		case config.ProviderTypeOpenAI:
+			return buildOpenAIClient(providerName, providerCfg, modelCfg)
+		default:
+			return nil, fmt.Errorf("%w: %s", ErrUnsupportedProviderType, providerCfg.Type)
+		}
 }
 
 // resolveConfiguredModel 统一决定当前 run 选择的模型。
@@ -82,11 +82,7 @@ func resolveConfiguredProvider(
 }
 
 // buildPlaceholderClient 构造内建的 placeholder client。
-func buildPlaceholderClient(
-	providerName string,
-	providerCfg config.ProviderConfig,
-	modelCfg config.ModelConfig,
-) (llm.Client, error) {
+func buildPlaceholderClient() (llm.Client, error) {
 	return llm.NewPlaceholderClient(), nil
 }
 
