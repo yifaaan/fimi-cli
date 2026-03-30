@@ -225,11 +225,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(inputCmd, outputCmd)
 
 	case RuntimeEventMsg:
+		// 忽略 runtime 已完成后的延迟事件（竞态条件保护）
+		if m.mode == ModeIdle {
+			return m, nil
+		}
 		return m.handleRuntimeEvents(RuntimeEventsMsg{
 			Events: []runtimeevents.Event{msg.Event},
 		})
 
 	case RuntimeEventsMsg:
+		// 忽略 runtime 已完成后的延迟事件（竞态条件保护）
+		if m.mode == ModeIdle {
+			return m, nil
+		}
 		return m.handleRuntimeEvents(msg)
 
 	case InputSubmitMsg:
