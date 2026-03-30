@@ -112,3 +112,102 @@ func TestWireReceiveRespectsContext(t *testing.T) {
 		t.Fatalf("Receive() error = %v, want context.Canceled", err)
 	}
 }
+
+func TestWireWaitForApproval(t *testing.T) {
+	w := New(0)
+
+	req := &ApprovalRequest{
+		ID:          "approval-1",
+		ToolCallID:  "call-1",
+		Action:      "bash_execute",
+		Description: "Run: rm -rf /",
+	}
+
+	// Simulate UI receiving and resolving in background
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		msg, err := w.Receive(ctx)
+		if err != nil {
+			t.Errorf("UI Receive() error = %v", err)
+			return
+		}
+
+		approvalReq, ok := msg.(*ApprovalRequest)
+		if !ok {
+			t.Errorf("UI received %T, want *ApprovalRequest", msg)
+			return
+		}
+
+		// Simulate user approving
+		approvalReq.Resolve(ApprovalApprove)
+	}()
+
+	// Runtime waits for approval
+	ctx := context.Background()
+	resp, err := w.WaitForApproval(ctx, req)
+	if err != nil {
+		t.Fatalf("WaitForApproval() error = %v", err)
+	}
+	if resp != ApprovalApprove {
+		t.Fatalf("WaitForApproval() response = %q, want %q", resp, ApprovalApprove)
+	}
+}
+
+func TestWireWaitForApprovalReject(t *testing.T) {
+	w := New(0)
+
+	req := &ApprovalRequest{
+		ID:         "approval-2",
+		ToolCallID: "call-2",
+		Action:     "bash_execute",
+	}
+
+	go func() {
+		msg, _ := w.Receive(context.Background())
+		approvalReq := msg.(*ApprovalRequest)
+		approvalReq.Resolve(ApprovalReject)
+	}()
+
+	resp, _ := w.WaitForApproval(context.Background(), req)
+	if resp != ApprovalReject {
+		t.Fatalf("WaitForApproval() response = %q, want %q", resp, ApprovalReject)
+	}
+}
+
+func TestWireWaitForApprovalContextCancel(t *testing.T) {
+	w := New(0)
+
+	req := &ApprovalRequest{ID: "approval-3"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp, err := w.WaitForApproval(ctx, req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitForApproval() error = %v, want context.Canceled", err)
+	}
+	if resp != ApprovalReject {
+		t.Fatalf("WaitForApproval() on canceled context should return Reject")
+	}
+}
+
+func TestWireWaitForApprovalWireClosed(t *testing.T) {
+	w := New(0)
+
+	req := &ApprovalRequest{ID: "approval-4"}
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		w.Shutdown()
+	}()
+
+	resp, err := w.WaitForApproval(context.Background(), req)
+	if !errors.Is(err, ErrWireClosed) {
+		t.Fatalf("WaitForApproval() error = %v, want ErrWireClosed", err)
+	}
+	if resp != ApprovalReject {
+		t.Fatalf("WaitForApproval() on closed wire should return Reject")
+	}
+}

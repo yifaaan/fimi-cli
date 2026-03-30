@@ -28,6 +28,16 @@ type ApprovalRequest struct {
 
 func (ApprovalRequest) isMessage() {}
 
+// Resolve completes the approval request with the user's response.
+// Called by UI after user makes a decision.
+func (req *ApprovalRequest) Resolve(resp ApprovalResponse) {
+	select {
+	case req.responseCh <- resp:
+	default:
+		// Already resolved (shouldn't happen, but safe)
+	}
+}
+
 // ApprovalResponse is the user's response to an approval request.
 type ApprovalResponse string
 

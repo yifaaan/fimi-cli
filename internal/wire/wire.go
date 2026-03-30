@@ -52,3 +52,19 @@ func (w *Wire) Receive(ctx context.Context) (Message, error) {
 func (w *Wire) Shutdown() {
 	close(w.done)
 }
+
+// WaitForApproval sends an approval request and waits for the response.
+// Returns ApprovalReject on context cancellation or wire shutdown.
+func (w *Wire) WaitForApproval(ctx context.Context, req *ApprovalRequest) (ApprovalResponse, error) {
+	req.responseCh = make(chan ApprovalResponse, 1)
+	w.Send(req)
+
+	select {
+	case resp := <-req.responseCh:
+		return resp, nil
+	case <-w.done:
+		return ApprovalReject, ErrWireClosed
+	case <-ctx.Done():
+		return ApprovalReject, ctx.Err()
+	}
+}
