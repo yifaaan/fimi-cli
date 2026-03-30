@@ -204,6 +204,12 @@ type approvalRequestMsg struct {
 	Request *wire.ApprovalRequest
 }
 
+// approvalResolveMsg wraps approval resolution for tea.Msg.
+type approvalResolveMsg struct {
+	ID       string
+	Response wire.ApprovalResponse
+}
+
 // wireReceiveLoop returns a tea.Cmd that receives from wire and converts to tea.Msg.
 func (m Model) wireReceiveLoop() tea.Cmd {
 	return func() tea.Msg {
