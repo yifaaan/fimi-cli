@@ -1,11 +1,13 @@
 package shell
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/ui/shell/styles"
+	"fimi-cli/internal/wire"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -190,6 +192,55 @@ func (m *RuntimeModel) appendToolResultLine() {
 		Type:    lineType,
 		Content: toolResultSummary(*m.CurrentTool),
 	})
+}
+
+// wireErrorMsg wraps wire receive errors for tea.Msg.
+type wireErrorMsg struct {
+	Err error
+}
+
+// approvalRequestMsg wraps approval requests for tea.Msg.
+type approvalRequestMsg struct {
+	Request *wire.ApprovalRequest
+}
+
+// wireReceiveLoop returns a tea.Cmd that receives from wire and converts to tea.Msg.
+func (m Model) wireReceiveLoop() tea.Cmd {
+	return func() tea.Msg {
+		msg, err := m.wire.Receive(context.Background())
+		if err != nil {
+			return wireErrorMsg{Err: err}
+		}
+
+		switch msg := msg.(type) {
+		case wire.EventMessage:
+			return eventToTeaMsg(msg.Event)
+		case *wire.ApprovalRequest:
+			return approvalRequestMsg{Request: msg}
+		default:
+			return nil
+		}
+	}
+}
+
+// eventToTeaMsg converts runtime events to existing tea.Msg types.
+func eventToTeaMsg(event runtimeevents.Event) tea.Msg {
+	switch e := event.(type) {
+	case runtimeevents.StepBegin:
+		return RuntimeEventMsg{Event: e}
+	case runtimeevents.StepInterrupted:
+		return RuntimeEventMsg{Event: e}
+	case runtimeevents.StatusUpdate:
+		return RuntimeEventMsg{Event: e}
+	case runtimeevents.TextPart:
+		return RuntimeEventMsg{Event: e}
+	case runtimeevents.ToolCall:
+		return RuntimeEventMsg{Event: e}
+	case runtimeevents.ToolResult:
+		return RuntimeEventMsg{Event: e}
+	default:
+		return nil
+	}
 }
 
 func formatToolCallLine(tool ToolCallInfo) string {
