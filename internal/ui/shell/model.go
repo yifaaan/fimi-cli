@@ -3,6 +3,8 @@ package shell
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -66,6 +68,9 @@ type Model struct {
 	// 当前正在运行的 shell 动作命令字，用于在完成态识别后处理。
 	activeShellActionCommand string
 
+	// /init 隔离执行的临时历史文件路径，完成后清理。
+	initTempFile string
+
 	// Session 选择相关状态
 	sessionList         []session.SessionInfo
 	selectedSession     int
@@ -97,6 +102,7 @@ func availableCommands() []CommandInfo {
 		{Name: "/rewind", Description: "List available rewind checkpoints"},
 		{Name: "/exit", Description: "Exit the shell"},
 		{Name: "/quit", Description: "Exit the shell"},
+		{Name: "/init", Description: "Generate AGENTS.md for the project"},
 		{Name: "/resume", Description: "List available sessions"},
 	}
 }
@@ -480,7 +486,7 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
 		waitForRuntimeEvents(eventsCh),
-		m.startRuntimeExecution(text, eventsCh),
+		m.startRuntimeExecution(m.deps.Store, text, eventsCh),
 	)
 }
 
@@ -531,11 +537,14 @@ func (m Model) finishRuntime(msg RuntimeCompleteMsg) Model {
 			Type:    LineTypeError,
 			Content: fmt.Sprintf("Error: %v", msg.Err),
 		})
+		m.cleanupInitTempFile()
 		m.activeShellActionCommand = ""
 		return m
 	}
 	if m.activeShellActionCommand == "/compact" {
 		m = m.finishCompactRuntime(msg)
+	} else if m.activeShellActionCommand == "/init" {
+		m = m.finishInitRuntime()
 	}
 	m.activeShellActionCommand = ""
 
@@ -591,6 +600,55 @@ func (m Model) finishCompactRuntime(msg RuntimeCompleteMsg) Model {
 	return m
 }
 
+func (m Model) finishInitRuntime() Model {
+	defer m.cleanupInitTempFile()
+
+	agentsMD := readAgentsMD(m.deps.WorkDir)
+	if agentsMD == "" {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: "AGENTS.md was not generated. The agent may have failed to create it.",
+		})
+		return m
+	}
+
+	// 注入 AGENTS.md 感知到真实会话上下文，让后续对话了解项目结构。
+	systemMsg := fmt.Sprintf(
+		"<system>The user just ran `/init` meta command. "+
+			"The system has analyzed the codebase and generated an `AGENTS.md` file. "+
+			"Latest AGENTS.md file content:\n%s</system>", agentsMD)
+	if err := m.deps.Store.Append(contextstore.NewUserTextRecord(systemMsg)); err != nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error appending init result: %v", err),
+		})
+		return m
+	}
+
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: "AGENTS.md has been generated successfully.",
+	})
+	return m
+}
+
+func (m *Model) cleanupInitTempFile() {
+	if m.initTempFile != "" {
+		os.Remove(m.initTempFile)
+		m.initTempFile = ""
+	}
+}
+
+func readAgentsMD(workDir string) string {
+	for _, name := range []string{"AGENTS.md", "agents.md"} {
+		data, err := os.ReadFile(filepath.Join(workDir, name))
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
+}
+
 // handleCommand 处理 slash 命令。
 func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 	switch {
@@ -607,6 +665,8 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case cmd == "/compact":
 		return m.handleCompactCommand()
+	case cmd == "/init":
+		return m.handleInitCommand()
 	case cmd == "/rewind":
 		return m.handleRewindList()
 	case cmd == "/resume":
@@ -669,7 +729,7 @@ func (m Model) startShellAction(spec shellActionSpec) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
 		waitForRuntimeEvents(eventsCh),
-		m.startRuntimeExecution(spec.Prompt, eventsCh),
+		m.startRuntimeExecution(m.deps.Store, spec.Prompt, eventsCh),
 	)
 }
 
@@ -690,9 +750,77 @@ func compactActionSpec() shellActionSpec {
 		}, "\n"),
 	}
 }
+func (m Model) handleInitCommand() (tea.Model, tea.Cmd) {
+	spec := initActionSpec()
+
+	// 创建隔离的临时上下文，避免 /init 探索过程污染当前会话历史。
+	tmpFile, err := os.CreateTemp("", "fimi-init-*.jsonl")
+	if err != nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("error creating temp context: %v", err),
+		})
+		return m, nil
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+
+	// UI 准备：与 startShellAction 共用相同的状态重置逻辑，
+	// 但不把命令文本作为用户消息追加到 transcript。
+	m.output = m.output.FlushPending()
+	m.runtime = m.runtime.Reset()
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: spec.StatusText,
+	})
+
+	m.input = m.input.Clear()
+	m.mode = ModeThinking
+	m.activeShellActionCommand = spec.CommandText
+	m.initTempFile = tmpPath
+
+	eventsCh := make(chan runtimeevents.Event, 256)
+	m.eventsCh = eventsCh
+
+	return m, tea.Batch(
+		m.runtime.SpinnerCmd(),
+		waitForRuntimeEvents(eventsCh),
+		m.startRuntimeExecution(contextstore.New(tmpPath), spec.Prompt, eventsCh),
+	)
+}
+
+func initActionSpec() shellActionSpec {
+	return shellActionSpec{
+		CommandText: "/init",
+		StatusText:  "Analyzing project and generating AGENTS.md...",
+		Prompt: strings.Join([]string{
+			"You are a software engineering expert. Explore the current project directory to understand the project's architecture and main details.",
+			"",
+			"Task requirements:",
+			"1. Analyze the project structure and identify key configuration files (such as pyproject.toml, package.json, go.mod, Cargo.toml, etc.).",
+			"2. Understand the project's technology stack, build process and runtime architecture.",
+			"3. Identify how the code is organized and main module divisions.",
+			"4. Discover project-specific development conventions, testing strategies, and deployment processes.",
+			"",
+			"After the exploration, write a thorough summary into `AGENTS.md` file in the project root. Refer to what is already in the file when you do so.",
+			"",
+			"`AGENTS.md` is a file intended to be read by AI coding agents. Expect the reader knows nothing about the project.",
+			"Compose this file according to the actual project content. Do not make assumptions or generalizations.",
+			"Ensure the information is accurate and useful. Use the natural language that is mainly used in the project's comments and documentation.",
+			"",
+			"Suggested sections:",
+			"- Project overview",
+			"- Build and test commands",
+			"- Code style guidelines",
+			"- Testing instructions",
+			"- Security considerations",
+		}, "\n"),
+	}
+}
 
 // startRuntimeExecution 返回一个启动 runtime 执行的命令。
-func (m Model) startRuntimeExecution(prompt string, eventsCh chan runtimeevents.Event) tea.Cmd {
+// store 参数允许调用方选择在哪个上下文中执行（当前会话或隔离临时存储）。
+func (m Model) startRuntimeExecution(store contextstore.Context, prompt string, eventsCh chan runtimeevents.Event) tea.Cmd {
 	return func() tea.Msg {
 		// 创建事件 sink
 		sink := runtimeevents.SinkFunc(func(ctx context.Context, event runtimeevents.Event) error {
@@ -710,7 +838,7 @@ func (m Model) startRuntimeExecution(prompt string, eventsCh chan runtimeevents.
 		}
 
 		// 执行 runtime
-		result, err := runner.Run(context.Background(), m.deps.Store, runtime.Input{
+		result, err := runner.Run(context.Background(), store, runtime.Input{
 			Prompt:       prompt,
 			Model:        m.deps.ModelName,
 			SystemPrompt: m.deps.SystemPrompt,

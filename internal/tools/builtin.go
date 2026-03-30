@@ -413,7 +413,10 @@ func newReadFileHandler(workDir string, shaper OutputShaper) HandlerFunc {
 
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return runtime.ToolExecution{}, fmt.Errorf("read file %q: %w", path, err)
+			return runtime.ToolExecution{
+				Call:   call,
+				Output: fmt.Sprintf("Error reading file %q: %v", path, err),
+			}, nil
 		}
 
 		// 对文件内容进行塑形

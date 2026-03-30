@@ -20,6 +20,7 @@ func helpText() string {
 		"  /help           Show this help message",
 		"  /clear          Clear the screen",
 		"  /compact        Compact conversation context",
+		"  /init           Generate AGENTS.md for the project",
 		"  /rewind         List available rewind checkpoints",
 		"  /exit, /quit    Exit the shell",
 		"  /resume         List available sessions",
