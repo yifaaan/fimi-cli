@@ -408,3 +408,13 @@ func (m OutputModel) ToggleExpand() (OutputModel, bool) {
 	m.expanded[lastToolResultIdx] = !m.expanded[lastToolResultIdx]
 	return m, true
 }
+
+// HasExpandedResults returns true if any tool result is currently expanded.
+func (m OutputModel) HasExpandedResults() bool {
+	for _, v := range m.expanded {
+		if v {
+			return true
+		}
+	}
+	return false
+}

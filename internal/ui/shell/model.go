@@ -1511,44 +1511,55 @@ func (m Model) handleResumeSwitch(sessionID string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// renderStatusBar 渲染状态栏。
-func (m Model) renderStatusBar() string {
-	var parts []string
+// currentShortcutHint returns a context-appropriate keyboard hint.
+func (m Model) currentShortcutHint() string {
+	switch m.mode {
+	case ModeStreaming, ModeThinking:
+		return ""
+	}
+	if m.output.HasExpandedResults() {
+		return "Ctrl+O折叠"
+	}
+	return "Ctrl+O展开"
+}
 
-	// 上下文使用率
+// renderStatusBar renders the status bar.
+func (m Model) renderStatusBar() string {
+	var leftParts []string
+	var rightParts []string
+
+	// Left: context usage, mode, model name
 	if m.runtime.ContextUsage > 0 {
 		pct := int(m.runtime.ContextUsage * 100)
 		ctxText := styles.ContextStyle(pct).Render(fmt.Sprintf("Context: %d%%", pct))
-		parts = append(parts, ctxText)
+		leftParts = append(leftParts, ctxText)
 	}
 
-	// 模式指示器
 	switch m.mode {
 	case ModeThinking:
-		parts = append(parts, styles.SystemStyle.Render("Thinking..."))
+		leftParts = append(leftParts, styles.SystemStyle.Render("Thinking..."))
 	case ModeStreaming:
-		parts = append(parts, styles.SystemStyle.Render("Streaming..."))
+		leftParts = append(leftParts, styles.SystemStyle.Render("Streaming..."))
 	}
 
-	// 模型名称
 	if m.deps.ModelName != "" {
-		parts = append(parts, styles.ModelStyle.Render(m.deps.ModelName))
+		leftParts = append(leftParts, styles.ModelStyle.Render(m.deps.ModelName))
 	}
 
-	// 当前时间（右对齐）
-	right := styles.SystemStyle.Render(time.Now().Format("15:04:05"))
-
-	content := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
-
-	// 如果没有左半内容，只显示时间
-	if len(parts) == 0 {
-		return right
+	// Right: shortcut hint + time
+	shortcut := m.currentShortcutHint()
+	if shortcut != "" {
+		rightParts = append(rightParts, styles.HelpStyle.Render(shortcut))
 	}
+	rightParts = append(rightParts, styles.SystemStyle.Render(time.Now().Format("15:04:05")))
 
-	// 用 padding 把时间推到右侧
-	gap := m.width - lipgloss.Width(content) - lipgloss.Width(right)
+	leftContent := lipgloss.JoinHorizontal(lipgloss.Top, leftParts...)
+	rightContent := lipgloss.JoinHorizontal(lipgloss.Top, rightParts...)
+
+	gap := m.width - lipgloss.Width(leftContent) - lipgloss.Width(rightContent)
 	if gap < 1 {
 		gap = 1
 	}
-	return content + strings.Repeat(" ", gap) + right
+
+	return leftContent + strings.Repeat(" ", gap) + rightContent
 }
