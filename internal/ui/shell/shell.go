@@ -106,6 +106,7 @@ type Dependencies struct {
 	InitialPrompt  string
 	InitialRecords []contextstore.TextRecord
 	StartupInfo    StartupInfo
+	Yolo           bool
 }
 
 // StartupInfo 描述 shell 首屏需要展示的启动上下文。

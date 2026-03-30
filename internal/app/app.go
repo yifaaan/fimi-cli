@@ -11,6 +11,7 @@ import (
 
 	"fimi-cli/internal/acp"
 	"fimi-cli/internal/agentspec"
+	"fimi-cli/internal/approval"
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/dmail"
@@ -150,6 +151,7 @@ type runInput struct {
 	modelAlias      string
 	outputMode      string // "shell"（默认）, "text", "stream-json"
 	showHelp        bool
+	yolo            bool
 }
 
 // parseRunInput 把 CLI 参数折叠成应用层输入。
@@ -174,6 +176,10 @@ func parseRunInput(args []string) (runInput, error) {
 		}
 		if parseFlags && (arg == "--continue" || arg == "-C") {
 			input.continueSession = true
+			continue
+		}
+		if parseFlags && (arg == "--yolo" || arg == "--dangerously-skip-permissions") {
+			input.yolo = true
 			continue
 		}
 		if parseFlags && (arg == "--help" || arg == "-h") {
@@ -232,6 +238,7 @@ func parseRunInput(args []string) (runInput, error) {
 		modelAlias:      input.modelAlias,
 		outputMode:      input.outputMode,
 		showHelp:        input.showHelp,
+		yolo:            input.yolo,
 	}, nil
 }
 
@@ -706,7 +713,9 @@ func (d dependencies) runPrint(
 
 	runtimeInput := buildRuntimePromptInput(cfg, agent, prompt)
 
-	_, err = ui.Run(ctx, runner.Run, store, runtimeInput, d.resolveVisualizer(input.outputMode))
+	// Print mode has no interactive UI, always auto-approve
+	printCtx := approval.WithContext(ctx, approval.New(true))
+	_, err = ui.Run(printCtx, runner.Run, store, runtimeInput, d.resolveVisualizer(input.outputMode))
 
 	return err
 }

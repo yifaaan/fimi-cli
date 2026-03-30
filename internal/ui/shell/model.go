@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"fimi-cli/internal/approval"
 	"fimi-cli/internal/changelog"
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
@@ -262,6 +263,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case approvalRequestMsg:
 		if msg.Request != nil {
 			m.pendingApprovals[msg.Request.ID] = msg.Request
+			promptText := fmt.Sprintf("⏺ %s (pending approval)\n  %s\n  [y] Approve  [s] For session  [n] Reject",
+				msg.Request.Action, msg.Request.Description)
+			m.output = m.output.AppendLine(TranscriptLine{
+				Type:    LineTypeApproval,
+				Content: promptText,
+			})
 		}
 		m.mode = ModeApprovalPrompt
 		return m, nil
@@ -346,6 +353,19 @@ func (m Model) renderBanner() string {
 
 // handleKeyPress 处理键盘输入。
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Approval mode key handling
+	if m.mode == ModeApprovalPrompt {
+		switch msg.String() {
+		case "y":
+			return m.resolveFirstPending(wire.ApprovalApprove)
+		case "s":
+			return m.resolveFirstPending(wire.ApprovalApproveForSession)
+		case "n":
+			return m.resolveFirstPending(wire.ApprovalReject)
+		}
+		return m, nil
+	}
+
 	// 全局快捷键
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d":
@@ -1091,6 +1111,7 @@ func initActionSpec() shellActionSpec {
 func (m Model) startRuntimeExecution(store contextstore.Context, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := wire.WithCurrent(context.Background(), m.wire)
+		ctx = approval.WithContext(ctx, approval.New(m.deps.Yolo))
 
 		result, err := m.deps.Runner.Run(ctx, store, runtime.Input{
 			Prompt:       prompt,
@@ -1796,6 +1817,15 @@ func (m Model) renderStatusBar() string {
 	}
 
 	return leftContent + strings.Repeat(" ", gap) + rightContent
+}
+
+// resolveFirstPending resolves the first pending approval request.
+func (m Model) resolveFirstPending(resp wire.ApprovalResponse) (tea.Model, tea.Cmd) {
+	for id := range m.pendingApprovals {
+		return m.resolveApproval(id, resp)
+	}
+	m.mode = ModeThinking
+	return m, m.wireReceiveLoop()
 }
 
 // resolveApproval completes an approval request.

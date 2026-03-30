@@ -30,6 +30,8 @@ const (
 	LineTypeSystem
 	// LineTypeError 错误消息
 	LineTypeError
+	// LineTypeApproval 审批提示
+	LineTypeApproval
 )
 
 // TranscriptLine 表示 transcript 中的一行。
@@ -245,6 +247,8 @@ func (m OutputModel) renderLine(line TranscriptLine, idx int) string {
 		return styles.SystemStyle.Render(line.Content)
 	case LineTypeError:
 		return styles.ErrorStyle.Render(line.Content)
+	case LineTypeApproval:
+		return styles.HelpStyle.Render(line.Content)
 	default:
 		return line.Content
 	}

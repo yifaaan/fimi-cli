@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"fimi-cli/internal/approval"
 	"fimi-cli/internal/runtime"
 )
 
@@ -214,6 +215,20 @@ func newBashHandler(workDir string, shaper OutputShaper, bgMgr *BackgroundManage
 		args, err := decodeBashArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
+		}
+
+		// Approval gate
+		if a := approval.FromContext(ctx); a != nil {
+			desc := args.Command
+			if len(desc) > 80 {
+				desc = desc[:77] + "..."
+			}
+			if err := a.Request(ctx, "bash", desc); err != nil {
+				return runtime.ToolExecution{
+					Call:   call,
+					Output: "Tool execution rejected by user",
+				}, nil
+			}
 		}
 
 		// 模式 1：查询后台任务状态
@@ -519,6 +534,16 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, err
 		}
 
+		// Approval gate
+		if a := approval.FromContext(ctx); a != nil {
+			if err := a.Request(ctx, "write_file", args.Path); err != nil {
+				return runtime.ToolExecution{
+					Call:   call,
+					Output: "Tool execution rejected by user",
+				}, nil
+			}
+		}
+
 		rootAbs, err := resolveWorkspaceRoot(workDir)
 		if err != nil {
 			return runtime.ToolExecution{}, err
@@ -661,6 +686,16 @@ func newReplaceFileHandler(workDir string) HandlerFunc {
 		args, err := decodeReplaceFileArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
+		}
+
+		// Approval gate
+		if a := approval.FromContext(ctx); a != nil {
+			if err := a.Request(ctx, "replace_file", args.Path); err != nil {
+				return runtime.ToolExecution{
+					Call:   call,
+					Output: "Tool execution rejected by user",
+				}, nil
+			}
 		}
 
 		rootAbs, err := resolveWorkspaceRoot(workDir)

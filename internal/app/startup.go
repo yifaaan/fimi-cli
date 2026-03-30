@@ -158,6 +158,7 @@ func buildShellDependencies(
 		InitialPrompt:  input.prompt,
 		InitialRecords: initialRecords,
 		StartupInfo:    startupInfo,
+		Yolo:           input.yolo,
 	}
 }
 

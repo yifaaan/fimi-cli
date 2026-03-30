@@ -56,6 +56,7 @@ func helpFlagLines() []string {
 		"  --new-session    Explicitly start a fresh session for this run",
 		"  --model <alias>  Override the configured model for this run",
 		"  --output <mode>  Output mode: shell (default), text, stream-json",
+		"  --yolo           Skip all tool approval prompts",
 		"  -h, --help       Show this help message",
 	}
 }

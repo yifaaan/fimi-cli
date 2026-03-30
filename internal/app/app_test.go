@@ -718,6 +718,7 @@ func TestHelpText(t *testing.T) {
 		"  --new-session    Explicitly start a fresh session for this run\n" +
 		"  --model <alias>  Override the configured model for this run\n" +
 		"  --output <mode>  Output mode: shell (default), text, stream-json\n" +
+		"  --yolo           Skip all tool approval prompts\n" +
 		"  -h, --help       Show this help message\n" +
 		"\n" +
 		"Prompt Rules:\n" +
