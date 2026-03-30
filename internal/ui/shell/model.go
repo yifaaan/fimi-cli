@@ -16,6 +16,7 @@ import (
 	"fimi-cli/internal/session"
 	"fimi-cli/internal/ui/shell/components"
 	"fimi-cli/internal/ui/shell/styles"
+	"fimi-cli/internal/wire"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -92,6 +93,10 @@ type Model struct {
 
 	// Setup wizard state (active when mode == ModeSetup)
 	setupState SetupState
+
+	// Wire for bidirectional communication with runtime
+	wire             *wire.Wire
+	pendingApprovals map[string]*wire.ApprovalRequest
 }
 
 // CommandInfo 表示一个可用的命令。
@@ -142,19 +147,24 @@ func NewModel(deps Dependencies, history *historyStore) Model {
 	// 如果有启动信息，显示横幅
 	showBanner := deps.StartupInfo != (StartupInfo{})
 
+	// Create wire for runtime communication
+	w := wire.New(0)
+
 	output := NewOutputModel()
 	for _, line := range transcriptLineModelsFromRecords(deps.InitialRecords) {
 		output = output.AppendLine(line)
 	}
 
 	return Model{
-		input:      NewInputModel(),
-		output:     output,
-		runtime:    NewRuntimeModel(),
-		mode:       ModeIdle,
-		showBanner: showBanner,
-		deps:       deps,
-		history:    history,
+		input:            NewInputModel(),
+		output:           output,
+		runtime:          NewRuntimeModel(),
+		mode:             ModeIdle,
+		showBanner:       showBanner,
+		deps:             deps,
+		history:          history,
+		wire:             w,
+		pendingApprovals: make(map[string]*wire.ApprovalRequest),
 	}
 }
 
