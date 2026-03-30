@@ -132,6 +132,7 @@ func availableCommands() []CommandInfo {
 		{Name: "/exit", Description: "Exit the shell"},
 		{Name: "/quit", Description: "Exit the shell"},
 		{Name: "/init", Description: "Generate AGENTS.md for the project"},
+		{Name: "/setup", Description: "Setup LLM provider and model"},
 		{Name: "/resume", Description: "List available sessions"},
 	}
 }
@@ -172,6 +173,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle setup mode separately
+		if m.mode == ModeSetup {
+			return m.handleSetupKeyPress(msg)
+		}
 		// 如果在 session 选择模式，特殊处理键盘输入
 		if m.mode == ModeSessionSelect {
 			return m.handleSessionSelectKeyPress(msg)
@@ -829,6 +834,136 @@ func suggestedModelsForProvider(provider string) []string {
 	default:
 		return nil
 	}
+}
+
+// handleSetupKeyPress processes keyboard input in setup mode.
+func (m Model) handleSetupKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	// Global cancel
+	if keyStr == "esc" || keyStr == "q" {
+		m.mode = ModeIdle
+		m.setupState = SetupState{}
+		return m, nil
+	}
+
+	switch m.setupState.phase {
+	case setupPhaseWelcome:
+		if keyStr == "enter" {
+			m.setupState.phase = setupPhaseProviderSelect
+		}
+		return m, nil
+
+	case setupPhaseProviderSelect:
+		switch keyStr {
+		case "1":
+			m.setupState.selectedProvider = "qwen"
+			m.setupState.phase = setupPhaseAPIKeyInput
+		case "2":
+			m.setupState.selectedProvider = "openai"
+			m.setupState.phase = setupPhaseAPIKeyInput
+		case "3":
+			m.setupState.selectedProvider = "anthropic"
+			m.setupState.phase = setupPhaseAPIKeyInput
+		}
+		return m, nil
+
+	case setupPhaseAPIKeyInput:
+		switch keyStr {
+		case "enter":
+			if m.setupState.apiKeyInput != "" {
+				m.setupState.phase = setupPhaseModelSelect
+			}
+		case "backspace":
+			if len(m.setupState.apiKeyInput) > 0 {
+				m.setupState.apiKeyInput = m.setupState.apiKeyInput[:len(m.setupState.apiKeyInput)-1]
+			}
+		default:
+			// Accumulate printable characters
+			if len(msg.Runes) == 1 && msg.Runes[0] >= 32 {
+				m.setupState.apiKeyInput += string(msg.Runes)
+			}
+		}
+		return m, nil
+
+	case setupPhaseModelSelect:
+		switch keyStr {
+		case "enter":
+			if m.setupState.selectedModel != "" {
+				m.setupState.phase = setupPhaseSave
+			}
+		case "backspace":
+			if len(m.setupState.selectedModel) > 0 {
+				m.setupState.selectedModel = m.setupState.selectedModel[:len(m.setupState.selectedModel)-1]
+			}
+		default:
+			// Check for number selection
+			suggested := suggestedModelsForProvider(m.setupState.selectedProvider)
+			if len(msg.Runes) == 1 {
+				num := int(msg.Runes[0] - '0')
+				if num >= 1 && num <= len(suggested) {
+					m.setupState.selectedModel = suggested[num-1]
+					m.setupState.phase = setupPhaseSave
+					return m, nil
+				}
+			}
+			// Accumulate printable characters for custom model name
+			if len(msg.Runes) == 1 && msg.Runes[0] >= 32 {
+				m.setupState.selectedModel += string(msg.Runes)
+			}
+		}
+		return m, nil
+
+	case setupPhaseSave:
+		if keyStr == "enter" {
+			return m.saveSetupConfig()
+		}
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// saveSetupConfig writes the setup configuration and returns to idle mode.
+func (m Model) saveSetupConfig() (tea.Model, tea.Cmd) {
+	// Build provider config
+	providerAlias := m.setupState.selectedProvider
+	providerConfig := config.ProviderConfig{
+		Type:   providerAlias,
+		APIKey: m.setupState.apiKeyInput,
+	}
+	// Use existing base URL for known providers
+	if providerAlias == "qwen" {
+		providerConfig.BaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	}
+	m.setupState.config.Providers[providerAlias] = providerConfig
+
+	// Build model config
+	modelAlias := m.setupState.selectedModel
+	m.setupState.config.Models[modelAlias] = config.ModelConfig{
+		Provider: providerAlias,
+		Model:    modelAlias,
+	}
+	m.setupState.config.DefaultModel = modelAlias
+
+	// Save config
+	if err := config.Save(m.setupState.config); err != nil {
+		m.mode = ModeIdle
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: fmt.Sprintf("Error saving config: %v", err),
+		})
+		m.setupState = SetupState{}
+		return m, nil
+	}
+
+	m.mode = ModeIdle
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: "Configuration saved successfully.",
+	})
+	m.setupState = SetupState{}
+	return m, nil
 }
 
 type shellActionSpec struct {
