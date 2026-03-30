@@ -194,6 +194,43 @@ func LoadFile(configFile string) (Config, error) {
 	return cfg, nil
 }
 
+// Save writes config to the default config file path.
+// Uses atomic write: temp file + rename to avoid corruption.
+func Save(cfg Config) error {
+	configFile, err := File()
+	if err != nil {
+		return err
+	}
+	return SaveFile(configFile, cfg)
+}
+
+// SaveFile writes config to a specific path.
+// Creates parent directories if needed. Uses atomic write pattern.
+func SaveFile(path string, cfg Config) error {
+	// Ensure parent directory exists
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create config directory %q: %w", dir, err)
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+
+	// Atomic write: temp file + rename
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return fmt.Errorf("write temp config file %q: %w", tmpPath, err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename config file %q: %w", path, err)
+	}
+
+	return nil
+}
+
 func validate(cfg Config) error {
 	if cfg.DefaultModel == "" {
 		return errors.New("default_model is required")

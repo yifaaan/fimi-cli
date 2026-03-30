@@ -473,3 +473,52 @@ func TestLoadFileParsesEnabledWebConfig(t *testing.T) {
 		t.Fatalf("LoadFile().Web.DuckDuckGo.UserAgent = %q, want %q", cfg.Web.DuckDuckGo.UserAgent, "fimi-test/1.0")
 	}
 }
+
+func TestSaveFileWritesValidJSON(t *testing.T) {
+	configDir := t.TempDir()
+	configFile := filepath.Join(configDir, "config.json")
+
+	cfg := Default()
+	cfg.DefaultModel = "test-model"
+	cfg.Models["test-model"] = ModelConfig{
+		Provider: "placeholder",
+		Model:    "test-model",
+	}
+
+	if err := SaveFile(configFile, cfg); err != nil {
+		t.Fatalf("SaveFile() error = %v", err)
+	}
+
+	// Verify file exists and can be loaded
+	loaded, err := LoadFile(configFile)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	if loaded.DefaultModel != "test-model" {
+		t.Fatalf("LoadFile().DefaultModel = %q, want %q", loaded.DefaultModel, "test-model")
+	}
+}
+
+func TestSaveFileCreatesParentDirectory(t *testing.T) {
+	configDir := t.TempDir()
+	configFile := filepath.Join(configDir, "subdir", "nested", "config.json")
+
+	cfg := Default()
+	cfg.DefaultModel = "nested-model"
+	cfg.Models["nested-model"] = ModelConfig{
+		Provider: "placeholder",
+		Model:    "nested-model",
+	}
+
+	if err := SaveFile(configFile, cfg); err != nil {
+		t.Fatalf("SaveFile() error = %v", err)
+	}
+
+	loaded, err := LoadFile(configFile)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	if loaded.DefaultModel != "nested-model" {
+		t.Fatalf("LoadFile().DefaultModel = %q, want %q", loaded.DefaultModel, "nested-model")
+	}
+}
