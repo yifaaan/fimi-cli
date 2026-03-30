@@ -94,6 +94,9 @@ type Model struct {
 	// Wire for bidirectional communication with runtime
 	wire             *wire.Wire
 	pendingApprovals map[string]*wire.ApprovalRequest
+
+	// Approval selection state (for ModeApprovalPrompt)
+	approvalSelection int // 0=Approve, 1=Approve for session, 2=Reject
 }
 
 // CommandInfo 表示一个可用的命令。
@@ -263,14 +266,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case approvalRequestMsg:
 		if msg.Request != nil {
 			m.pendingApprovals[msg.Request.ID] = msg.Request
-			promptText := fmt.Sprintf("⏺ %s (pending approval)\n  %s\n  [y] Approve  [s] For session  [n] Reject",
-				msg.Request.Action, msg.Request.Description)
-			m.output = m.output.AppendLine(TranscriptLine{
-				Type:    LineTypeApproval,
-				Content: promptText,
-			})
 		}
 		m.mode = ModeApprovalPrompt
+		m.approvalSelection = 0
 		return m, nil
 
 	case approvalResolveMsg:
@@ -292,6 +290,9 @@ func (m Model) View() string {
 	}
 	if m.mode == ModeSetup {
 		return m.renderSetupView()
+	}
+	if m.mode == ModeApprovalPrompt {
+		return m.renderApprovalView()
 	}
 
 	var sections []string
@@ -353,15 +354,32 @@ func (m Model) renderBanner() string {
 
 // handleKeyPress 处理键盘输入。
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Approval mode key handling
+	// Approval mode: up/down to select, enter to confirm
 	if m.mode == ModeApprovalPrompt {
 		switch msg.String() {
-		case "y":
-			return m.resolveFirstPending(wire.ApprovalApprove)
-		case "s":
-			return m.resolveFirstPending(wire.ApprovalApproveForSession)
-		case "n":
-			return m.resolveFirstPending(wire.ApprovalReject)
+		case "up", "ctrl+p":
+			m.approvalSelection--
+			if m.approvalSelection < 0 {
+				m.approvalSelection = 2
+			}
+			return m, nil
+		case "down", "ctrl+n":
+			m.approvalSelection++
+			if m.approvalSelection > 2 {
+				m.approvalSelection = 0
+			}
+			return m, nil
+		case "enter":
+			var resp wire.ApprovalResponse
+			switch m.approvalSelection {
+			case 0:
+				resp = wire.ApprovalApprove
+			case 1:
+				resp = wire.ApprovalApproveForSession
+			default:
+				resp = wire.ApprovalReject
+			}
+			return m.resolveFirstPending(resp)
 		}
 		return m, nil
 	}
@@ -1826,6 +1844,93 @@ func (m Model) resolveFirstPending(resp wire.ApprovalResponse) (tea.Model, tea.C
 	}
 	m.mode = ModeThinking
 	return m, m.wireReceiveLoop()
+}
+
+// renderApprovalView renders the full-screen approval prompt.
+func (m Model) renderApprovalView() string {
+	// Find the pending approval to display
+	var req *wire.ApprovalRequest
+	for _, r := range m.pendingApprovals {
+		req = r
+		break
+	}
+	if req == nil {
+		return ""
+	}
+
+	var sections []string
+
+	// Transcript area (scrollable, same as normal view)
+	outputView := m.output.View()
+	if outputView != "" {
+		sections = append(sections, outputView)
+	}
+
+	// Approval panel
+	panelWidth := min(m.width-4, 60)
+	if panelWidth < 30 {
+		panelWidth = 30
+	}
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF6B6B")).
+		Bold(true)
+
+	actionLabel := fmt.Sprintf("  %s requires approval", req.Action)
+	sections = append(sections, headerStyle.Render(actionLabel))
+
+	// Description
+	descStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#AAAAAA"))
+	sections = append(sections, descStyle.Render("  "+req.Description))
+	sections = append(sections, "")
+
+	// Options
+	options := []struct {
+		label string
+		icon  string
+	}{
+		{"Approve", "✓"},
+		{"Approve for session", "✓"},
+		{"Reject", "✗"},
+	}
+
+	for i, opt := range options {
+		if i == m.approvalSelection {
+			selected := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFFFFF")).
+				Background(lipgloss.Color("#4A90D9")).
+				Bold(true).
+				Padding(0, 1).
+				Width(panelWidth)
+			sections = append(sections, selected.Render(fmt.Sprintf(" > %s %s", opt.icon, opt.label)))
+		} else {
+			normal := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888888")).
+				Padding(0, 1).
+				Width(panelWidth)
+			sections = append(sections, normal.Render(fmt.Sprintf("   %s %s", opt.icon, opt.label)))
+		}
+	}
+
+	sections = append(sections, "")
+
+	// Help hint
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#555555"))
+	sections = append(sections, helpStyle.Render("  ↑/↓ select · Enter confirm"))
+
+	// Input area placeholder
+	sections = append(sections, m.input.View())
+
+	// Status bar
+	statusBar := m.renderStatusBar()
+	if statusBar != "" {
+		sections = append(sections, statusBar)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
 // resolveApproval completes an approval request.
