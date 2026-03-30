@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"fimi-cli/internal/wire"
 )
@@ -47,6 +48,7 @@ func (a *Approval) Request(ctx context.Context, action, description string) erro
 	}
 
 	req := &wire.ApprovalRequest{
+		ID:          fmt.Sprintf("%s:%s", action, description),
 		Action:      action,
 		Description: description,
 	}

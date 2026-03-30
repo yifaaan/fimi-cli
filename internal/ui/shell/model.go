@@ -387,11 +387,16 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// 全局快捷键
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d":
-		if m.mode == ModeIdle {
+		// 运行时或审批模式：拒绝所有 pending 审批，然后退出
+		if m.mode != ModeIdle {
+			for id := range m.pendingApprovals {
+				if req, ok := m.pendingApprovals[id]; ok {
+					req.Resolve(wire.ApprovalReject)
+				}
+			}
 			return m, tea.Quit
 		}
-		// 如果正在运行，发送中断信号
-		return m, nil
+		return m, tea.Quit
 
 	case "ctrl+l":
 		// 清屏
