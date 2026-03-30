@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fimi-cli/internal/changelog"
+	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
@@ -37,6 +38,8 @@ const (
 	ModeCheckpointSelect
 	// ModeCommandSelect 选择命令的交互模式
 	ModeCommandSelect
+	// ModeSetup Interactive setup wizard
+	ModeSetup
 )
 
 // Model 是 Bubble Tea 的根模型。
@@ -86,12 +89,35 @@ type Model struct {
 	// Command 建议相关状态
 	showCommandSuggestions bool
 	selectedSuggestion     int
+
+	// Setup wizard state (active when mode == ModeSetup)
+	setupState SetupState
 }
 
 // CommandInfo 表示一个可用的命令。
 type CommandInfo struct {
 	Name        string
 	Description string
+}
+
+// setupPhase represents phases in the setup wizard.
+type setupPhase int
+
+const (
+	setupPhaseWelcome setupPhase = iota
+	setupPhaseProviderSelect
+	setupPhaseAPIKeyInput
+	setupPhaseModelSelect
+	setupPhaseSave
+)
+
+// SetupState holds temporary state during setup wizard.
+type SetupState struct {
+	phase            setupPhase
+	selectedProvider string
+	selectedModel    string
+	apiKeyInput      string
+	config           config.Config
 }
 
 // availableCommands 返回所有可用的命令列表。
