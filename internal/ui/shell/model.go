@@ -41,6 +41,8 @@ const (
 	ModeCommandSelect
 	// ModeSetup Interactive setup wizard
 	ModeSetup
+	// ModeApprovalPrompt Waiting for approval decision
+	ModeApprovalPrompt
 )
 
 // Model 是 Bubble Tea 的根模型。
@@ -273,7 +275,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Request != nil {
 			m.pendingApprovals[msg.Request.ID] = msg.Request
 		}
-		return m, m.wireReceiveLoop()
+		m.mode = ModeApprovalPrompt
+		return m, nil
+
+	case approvalResolveMsg:
+		return m.resolveApproval(msg.ID, msg.Response)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1856,4 +1862,14 @@ func (m Model) renderStatusBar() string {
 	}
 
 	return leftContent + strings.Repeat(" ", gap) + rightContent
+}
+
+// resolveApproval completes an approval request.
+func (m Model) resolveApproval(id string, resp wire.ApprovalResponse) (Model, tea.Cmd) {
+	if req, ok := m.pendingApprovals[id]; ok {
+		req.Resolve(resp)
+		delete(m.pendingApprovals, id)
+	}
+	m.mode = ModeThinking
+	return m, m.wireReceiveLoop()
 }
