@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
@@ -1390,5 +1391,20 @@ func (m Model) renderStatusBar() string {
 		parts = append(parts, styles.ModelStyle.Render(m.deps.ModelName))
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	// 当前时间（右对齐）
+	right := styles.SystemStyle.Render(time.Now().Format("15:04:05"))
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+
+	// 如果没有左半内容，只显示时间
+	if len(parts) == 0 {
+		return right
+	}
+
+	// 用 padding 把时间推到右侧
+	gap := m.width - lipgloss.Width(content) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return content + strings.Repeat(" ", gap) + right
 }
