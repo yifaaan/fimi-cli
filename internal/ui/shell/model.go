@@ -263,6 +263,9 @@ func (m Model) View() string {
 	if m.mode == ModeCheckpointSelect {
 		return m.renderCheckpointSelectView()
 	}
+	if m.mode == ModeSetup {
+		return m.renderSetupView()
+	}
 
 	var sections []string
 
@@ -713,12 +716,118 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case cmd == "/resume":
 		return m.handleResumeList()
+	case cmd == "/setup":
+		return m.enterSetupMode()
 	default:
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeError,
 			Content: fmt.Sprintf("Unknown command: %s", cmd),
 		})
 		return m, nil
+	}
+}
+
+// enterSetupMode initializes the setup wizard.
+func (m Model) enterSetupMode() (tea.Model, tea.Cmd) {
+	cfg, _ := config.Load() // use defaults if no config exists
+	m.mode = ModeSetup
+	m.setupState = SetupState{
+		phase:  setupPhaseWelcome,
+		config: cfg,
+	}
+	m.showBanner = false
+	return m, nil
+}
+
+// renderSetupView renders the setup wizard UI.
+func (m Model) renderSetupView() string {
+	var lines []string
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorPrimary).
+		Bold(true)
+
+	promptStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorAccent)
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(styles.ColorMuted).
+		Italic(true)
+
+	switch m.setupState.phase {
+	case setupPhaseWelcome:
+		lines = append(lines, titleStyle.Render("Setup Wizard"))
+		lines = append(lines, "")
+		lines = append(lines, promptStyle.Render("Current configuration:"))
+		lines = append(lines, fmt.Sprintf("  Default model: %s", m.setupState.config.DefaultModel))
+		lines = append(lines, "")
+		if len(m.setupState.config.Models) > 0 {
+			lines = append(lines, "  Configured models:")
+			for alias, mc := range m.setupState.config.Models {
+				lines = append(lines, fmt.Sprintf("    - %s (provider: %s)", alias, mc.Provider))
+			}
+		} else {
+			lines = append(lines, "  No models configured.")
+		}
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("Press Enter to start setup, Esc/q to cancel"))
+
+	case setupPhaseProviderSelect:
+		lines = append(lines, titleStyle.Render("Select Provider"))
+		lines = append(lines, "")
+		lines = append(lines, "  [1] qwen")
+		lines = append(lines, "  [2] openai")
+		lines = append(lines, "  [3] anthropic")
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("Enter number to select, Esc/q to cancel"))
+
+	case setupPhaseAPIKeyInput:
+		lines = append(lines, titleStyle.Render("API Key"))
+		lines = append(lines, "")
+		lines = append(lines, promptStyle.Render(fmt.Sprintf("Enter API key for %s:", m.setupState.selectedProvider)))
+		// Show asterisks for typed input
+		masked := strings.Repeat("*", len(m.setupState.apiKeyInput))
+		lines = append(lines, fmt.Sprintf("  %s", masked))
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("Type key and press Enter, Esc/q to cancel"))
+
+	case setupPhaseModelSelect:
+		lines = append(lines, titleStyle.Render("Select Model"))
+		lines = append(lines, "")
+		lines = append(lines, promptStyle.Render(fmt.Sprintf("Choose model for %s:", m.setupState.selectedProvider)))
+		// Show suggested models for provider
+		suggested := suggestedModelsForProvider(m.setupState.selectedProvider)
+		for i, model := range suggested {
+			lines = append(lines, fmt.Sprintf("  [%d] %s", i+1, model))
+		}
+		lines = append(lines, "  Or type a custom model name")
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("Enter number or custom name, Esc/q to cancel"))
+
+	case setupPhaseSave:
+		lines = append(lines, titleStyle.Render("Save Configuration"))
+		lines = append(lines, "")
+		lines = append(lines, promptStyle.Render("Ready to save:"))
+		lines = append(lines, fmt.Sprintf("  Provider: %s", m.setupState.selectedProvider))
+		lines = append(lines, fmt.Sprintf("  Model: %s", m.setupState.selectedModel))
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("Press Enter to save, Esc/q to cancel"))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+// suggestedModelsForProvider returns common model names for a provider.
+func suggestedModelsForProvider(provider string) []string {
+	switch provider {
+	case "qwen":
+		return []string{"qwen-plus", "qwen-turbo", "qwen-max"}
+	case "openai":
+		return []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"}
+	case "anthropic":
+		return []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"}
+	default:
+		return nil
 	}
 }
 
