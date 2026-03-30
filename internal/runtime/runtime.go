@@ -141,6 +141,17 @@ type ToolExecutor interface {
 	Execute(ctx context.Context, call ToolCall) (ToolExecution, error)
 }
 
+// DMailer is the interface for the D-Mail state machine.
+// Defined here to avoid runtime importing the dmail package directly.
+type DMailer interface {
+	// Fetch retrieves and clears the pending D-Mail, if any.
+	// Returns (message, checkpointID, true) if a D-Mail was pending,
+	// or ("", 0, false) if none was pending.
+	Fetch() (message string, checkpointID int, ok bool)
+	// SetCheckpointCount updates the known number of checkpoints.
+	SetCheckpointCount(n int)
+}
+
 // StepResult 表示单个 runtime step 的结构化结果。
 // 先同时保留追加记录和平铺结果，方便上层渐进迁移。
 type StepResult struct {
@@ -233,6 +244,7 @@ type Runner struct {
 	engine       Engine
 	toolExecutor ToolExecutor
 	eventSink    runtimeevents.Sink
+	dmailer      DMailer
 	config       Config
 	runStepFn    func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error)
 	advanceRunFn func(ctx context.Context, store contextstore.Context, result Result, stepResult StepResult) (Result, bool, error)
@@ -283,6 +295,12 @@ func NewWithToolExecutorAndEvents(
 	}
 }
 
+// WithDMailer returns a Runner copy with the D-Mail state machine attached.
+func (r Runner) WithDMailer(dmailer DMailer) Runner {
+	r.dmailer = dmailer
+	return r
+}
+
 // WithEventSink 返回一个绑定新事件输出边界的 Runner 副本。
 // 这里用值语义返回副本，避免 UI/transport 在共享 Runner 上互相覆盖 sink。
 func (r Runner) WithEventSink(eventSink runtimeevents.Sink) Runner {
@@ -302,11 +320,17 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		return Result{Status: RunStatusFinished}, nil
 	}
 
-	if _, err := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
+	checkpointID, err := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 		PromptPreview: checkpointPromptPreview(prompt),
-	}); err != nil {
+	})
+	if err != nil {
 		return Result{Status: RunStatusFailed}, fmt.Errorf("append checkpoint record: %w", err)
+	}
+
+	// Update D-Mail checkpoint count after creating the initial checkpoint
+	if r.dmailer != nil {
+		r.dmailer.SetCheckpointCount(checkpointID + 1)
 	}
 
 	// 关键语义：用户 prompt 只在一次 run 的开始时追加到 history。
@@ -332,7 +356,6 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		advanceRun = r.advanceRun
 	}
 	var finished bool
-	var err error
 	for stepNo := 1; stepNo <= r.config.MaxStepsPerRun; stepNo++ {
 		// 在每个 step 前检查是否被取消
 		if ctx.Err() != nil {
@@ -341,6 +364,18 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		if err := r.emitEvent(ctx, runtimeevents.StepBegin{Number: stepNo}); err != nil {
 			result.Status = RunStatusFailed
 			return result, err
+		}
+
+		// Per-step checkpoint: only needed when D-Mail is enabled,
+		// because D-Mail needs mid-turn rollback targets.
+		if r.dmailer != nil {
+			stepCheckpointID, cpErr := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			})
+			if cpErr != nil {
+				return Result{Status: RunStatusFailed}, fmt.Errorf("append step checkpoint: %w", cpErr)
+			}
+			r.dmailer.SetCheckpointCount(stepCheckpointID + 1)
 		}
 
 		var stepResult StepResult
@@ -361,6 +396,36 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 			result.Status = RunStatusFailed
 			return result, err
 		}
+
+		// Check for pending D-Mail after tool execution
+		if !finished && r.dmailer != nil {
+			if message, checkpointID, ok := r.dmailer.Fetch(); ok {
+				// Revert context to the target checkpoint
+				if _, revertErr := store.RevertToCheckpoint(checkpointID); revertErr != nil {
+					return Result{Status: RunStatusFailed}, fmt.Errorf("revert to checkpoint %d: %w", checkpointID, revertErr)
+				}
+
+				// Create a new checkpoint at the revert point
+				newCheckpointID, cpErr := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				})
+				if cpErr != nil {
+					return Result{Status: RunStatusFailed}, fmt.Errorf("append post-rollback checkpoint: %w", cpErr)
+				}
+				r.dmailer.SetCheckpointCount(newCheckpointID + 1)
+
+				// Append the D-Mail as a user message
+				dmailContent := fmt.Sprintf("<system>D-Mail received: %s</system>\n\nRead the D-Mail above carefully. Act on the information it contains. Do NOT mention the D-Mail mechanism or time travel to the user.", message)
+				if appendErr := store.Append(contextstore.NewUserTextRecord(dmailContent)); appendErr != nil {
+					return Result{Status: RunStatusFailed}, fmt.Errorf("append dmail message: %w", appendErr)
+				}
+
+				// Reset step count and continue from the reverted state
+				stepNo = 0
+				continue
+			}
+		}
+
 		if finished {
 			result.Status = RunStatusFinished
 			return result, nil
@@ -370,6 +435,7 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 	result.Status = RunStatusMaxSteps
 	return result, nil
 }
+
 
 func checkpointPromptPreview(prompt string) string {
 	preview := strings.Join(strings.Fields(strings.TrimSpace(prompt)), " ")

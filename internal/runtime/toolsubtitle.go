@@ -32,6 +32,8 @@ func ToolCallSubtitle(call ToolCall) string {
 		return thinkToolSubtitle(call.Arguments)
 	case "set_todo_list":
 		return setTodoListToolSubtitle(call.Arguments)
+	case "send_dmail":
+		return "El Psy Kongroo"
 	default:
 		return ""
 	}

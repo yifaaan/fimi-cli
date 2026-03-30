@@ -33,8 +33,18 @@ const (
 	ToolGrep        = "grep"
 	ToolWriteFile   = "write_file"
 	ToolReplaceFile = "replace_file"
-	ToolPatchFile   = "patch_file"
+	ToolPatchFile = "patch_file"
+	ToolSendDMail = "send_dmail"
 )
+
+const sendDMailDescription = `Send a D-Mail (message to a past checkpoint).
+
+Use this tool to revert the conversation context to an earlier checkpoint and inject a message. This is useful when:
+- The context has grown too large and you want to prune it
+- You went down a wrong path and want to start over from a known good state
+- Web search or file read results are bloating the context
+
+Checkpoints are created automatically at the start of each user turn and before each step. Use checkpoint IDs shown in conversation markers.`
 
 const setTodoListDescription = `Update the whole todo list.
 
@@ -139,6 +149,11 @@ func BuiltinRegistry() Registry {
 			Name:        ToolPatchFile,
 			Kind:        KindFile,
 			Description: "Apply a unified diff patch to an existing workspace file.",
+		},
+		Definition{
+			Name:        ToolSendDMail,
+			Kind:        KindUtility,
+			Description: sendDMailDescription,
 		},
 	)
 	if err != nil {

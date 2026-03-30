@@ -1145,6 +1145,8 @@ func TestRunnerRunCreatesCheckpointBeforeUserPromptInRawHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rawHistoryRoles() error = %v", err)
 	}
+	// Run creates: initial checkpoint, user prompt, assistant reply
+	// (per-step checkpoints only created when D-Mail is enabled)
 	want := []string{contextstore.RoleCheckpoint, contextstore.RoleUser, contextstore.RoleAssistant}
 	if !reflect.DeepEqual(roles, want) {
 		t.Fatalf("raw history roles = %#v, want %#v", roles, want)
@@ -1168,6 +1170,10 @@ func TestRunnerRunCreatesSequentialPromptBoundaryCheckpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCheckpoints() error = %v", err)
 	}
+	// Each Run creates 1 checkpoint (the initial prompt boundary).
+	// Per-step checkpoints are only created when D-Mail is enabled.
+	// First Run: checkpoint 0 (prompt="first prompt")
+	// Second Run: checkpoint 1 (prompt="second prompt")
 	want := []contextstore.CheckpointRecord{
 		{Role: contextstore.RoleCheckpoint, ID: 0, PromptPreview: "first prompt"},
 		{Role: contextstore.RoleCheckpoint, ID: 1, PromptPreview: "second prompt"},
@@ -1353,4 +1359,153 @@ type recordingEventSink struct {
 func (s *recordingEventSink) Emit(ctx context.Context, event runtimeevents.Event) error {
 	s.events = append(s.events, event)
 	return nil
+}
+
+// mockDMailer is a test double for the DMailer interface.
+// It returns its single pending entry on the first Fetch call.
+type mockDMailer struct {
+	pending *dmailEntry
+	fetched bool
+}
+
+type dmailEntry struct {
+	message      string
+	checkpointID int
+}
+
+func (m *mockDMailer) SetCheckpointCount(n int) {}
+
+func (m *mockDMailer) Fetch() (string, int, bool) {
+	if m.pending != nil && !m.fetched {
+		m.fetched = true
+		return m.pending.message, m.pending.checkpointID, true
+	}
+	return "", 0, false
+}
+
+func TestRunnerDMailRollbackRevertsContextAndContinues(t *testing.T) {
+	dir := t.TempDir()
+	store := contextstore.New(filepath.Join(dir, "history.jsonl"))
+
+	// Engine that first returns a tool call (send_dmail), then a finished reply.
+	callCount := 0
+	engine := funcReplyFunc(func(input ReplyInput) (AssistantReply, error) {
+		callCount++
+		if callCount == 1 {
+			return AssistantReply{
+				Text: "sending dmail",
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Name: "send_dmail", Arguments: `{"message":"prune search results","checkpoint_id":0}`},
+				},
+			}, nil
+		}
+		return AssistantReply{Text: "final reply after rollback"}, nil
+	})
+
+	// Tool executor that acknowledges the send_dmail call.
+	executor := funcToolExecutorFunc(func(ctx context.Context, call ToolCall) (ToolExecution, error) {
+		return ToolExecution{Call: call, Output: "D-Mail sent."}, nil
+	})
+
+	// Mock D-Mail that returns a pending entry on the first Fetch
+	dmailer := &mockDMailer{
+		pending: &dmailEntry{message: "prune search results", checkpointID: 0},
+	}
+
+	runner := NewWithToolExecutor(engine, executor, Config{})
+	runner = runner.WithDMailer(dmailer)
+
+	result, err := runner.Run(context.Background(), store, Input{Prompt: "search for X"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Status != RunStatusFinished {
+		t.Fatalf("Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+
+	// The final reply should be the one after rollback
+	lastStep := result.Steps[len(result.Steps)-1]
+	if lastStep.AssistantText != "final reply after rollback" {
+		t.Fatalf("last step text = %q, want %q", lastStep.AssistantText, "final reply after rollback")
+	}
+
+	// D-Mail should have been consumed
+	if !dmailer.fetched {
+		t.Fatal("D-Mail was never fetched")
+	}
+}
+
+func TestRunnerDMailRollbackResetsStepCount(t *testing.T) {
+	dir := t.TempDir()
+	store := contextstore.New(filepath.Join(dir, "history.jsonl"))
+
+	// Engine: step 1 = tool call, step 2 (after rollback) = final reply
+	callCount := 0
+	engine := funcReplyFunc(func(input ReplyInput) (AssistantReply, error) {
+		callCount++
+		if callCount == 1 {
+			return AssistantReply{
+				ToolCalls: []ToolCall{
+					{ID: "c1", Name: "send_dmail", Arguments: `{"message":"rollback","checkpoint_id":0}`},
+				},
+			}, nil
+		}
+		return AssistantReply{Text: "done"}, nil
+	})
+
+	executor := funcToolExecutorFunc(func(ctx context.Context, call ToolCall) (ToolExecution, error) {
+		return ToolExecution{Call: call, Output: "ok"}, nil
+	})
+
+	dmailer := &mockDMailer{
+		pending: &dmailEntry{message: "rollback", checkpointID: 0},
+	}
+
+	runner := NewWithToolExecutor(engine, executor, Config{MaxStepsPerRun: 3})
+	runner = runner.WithDMailer(dmailer)
+
+	result, err := runner.Run(context.Background(), store, Input{Prompt: "test"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+}
+
+func TestRunnerWithoutDMailerIgnoresDMailCheck(t *testing.T) {
+	dir := t.TempDir()
+	store := contextstore.New(filepath.Join(dir, "history.jsonl"))
+
+	engine := staticEngine{reply: AssistantReply{Text: "normal reply"}}
+	runner := New(engine, Config{})
+
+	result, err := runner.Run(context.Background(), store, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+}
+
+func funcReplyFunc(fn func(ReplyInput) (AssistantReply, error)) Engine {
+	return replyFunc(fn)
+}
+
+type replyFunc func(ReplyInput) (AssistantReply, error)
+
+func (f replyFunc) Reply(ctx context.Context, input ReplyInput) (AssistantReply, error) {
+	return f(input)
+}
+
+func funcToolExecutorFunc(fn func(context.Context, ToolCall) (ToolExecution, error)) ToolExecutor {
+	return toolExecutorFunc(fn)
+}
+
+type toolExecutorFunc func(context.Context, ToolCall) (ToolExecution, error)
+
+func (f toolExecutorFunc) Execute(ctx context.Context, call ToolCall) (ToolExecution, error) {
+	return f(ctx, call)
 }

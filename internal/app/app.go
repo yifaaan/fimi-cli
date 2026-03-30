@@ -13,6 +13,7 @@ import (
 	"fimi-cli/internal/agentspec"
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
+	"fimi-cli/internal/dmail"
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/mcp"
 	"fimi-cli/internal/runtime"
@@ -398,18 +399,28 @@ func (d dependencies) buildRunnerForAgent(cfg config.Config, agent loadedAgent, 
 		return nil, err
 	}
 
+	bgMgr := tools.NewBackgroundManager()
+
 	toolExecutor := tools.NewBuiltinExecutor(
 		allTools,
 		workDir,
-		nil, // TODO: wire BackgroundManager here
+		bgMgr,
 		tools.WithExtraHandlers(toolHandlers),
 	)
 
 	runner := runtime.NewWithToolExecutor(engine, toolExecutor, buildRuntimeConfig(cfg, agent))
 
+	// Attach D-Mail state machine if send_dmail is in the toolset
+	if containsTool(agent.Tools, tools.ToolSendDMail) {
+		denwaRenji := dmail.NewDenwaRenji()
+		toolHandlers[tools.ToolSendDMail] = tools.NewSendDMailHandler(denwaRenji)
+		runner = runner.WithDMailer(denwaRenji)
+	}
+
 	return &mcpAwareRunner{
 		Runner:     runner,
 		mcpManager: mcpManager,
+		bgMgr:      bgMgr,
 	}, nil
 }
 
@@ -466,14 +477,18 @@ func (d dependencies) buildRunnerToolHandlers(cfg config.Config, agent loadedAge
 	return toolHandlers, nil
 }
 
-// mcpAwareRunner wraps a runtime.Runner to close the MCP manager after the run.
+// mcpAwareRunner wraps a runtime.Runner to close resources after the run.
 type mcpAwareRunner struct {
 	runtime.Runner
 	mcpManager *mcp.Manager
+	bgMgr      *tools.BackgroundManager
 }
 
 func (r *mcpAwareRunner) Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
 	defer func() {
+		if r.bgMgr != nil {
+			r.bgMgr.Close()
+		}
 		if r.mcpManager != nil {
 			_ = r.mcpManager.Close()
 		}

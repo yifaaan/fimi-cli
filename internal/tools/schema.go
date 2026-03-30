@@ -130,6 +130,11 @@ func ToolParametersSchema(name string) map[string]any {
 		return objectSchema(requiredProperties(
 			schemaProperty("url", "string", "HTTP or HTTPS URL to fetch."),
 		))
+	case ToolSendDMail:
+		return objectSchema(requiredProperties(
+			schemaProperty("message", "string", "The message to inject at the target checkpoint."),
+			schemaProperty("checkpoint_id", "integer", "The checkpoint ID to revert to (0-based)."),
+		))
 	default:
 		return map[string]any{
 			"type":                 "object",
