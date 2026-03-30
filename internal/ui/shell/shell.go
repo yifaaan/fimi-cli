@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"fimi-cli/internal/changelog"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 
@@ -23,6 +24,7 @@ func helpText() string {
 		"  /init           Generate AGENTS.md for the project",
 		"  /rewind         List available rewind checkpoints",
 		"  /version        Show version information",
+		"  /release-notes  Show release notes",
 		"  /exit, /quit    Exit the shell",
 		"  /resume         List available sessions",
 		"  /resume <id>    Switch to a specific session",
@@ -50,6 +52,27 @@ func formatTime(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
+}
+
+// releaseNotesText formats parsed release entries for display.
+func releaseNotesText(entries []changelog.ReleaseEntry) string {
+	if len(entries) == 0 {
+		return "No release notes available."
+	}
+
+	var lines []string
+	lines = append(lines, "Release Notes:")
+	lines = append(lines, "")
+
+	for _, entry := range entries {
+		lines = append(lines, fmt.Sprintf("## [%s] - %s", entry.Version, entry.Date))
+		for _, bullet := range entry.Bullets {
+			lines = append(lines, "  - "+bullet)
+		}
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // versionText returns the version display string.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"fimi-cli/internal/changelog"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
@@ -101,6 +102,7 @@ func availableCommands() []CommandInfo {
 		{Name: "/compact", Description: "Compact conversation context"},
 		{Name: "/rewind", Description: "List available rewind checkpoints"},
 		{Name: "/version", Description: "Show version information"},
+		{Name: "/release-notes", Description: "Show release notes"},
 		{Name: "/exit", Description: "Exit the shell"},
 		{Name: "/quit", Description: "Exit the shell"},
 		{Name: "/init", Description: "Generate AGENTS.md for the project"},
@@ -674,6 +676,13 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeSystem,
 			Content: versionText(m.deps.StartupInfo.AppVersion),
+		})
+		return m, nil
+	case cmd == "/release-notes":
+		entries := changelog.ParseReleases(changelog.Content, 5)
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: releaseNotesText(entries),
 		})
 		return m, nil
 	case cmd == "/resume":
