@@ -5,7 +5,7 @@
 This file tracks the migration gap between the Python reference snapshot in `temp/`
 and the current Go rewrite.
 
-Updated: 2026-03-27 (comprehensive update after full codebase exploration)
+Updated: 2026-03-30 (comprehensive update after parallel agent exploration)
 
 ---
 
@@ -17,15 +17,15 @@ Updated: 2026-03-27 (comprehensive update after full codebase exploration)
 | --- | --- |
 | `soul/kimisoul.py` | Main runtime loop: `run() -> _turn() -> _agent_loop() -> _step()` with D-Mail rollback via `BackToTheFuture` exception |
 | `soul/context.py` | JSONL history persistence, checkpoint records (incremental ID), revert-to-checkpoint with atomic file rotation |
-| `soul/event.py` | Event queue: `TurnBegin`, `SteerInput`, `TurnEnd`, `StepBegin`, `StepInterrupted`, `CompactionBegin/End`, `MCPLoadingBegin/End`, `StatusUpdate`, `Notification`, `ContentPart`, `ToolCall`, `ToolCallPart`, `ToolResult`, `ApprovalRequest`, `SubagentEvent`, `QuestionRequest` |
+| `soul/event.py` | Event queue: `StepBegin`, `SteerInput`, `TurnEnd`, `StepBegin`, `StepInterrupted`, `CompactionBegin/End`, `MCPLoadingBegin/End`, `StatusUpdate`, `Notification`, `ContentPart`, `ToolCall`, `ToolCallPart`, `ToolResult`, `ApprovalRequest`, `SubagentEvent`, `QuestionRequest` |
 | `soul/denwarenji.py` | D-Mail state machine (`DenwaRenji`): `_pending_dmail`, `_n_checkpoints`, `send_dmail()` / `fetch_pending_dmail()` |
-| `soul/message.py` | Message utilities, tool result conversion |
+| `soul/message.py` | Message utilities, tool result conversion (`tool_result_to_messages`, `tool_ok_to_message_content`, `system()` helper for `<system>` tags) |
 | `wire/types.py` | All wire event types, `ContextVar`-based `wire_send()` |
 | `acp/session.py` | ACP session with event-to-ACP projection layer |
 | `acp/server.py` | Multi-session ACP server with JSON-RPC: `initialize`, `new_session`, `load_session`, `resume_session`, `list_sessions`, `prompt`, `cancel`, `set_session_model`, `authenticate` |
 | `acp/convert.py` | `acp_blocks_to_content_parts`: `TextContentBlock` -> `TextPart`, `ImageContentBlock` -> `ImageURLPart`, etc. |
 | `acp/tools.py` | Terminal tool with cancellation via `ACPProcess.kill()` |
-| `ui/__init__.py` | Run coordinator, cancellation boundary |
+| `ui/__init__.py` | Run coordinator, cancellation boundary (`run_soul()`) |
 
 #### Runtime Loop Detail (`soul/kimisoul.py`)
 
@@ -60,25 +60,24 @@ Key runtime patterns NOT in Go rewrite:
 - **SubagentEvent wrapping**: nested subagent events attributed to parent
 - **Notification delivery**: before each step, reconciles with background tasks
 
-### Python Tools (16 total)
+### Python Tools (14 tools, excluding test tools)
 
 | Tool | File | Description |
 | --- | --- | --- |
-| `Bash` | `tools/bash/__init__.py` | Shell commands with foreground max 300s, background max 24h, asyncio-level timeout, approval gate, stdout/stderr streaming |
-| `ReadFile` | `tools/file/read.py` | Read file with offset/limit/line truncation |
-| `WriteFile` | `tools/file/write.py` | Write/append to files within work directory |
-| `Glob` | `tools/file/glob.py` | Glob matching (max 1000 results) |
-| `Grep` | `tools/file/grep.py` | ripgrep wrapper with context/multiline/type filters |
-| `StrReplaceFile` | `tools/file/replace.py` | `replace_all` support, batch edits, diff display blocks, plan-mode approval gate |
-| `PatchFile` | `tools/file/patch.py` | Unified diff patches via `patch_ng` |
-| `Think` | `tools/think/__init__.py` | Private reasoning note |
-| `SetTodoList` | `tools/todo/__init__.py` | Todo list management |
-| `Task` | `tools/task/__init__.py` | Foreground subagent via `ForegroundSubagentRunner` + `run_with_summary_continuation` (if < 200 chars, re-run with continuation prompt), background tasks via `BackgroundTasks` |
+| `Bash` | `tools/bash/__init__.py` | Shell commands with 60s default/300s max timeout, line-by-line output streaming, `ToolResultBuilder` (50K chars, 2K/line), no approval gate in tool itself |
+| `ReadFile` | `tools/file/read.py` | Read file with offset/limit, 1000-line cap, 100KB cap, 2K-char-per-line truncation, `cat -n` format |
+| `WriteFile` | `tools/file/write.py` | Write/append to files within work directory (path sandboxing), parent must exist |
+| `Glob` | `tools/file/glob.py` | Glob matching (max 1000 results), rejects `**` prefix, path sandboxing |
+| `Grep` | `tools/file/grep.py` | ripgrep wrapper via `ripgrepy` with context/multiline/type filters, no path sandboxing |
+| `StrReplaceFile` | `tools/file/replace.py` | `replace_all` support, batch edits (list of Edit), path sandboxing |
+| `PatchFile` | `tools/file/patch.py` | Unified diff patches via `patch_ng`, path sandboxing |
+| `Think` | `tools/think/__init__.py` | Private reasoning note (no-op) |
+| `SetTodoList` | `tools/todo/__init__.py` | Todo list management (replace entire list), renders markdown bullets |
+| `Task` | `tools/task/__init__.py` | Foreground subagent with continuation prompt (< 200 chars -> re-run with continuation), fresh Context per subagent, `_MockEventQueue` for invisible execution |
 | `SendDMail` | `tools/dmail/__init__.py` | Time-travel message: calls `denwa_renji.send_dmail()`, returns inverted success signal |
-| `SearchWeb` | `tools/web/search.py` | Web search via Moonshot API |
-| `FetchURL` | `tools/web/fetch.py` | URL fetch with trafilatura text extraction |
-| `MCPTool` | `tools/mcp.py` + `acp/mcp.py` | MCP tool adapter: `TextContent`->`TextPart`, `ImageContent`->`ImageURLPart`, `AudioContent`->`AudioURLPart`, server config conversion to `fastmcp.MCPConfig` |
-| `Plus`/`Compare`/`Panic` | `tools/test.py` | Test utilities (out of scope) |
+| `SearchWeb` | `tools/web/search.py` | Web search via Moonshot API, 5-20 results, optional content crawling |
+| `FetchURL` | `tools/web/fetch.py` | URL fetch with trafilatura text extraction, `ToolResultBuilder` |
+| `MCPTool` | `tools/mcp.py` | MCP tool adapter via `fastmcp`: `TextContent`->`TextPart`, `ImageContent`->`ImageURLPart`, `AudioContent`->`AudioURLPart` |
 
 ### Python UI
 
@@ -86,10 +85,10 @@ Key runtime patterns NOT in Go rewrite:
 | --- | --- | --- |
 | Print UI | `ui/print/__init__.py` | `text` mode, `stream-json` mode, stdin input |
 | Shell UI | `ui/shell/__init__.py` | Interactive REPL (prompt_toolkit + Rich), dual-mode (agent/shell), `resume_prompt` asyncio.Event for steer-while-streaming, wire hub for ApprovalRequest |
-| Live View | `ui/shell/visualize.py` | Rich.Live with 10fps refresh, `_ToolCallBlock` with streaming args, key-argument subtitle extraction, subagent nesting, `_ContentBlock` markdown streaming, `_NotificationBlock` |
-| Meta Commands | `ui/shell/slash.py` | Full registry: `/help`, `/version`, `/model`, `/editor`, `/changelog` (release-notes), `/clear`, `/new`, `/sessions`, `/task`, `/web`, `/mcp`, `/login`, `/logout`, `/usage`, `/debug`, `/export`, `/import`, `/reload` |
-| Prompt | `ui/shell/prompt.py` | `LocalFileMentionCompleter` (fuzzy, 2-tier lazy index, 2s TTL cache, massive ignore list), `_render_bottom_toolbar` (git branch badge, cwd, rotating keyboard tips), `RunningPromptDelegate`, clipboard paste, external editor (Ctrl-O) |
-| ACP Server | `acp/server.py` | Multi-session JSON-RPC over stdio, session lifecycle, cancellation, model switching, auth |
+| Live View | `ui/shell/liveview.py` | Rich.Live with 4fps refresh, `_ToolCallDisplay` with streaming args, key-argument subtitle extraction, status text |
+| Meta Commands | `ui/shell/metacmd.py` | Registry: `/help`, `/exit`, `/release-notes`, `/init`, `/clear`, `/compact` |
+| Prompt | `ui/shell/prompt.py` | `FileMentionCompleter` (fuzzy, 2-tier lazy index, 2s TTL cache, 11-category ignore list), `_render_bottom_toolbar` (time + context usage), `_HistoryEntry` JSONL persistence, key binding for Enter-accepts-completion |
+| ACP Server | `ui/acp/__init__.py` | Multi-session JSON-RPC over stdio, `_ToolCallState` with streaming lexer, event projection (`_stream_events`) |
 
 ### Python Agent Spec
 
@@ -108,44 +107,49 @@ Key runtime patterns NOT in Go rewrite:
 
 ## Current Go Snapshot
 
-Updated: 2026-03-27
+Updated: 2026-03-30
 
 ### Implemented Core
 
 - Entry chain: `cmd/fimi -> internal/app`
-- Config loading with models/providers/web settings
-- Session create / continue / resume flow
-- JSONL history persistence
-- Checkpoint create / revert in `internal/contextstore`
-- Multi-step runtime loop with event sink
-- Tool-call execution loop
+- Config loading with models/providers/web/MCP settings
+- Session create / continue / resume / list / delete flow
+- JSONL history persistence with sliding window reads
+- Checkpoint create / revert / list / backup rotation in `internal/contextstore`
+- Multi-step runtime loop with event sink and streaming
+- Tool-call execution loop with retry logic (retryable errors: 429/5xx)
 - Token usage persistence
 - LLM engine boundary with streaming support
-- OpenAI-compatible and Qwen-compatible providers
+- OpenAI-compatible (dual wire: Chat Completions + Responses) and Qwen-compatible providers
+- MCP integration via go-sdk (multi-server, tool discovery, tool calling)
+- ACP server (JSON-RPC over stdio, initialize/authenticate/session/prompt/cancel)
+- Tool subtitle extraction (`internal/runtime/toolsubtitle.go`)
+- Output shaping (50K chars total, 2K per line)
 
 ### Go Tools (12 registered)
 
 | Tool | Kind | Handler | Description |
 | --- | --- | --- | --- |
-| `agent` | agent | skeleton only | Subagent delegation (no execution, no continuation) |
+| `agent` | agent | yes | Subagent delegation with continuation prompt (auto-re-prompts if response < 200 chars), max-steps detection |
 | `think` | utility | yes | Private reasoning note |
 | `set_todo_list` | utility | yes | Todo list management |
-| `bash` | command | partial | Shell commands with 30s timeout (no streaming, no background) |
-| `search_web` | utility | yes | DuckDuckGo search |
-| `fetch_url` | utility | yes | HTTP fetch with readable-content extraction |
+| `bash` | command | yes | Shell commands with 120s default/300s max timeout, background tasks via `BackgroundManager`, streaming output |
+| `search_web` | utility | yes | DuckDuckGo HTML scraper |
+| `fetch_url` | utility | yes | HTTP fetch with heuristic content extraction + scoring |
 | `read_file` | file | yes | Read file with offset/limit |
-| `glob` | file | yes | Glob matching (supports `**`) |
+| `glob` | file | yes | Glob matching (supports `**`), path sandboxing |
 | `grep` | file | yes | Regex grep with line numbers |
-| `write_file` | file | yes | Write file with parent dir creation |
-| `replace_file` | file | partial | Single replace only (rejects multi-occurrence) |
-| `patch_file` | file | yes | Unified diff patch application |
+| `write_file` | file | yes | Write file with parent dir creation, path sandboxing |
+| `replace_file` | file | yes | String replace with `replace_all` support, batch edits |
+| `patch_file` | file | yes | Unified diff patch application, path sandboxing |
 
 ### Go UI
 
 | Component | Location | Features |
 | --- | --- | --- |
 | Print UI | `internal/ui/printui` | Text mode, stream-json mode (via `--output`) |
-| Shell UI | `internal/ui/shell` | Bubble Tea interactive UI, session resume, checkpoint/rewind, `/compact`, `/help`, `/clear`, `/exit`, `/resume` |
+| Shell UI | `internal/ui/shell` | Bubble Tea interactive UI, session resume, checkpoint/rewind, `/compact`, `/help`, `/clear`, `/exit`, `/resume`, `/rewind` |
+| ACP Server | `internal/acp` | Multi-session JSON-RPC over stdio, event projection, cancel propagation |
 
 #### Go Shell Features
 
@@ -154,26 +158,28 @@ Updated: 2026-03-27
 - Inline slash command suggestions
 - Scrollable transcript
 - Tool result folding with Ctrl+O toggle
-- Context usage display
-- Markdown rendering (defined but not fully wired)
-- `ToolCardView()` defined but not wired into main View
+- Context usage display in status bar
+- Markdown rendering via glamour
+- Tool subtitle extraction via `toolsubtitle.go`
+- `/rewind` command for checkpoint selection and revert
+- `/resume` command for session switching
+- `/compact` command for context compaction with backup
 
 #### Go Shell -- Missing Features
 
-- **Tool subtitle extraction** -- no key-argument formatter per tool name
 - **Live rendering** -- no Rich.Live equivalent, only static transcript rebuild on View()
-- **Tool result cards** -- `ToolCardView()` is dead code, `renderLiveStatus()` only shows one line
+- **Tool result cards** -- `ToolCardView()` is dead code, not wired into main View
+- **`@` file mention completer** -- no fuzzy file completion system
+- **Bottom toolbar** -- no time display, only context usage in status bar
 - **Approval panel** -- not implemented
-- **`@` file mention completer** -- no completion system
-- **Bottom toolbar** -- no git branch badge, cwd display, or keyboard tips
-- **Mode toggle** (agent vs shell) -- no dual-mode concept
-- **Prompt history from disk** -- `historyStore` exists but no UI integration
-- **`/changelog` / `/release-notes`** -- not implemented
+- **`/release-notes` / `/changelog`** -- not implemented
+- **`/init` (AGENTS.md generation)** -- not implemented
 - **`/model`, `/login`, `/logout`, `/mcp`, `/usage`, `/task`, `/web`** -- not implemented
+- **Mode toggle** (agent vs shell) -- no dual-mode concept
+- **Prompt history from disk** -- readline history exists but no fuzzy search UI
 - **External editor (Ctrl-O)** -- not implemented
 - **Clipboard paste** -- not implemented
 - **Keyboard handler during streaming** -- ignores input while `mode != ModeIdle`
-- **`/init` command** -- does not exist in Python either (onboarding is in startup path)
 
 ---
 
@@ -190,73 +196,80 @@ Updated: 2026-03-27
 | Session resume UI | yes | yes | `done` |
 | Context history (JSONL) | yes | yes | `done` |
 | Checkpoint storage | yes | yes | `done` |
-| **D-Mail / rollback** | BackToTheFuture + DenwaRenji | no | `missing` |
+| **D-Mail / rollback** | BackToTheFuture + DenwaRenji | yes (`internal/dmail` + runtime integration) | `done` |
 | Runtime: steer input (mid-turn injection) | `_steer_queue` | no | `missing` |
 | Runtime: dynamic injection providers | plan/yolo reminders | no | `missing` |
-| Runtime: asyncio.shield for context writes | yes | no | `missing` |
+| Runtime: shield for context writes | asyncio.shield | no | `missing` |
 | Runtime: connection recovery (provider-level) | `on_retryable_error()` callback | no | `missing` |
 | Runtime: RALPH loop (decision nodes) | FlowRunner | no | `missing` |
 | Runtime: notification delivery per-step | yes | no | `missing` |
 | Multi-step runtime | yes | yes | `done` |
-| Step retry | tenacity + jitter + connection recovery | simple retry loop | `partial` |
+| Step retry | tenacity + jitter + connection recovery | retryable error classification | `partial` |
 | Streaming text/tool deltas | yes | yes | `done` |
-| Runtime events | 15 types | 7 types | `partial` |
+| Runtime events | 15+ types | 7 types | `partial` |
+| Tool subtitle extraction | yes (per-tool logic) | yes (`toolsubtitle.go`) | `done` |
+| Output shaping | 50K chars, 2K/line | 50K chars, 2K/line | `done` |
 | Print UI: text | yes | yes | `done` |
 | Print UI: stream-json | yes | yes (via --output stream-json) | `done` |
 | Shell UI: basic REPL | yes | yes | `done` |
-| Shell UI: live rendering (Rich.Live) | Rich.Live 10fps | Bubble Tea View() rebuild | `partial` |
+| Shell UI: live rendering | Rich.Live 4fps | Bubble Tea View() rebuild | `partial` |
 | Shell: `/compact` | yes | yes | `done` |
-| Shell: `/changelog` (release-notes) | yes | no | `missing` |
-| Shell: `@` file completer | yes | no | `missing` |
-| Shell: bottom toolbar | yes | no | `missing` |
-| Shell: tool subtitle extraction | yes | no | `missing` |
+| Shell: `/rewind` | `/clear` (revert to checkpoint 0) | `/rewind` (select any checkpoint) | `done+extra` |
+| Shell: `/release-notes` | yes | no | `missing` |
+| Shell: `/init` (AGENTS.md) | yes | no | `missing` |
+| Shell: `@` file completer | yes (fuzzy, 2-tier, cached) | no | `missing` |
+| Shell: bottom toolbar | yes (time + context) | partial (status bar only) | `partial` |
 | Shell: tool result cards | yes | defined but dead | `partial` |
 | Shell: approval panel | yes | no | `missing` |
 | Shell: mode toggle (agent/shell) | yes | no | `missing` |
-| Shell: prompt history | yes | store exists, no UI | `partial` |
+| Shell: prompt history | JSONL + UI integration | readline file, no fuzzy search | `partial` |
 | ACP server mode | yes (multi-session) | yes (multi-session) | `done` |
+| ACP: event projection | yes | yes | `done` |
+| ACP: content block conversion | Text/Image/Audio/Resource | text only | `partial` |
+| ACP: tool result conversion | full schema | truncated at 10K chars | `partial` |
+| ACP: authentication | stubbed | stubbed | `same` |
 | Agent spec | 7 fields | 8 fields (has `model`) | `done+extra` |
 | Subagent model override | passes parent | passes parent | `same` |
 | **Subagent: continuation prompt** | yes (< 200 chars re-run) | yes | `done` |
 | **Subagent: background tasks** | yes | no | `missing` |
 | **Subagent: full runner** | ForegroundSubagentRunner | yes | `done` |
 | **Subagent: resume logic** | SubagentStore | no | `missing` |
-| Local file tools | 6 tools | 5 tools | `partial` |
-| `replace_file` replace-all | yes | yes | `done` |
-| `bash` background tasks | yes | yes | `done` |
+| Local file tools | 6 tools | 6 tools (same) | `done` |
+| `replace_file` replace-all + batch | yes | yes | `done` |
+| `bash` background tasks | yes | `BackgroundManager` (not wired in DI) | `partial` |
 | `bash` approval gate | yes | no | `missing` |
-| `bash` streaming output | yes | no | `missing` |
-| `bash` timeout default | 60s, max 300s | 120s default, max 300s | `done` |
+| `bash` streaming output | yes (line-by-line) | yes | `done` |
+| `bash` timeout default | 60s, max 300s | 120s default, max 300s | `done` (different default) |
 | `search_web` | Moonshot API | DuckDuckGo | `diverged` |
-| `fetch_url` | trafilatura | heuristic extraction + metadata | `done-diverged` |
+| `fetch_url` | trafilatura | heuristic extraction + scoring | `diverged` |
 | **MCP tool bridge** | fastmcp adapter | go-sdk adapter | `done` |
-| **SendDMail tool** | yes | no | `missing` |
+| **SendDMail tool** | yes | yes | `done` |
 
 ### Tool Parity Detail
 
 | Python Tool | Go Equivalent | Status |
 | --- | --- | --- |
-| `Bash` | `bash` | `partial` (no streaming, no approval gate) |
+| `Bash` | `bash` | `partial` (no approval gate; BackgroundManager not wired in DI) |
 | `ReadFile` | `read_file` | `done` |
 | `WriteFile` | `write_file` | `done` |
 | `Glob` | `glob` | `done` |
 | `Grep` | `grep` | `done` |
-| `StrReplaceFile` | `replace_file` | `done` (Go: supports `replace_all`; Python: `replace_all` + batch edits) |
+| `StrReplaceFile` | `replace_file` | `done` (both support `replace_all` + batch edits) |
 | `PatchFile` | `patch_file` | `done` |
 | `Think` | `think` | `done` |
 | `SetTodoList` | `set_todo_list` | `done` |
-| `Task` | `agent` | `done` (Go has continuation prompt, max-steps detection; Python has background tasks too) |
-| `SendDMail` | - | `missing` |
+| `Task` | `agent` | `done` (both have continuation prompt; Python has background tasks too) |
+| `SendDMail` | `send_dmail` | `done` |
 | `SearchWeb` | `search_web` | `diverged` (Moonshot vs DuckDuckGo) |
-| `FetchURL` | `fetch_url` | `done-diverged` (trafilatura vs heuristic) |
-| `MCPTool` | - | `missing` |
+| `FetchURL` | `fetch_url` | `diverged` (trafilatura vs heuristic) |
+| `MCPTool` | MCP handler in `tools/mcp.go` | `done` |
 | Test tools | - | `out of scope` |
 
 ---
 
 ## Remaining Work
 
-### Phase 8: Web Tools (Mostly Done)
+### Phase 8: Web Tools (Done)
 
 - [x] `search_web` with DuckDuckGo backend
 - [x] Add `fetch_url` tool
@@ -264,14 +277,14 @@ Updated: 2026-03-27
 - [x] Add minimal `fetch_url` metadata (`Title`, `URL`)
 - [ ] Decide later whether to keep heuristic extraction or swap to trafilatura
 
-### Phase 9: MCP Integration
+### Phase 9: MCP Integration (Done)
 
 - [x] Add MCP config surface in `internal/config`
 - [x] Add MCP client lifecycle management (stdio transport)
 - [x] Wrap MCP tools into Go tool definitions/handlers
 - [ ] Surface MCP failures cleanly to UI
 
-### Phase 10: ACP Server Mode
+### Phase 10: ACP Server Mode (Mostly Done)
 
 - [x] ACP server entry point (`fimi acp` subcommand)
 - [x] Multi-session ACP server with JSON-RPC over stdio
@@ -280,47 +293,45 @@ Updated: 2026-03-27
 - [x] ACP `prompt` RPC delegation (async with streaming)
 - [x] ACP `cancel` RPC with turn state cancellation
 - [x] ACP `set_session_model` RPC
-- [ ] ACP content block conversion (Image, Audio, Resource) — text only for now
+- [ ] ACP content block conversion (Image, Audio, Resource) -- text only for now
 - [ ] ACP tool result conversion back to full ACP schema
-- [ ] ACP authentication flow — stubbed, no auth required
-- [x] Support cancellation across ACP boundary
+- [ ] ACP authentication flow -- stubbed, no auth required
 
-### Phase 11: D-Mail / Rollback Integration
+### Phase 11: D-Mail / Rollback Integration (Done)
 
-- [ ] Add `DenwaRenji`-style state holder (`internal/dmail/dmail.go`)
-- [ ] Add `SendDMail` tool
-- [ ] Integrate `BackToTheFuture` pattern into runtime loop
-- [ ] Implement checkpoint-based context revert
-- [ ] Synthetic message replay after rollback
+- [x] Add `DenwaRenji`-style state holder (`internal/dmail/dmail.go`)
+- [x] Add `SendDMail` tool
+- [x] Integrate `BackToTheFuture` pattern into runtime loop
+- [x] Implement checkpoint-based context revert (via `contextstore.RevertToCheckpoint`)
+- [x] Synthetic message replay after rollback
 
 ### Phase 12: Shell Parity
 
-- [ ] Add tool subtitle extraction for live rendering
 - [ ] Wire `ToolCardView()` into main View (or redesign as live tool blocks)
 - [ ] Add `@` file mention completer (fuzzy, 2-tier lazy index, ignore list)
-- [ ] Add bottom toolbar (git branch badge, cwd, keyboard tips)
+- [ ] Add bottom toolbar (time display, keyboard tips)
 - [ ] Add approval panel / question panel
-- [ ] Add `/changelog` command
-- [ ] Add markdown rendering into live transcript
-- [ ] Add prompt history UI integration
+- [ ] Add `/release-notes` command (changelog parser)
+- [ ] Add `/init` command (AGENTS.md generation)
+- [ ] Add prompt history UI integration (fuzzy search)
 - [ ] Add mode toggle (agent/shell) -- lower priority
 - [ ] Add external editor (Ctrl-O) -- lower priority
 - [ ] Add clipboard paste -- lower priority
 - [ ] Add background task browser (`/task`) -- lower priority
 
-### Phase 13: Tool Polish
+### Phase 13: Tool Polish (Done)
 
 - [x] Implement full `agent` tool: subagent runner, context restore, resume logic
 - [x] Add subagent continuation prompt (when response < 200 chars)
 - [x] Add `replace_file` with replace-all support and batch edits
 - [x] Increase bash timeout to 300s and add streaming output
-- [x] Add bash background task support
+- [x] Add bash background task support (BackgroundManager exists, needs DI wiring)
 
 ### Phase 14: Runtime Parity
 
 - [ ] Add steer input queue (mid-turn user message injection)
 - [ ] Add dynamic injection providers (plan/yolo reminders)
-- [ ] Add asyncio.shield equivalent for context writes
+- [ ] Add shield equivalent for context writes (prevent cancellation corruption)
 - [ ] Add provider-level connection recovery callback
 - [ ] Expand runtime event types to match Python (steer, compaction, MCP loading, notifications)
 - [ ] Add subagent event wrapping
@@ -328,6 +339,7 @@ Updated: 2026-03-27
 
 ### Phase 15: Go-Specific Cleanup
 
+- [ ] Wire `BackgroundManager` into main DI path (currently nil in app.go)
 - [ ] Close per-subagent model override (both Python and Go pass parent model)
 - [ ] Decide on `patch_file` default enablement
 
@@ -337,12 +349,10 @@ Updated: 2026-03-27
 
 The highest-impact items in order:
 
-1. **MCP integration** (Phase 9) -- external tool support ecosystem
-2. **ACP server mode** (Phase 10) -- IDE/extension integration
-3. **D-Mail / rollback** (Phase 11) -- time-travel debugging
-4. **Tool polish** (Phase 13) -- make `agent` tool functional, fix `replace_file`
-5. **Shell parity** (Phase 12) -- tool subtitles, file completer, bottom toolbar
-6. **Runtime parity** (Phase 14) -- fill remaining runtime gaps
+1. **Shell parity** (Phase 12) -- tool result cards, file completer, `/release-notes`, `/init`
+2. **Runtime parity** (Phase 14) -- fill remaining runtime gaps
+3. **Runtime parity** (Phase 14) -- fill remaining runtime gaps
+4. **Go-specific cleanup** (Phase 15) -- wire BackgroundManager, minor fixes
 
 ---
 
@@ -356,24 +366,20 @@ cmd/fimi
   v
 internal/app
   |
-  +-- internal/config      (models, providers, web)
+  +-- internal/config      (models, providers, web, MCP)
   +-- internal/session     (session metadata)
   +-- internal/agentspec   (YAML agent definitions)
   +-- internal/contextstore (JSONL history, checkpoints)
-  +-- internal/tools       (11+1 builtin tools)
-  +-- internal/llm         (OpenAI/Qwen providers)
+  +-- internal/tools       (12 builtin tools + MCP bridge)
+  +-- internal/llm         (OpenAI/Qwen providers, dual wire API)
+  +-- internal/mcp         (MCP client lifecycle, tool discovery)
+  +-- internal/runtime     (step loop, events, retry, subtitle)
+  +-- internal/acp         (JSON-RPC server, event projection)
   +-- internal/ui
   |     +-- printui        (text output, stream-json)
   |     +-- shell          (Bubble Tea interactive)
-  |
-  v
-internal/runtime
-  |
-  +-- Step loop with event sink
-  +-- Reads/writes contextstore
-  +-- Calls llm engine
-  +-- Executes tools
-  +-- Emits events
+  +-- internal/websearch   (DuckDuckGo scraper)
+  +-- internal/webfetch    (HTTP fetch, content extraction)
 ```
 
 ### Target Architecture (After Gaps Closed)
@@ -387,11 +393,11 @@ internal/app
   +-- config               infrastructure
   +-- session              infrastructure
   +-- agentspec            adapter/integration
-  +-- dmail                rollback / time-travel
+  +-- dmail                rollback / time-travel (NEW)
   +-- ui/*
   |     +-- printui (text, stream-json)
-  |     +-- shell (richer meta commands, tool subtitles, @ completer, toolbar)
-  |     +-- acp (NEW: JSON-RPC over stdio)
+  |     +-- shell (richer meta commands, tool cards, @ completer, toolbar)
+  |     +-- acp (full content block conversion)
   |
   v
 internal/runtime           core agent logic
@@ -402,8 +408,9 @@ internal/runtime           core agent logic
   +-- tools                replaceable boundary
   |     +-- builtin local tools
   |     +-- web tools (search_web, fetch_url)
-  |     +-- MCP bridge (NEW)
+  |     +-- MCP bridge
   |     +-- delegation (with continuation)
+  |     +-- dmail tool (NEW)
 ```
 
 ---
@@ -417,6 +424,7 @@ internal/runtime           core agent logic
 - Event sink as UI boundary
 - Config-driven model/provider selection
 - Checkpoint store independent of runtime
+- Tool subtitle extraction lives in runtime, not UI
 
 ### Things to Avoid
 
@@ -432,9 +440,7 @@ internal/runtime           core agent logic
 The following are present in `temp/` but not treated as migration targets:
 
 - Test tools (`Plus`, `Compare`, `Panic`)
-- Background task tools (not in checked snapshot)
 - Approval/question event families
-- Task browser / replay / export UI
 - Moonshot-specific search API (using DuckDuckGo instead)
 - RALPH loop (FlowRunner decision node system)
 - Dual-mode shell (agent vs raw shell toggle)
