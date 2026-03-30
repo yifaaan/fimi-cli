@@ -17,7 +17,6 @@ import (
 	"fimi-cli/internal/llm"
 	"fimi-cli/internal/mcp"
 	"fimi-cli/internal/runtime"
-	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
 	"fimi-cli/internal/tools"
 	"fimi-cli/internal/ui"
@@ -529,24 +528,13 @@ func buildURLFetcher() (tools.URLFetcher, error) {
 	return webfetch.NewHTTPFetcher(webfetch.HTTPFetcherConfig{})
 }
 
-func runWithEventSink(runner runtimeRunner, store contextstore.Context, input runtime.Input) ui.RunFunc {
-	return func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-		eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner)
-		if !ok {
-			return runner.Run(ctx, store, input)
-		}
-
-		return eventfulRunner.WithEventSink(sink).Run(ctx, store, input)
-	}
-}
-
 func (d dependencies) runRuntime(
 	ctx context.Context,
 	runner runtimeRunner,
 	store contextstore.Context,
 	input runtime.Input,
 ) (runtime.Result, error) {
-	return ui.Run(ctx, runWithEventSink(runner, store, input), d.resolveVisualizer("text"))
+	return ui.Run(ctx, runner.Run, store, input, d.resolveVisualizer("text"))
 }
 
 func resolvePrintPrompt(input runInput) (string, error) {
@@ -718,7 +706,7 @@ func (d dependencies) runPrint(
 
 	runtimeInput := buildRuntimePromptInput(cfg, agent, prompt)
 
-	_, err = ui.Run(ctx, runWithEventSink(runner, store, runtimeInput), d.resolveVisualizer(input.outputMode))
+	_, err = ui.Run(ctx, runner.Run, store, runtimeInput, d.resolveVisualizer(input.outputMode))
 
 	return err
 }
@@ -779,7 +767,7 @@ func (d dependencies) runACP(ctx context.Context) error {
 			return runtime.Result{}, fmt.Errorf("build ACP runner: %w", err)
 		}
 
-		return ui.Run(ctx, runWithEventSink(r, store, input), visualize)
+		return ui.Run(ctx, r.Run, store, input, visualize)
 	}
 
 	server := acp.NewServer(conn, cfg, runFn)

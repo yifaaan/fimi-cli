@@ -17,20 +17,12 @@ import (
 	"fimi-cli/internal/wire"
 )
 
-func TestRunnerWithWire(t *testing.T) {
+func TestRunnerEmitEventWithoutWireIsNoop(t *testing.T) {
 	engine := &staticEngine{reply: AssistantReply{Text: "done"}}
 	runner := New(engine, DefaultConfig())
 
-	w := wire.New(0)
-	runnerWithWire := runner.WithWire(w)
-
-	if runnerWithWire.wire != w {
-		t.Fatalf("WithWire() did not set wire")
-	}
-
-	// Original runner should not be modified
-	if runner.wire != nil {
-		t.Fatalf("WithWire() modified original runner")
+	if err := runner.emitEvent(context.Background(), runtimeevents.StepBegin{Number: 1}); err != nil {
+		t.Fatalf("emitEvent() error = %v", err)
 	}
 }
 
@@ -38,15 +30,14 @@ func TestRunnerEmitEventThroughWire(t *testing.T) {
 	engine := &staticEngine{reply: AssistantReply{Text: "hello"}}
 	w := wire.New(0)
 
-	runner := New(engine, DefaultConfig()).WithWire(w)
+	runner := New(engine, DefaultConfig())
 
-	ctx := context.Background()
+	ctx := wire.WithCurrent(context.Background(), w)
 	err := runner.emitEvent(ctx, runtimeevents.TextPart{Text: "test"})
 	if err != nil {
 		t.Fatalf("emitEvent() error = %v", err)
 	}
 
-	// Receive the event from wire
 	gotMsg, err := w.Receive(ctx)
 	if err != nil {
 		t.Fatalf("wire.Receive() error = %v", err)
@@ -410,11 +401,28 @@ func TestNewWithToolExecutorUsesNoopWhenNil(t *testing.T) {
 	}
 }
 
-func TestNewWithToolExecutorAndEventsUsesNoopWhenNil(t *testing.T) {
-	runner := NewWithToolExecutorAndEvents(staticEngine{}, nil, nil, Config{})
+func TestEmitEventUsesWireFromContextWhenPresent(t *testing.T) {
+	w := wire.New(0)
+	t.Cleanup(w.Shutdown)
 
-	if err := runner.emitEvent(context.Background(), runtimeevents.StepBegin{Number: 1}); err != nil {
+	runner := New(staticEngine{}, Config{})
+	ctx := wire.WithCurrent(context.Background(), w)
+
+	if err := runner.emitEvent(ctx, runtimeevents.StepBegin{Number: 1}); err != nil {
 		t.Fatalf("emitEvent() error = %v", err)
+	}
+
+	msg, err := w.Receive(context.Background())
+	if err != nil {
+		t.Fatalf("wire.Receive() error = %v", err)
+	}
+
+	eventMsg, ok := msg.(wire.EventMessage)
+	if !ok {
+		t.Fatalf("wire message = %T, want EventMessage", msg)
+	}
+	if eventMsg.Event != (runtimeevents.StepBegin{Number: 1}) {
+		t.Fatalf("event = %#v, want %#v", eventMsg.Event, runtimeevents.StepBegin{Number: 1})
 	}
 }
 
@@ -995,12 +1003,13 @@ func TestRunnerRunReturnsInterruptedStatusWhenContextCancelled(t *testing.T) {
 
 func TestRunnerRunEmitsFinishedStepEvents(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	sink := &recordingEventSink{}
-	runner := NewWithToolExecutorAndEvents(staticEngine{
+	w := wire.New(0)
+	runner := NewWithToolExecutor(staticEngine{
 		reply: AssistantReply{Text: "assistant reply"},
-	}, nil, sink, Config{})
+	}, nil, Config{})
 
-	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	runCtx := wire.WithCurrent(context.Background(), w)
+	result, err := runner.Run(runCtx, ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -1008,35 +1017,37 @@ func TestRunnerRunEmitsFinishedStepEvents(t *testing.T) {
 		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
 	}
 
+	got := receiveWireEvents(t, w, 3)
 	want := []runtimeevents.Event{
 		runtimeevents.StepBegin{Number: 1},
 		runtimeevents.TextPart{Text: "assistant reply"},
 		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{}},
 	}
-	if !reflect.DeepEqual(sink.events, want) {
-		t.Fatalf("captured events = %#v, want %#v", sink.events, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured events = %#v, want %#v", got, want)
 	}
 }
 
 func TestRunnerRunEmitsContextUsageWhenWindowConfigured(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	sink := &recordingEventSink{}
-	runner := NewWithToolExecutorAndEvents(staticEngine{
+	w := wire.New(0)
+	runner := NewWithToolExecutor(staticEngine{
 		reply: AssistantReply{
 			Text: "assistant reply",
 			Usage: Usage{
 				TotalTokens: 50,
 			},
 		},
-	}, nil, sink, Config{
+	}, nil, Config{
 		ContextWindowTokens: 100,
 	})
 
-	_, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	_, err := runner.Run(wire.WithCurrent(context.Background(), w), ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	got := receiveWireEvents(t, w, 3)
 	want := []runtimeevents.Event{
 		runtimeevents.StepBegin{Number: 1},
 		runtimeevents.TextPart{Text: "assistant reply"},
@@ -1044,15 +1055,15 @@ func TestRunnerRunEmitsContextUsageWhenWindowConfigured(t *testing.T) {
 			Status: runtimeevents.StatusSnapshot{ContextUsage: 0.5},
 		},
 	}
-	if !reflect.DeepEqual(sink.events, want) {
-		t.Fatalf("captured events = %#v, want %#v", sink.events, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured events = %#v, want %#v", got, want)
 	}
 }
 
 func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	sink := &recordingEventSink{}
-	runner := NewWithToolExecutorAndEvents(staticEngine{}, &spyToolExecutor{}, sink, Config{
+	w := wire.New(0)
+	runner := NewWithToolExecutor(staticEngine{}, &spyToolExecutor{}, Config{
 		MaxStepsPerRun: 2,
 	})
 
@@ -1077,11 +1088,12 @@ func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 		}, nil
 	}
 
-	_, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	_, err := runner.Run(wire.WithCurrent(context.Background(), w), ctx, Input{Prompt: "hello"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
+	got := receiveWireEvents(t, w, 8)
 	want := []runtimeevents.Event{
 		runtimeevents.StepBegin{Number: 1},
 		runtimeevents.TextPart{Text: "I will think before editing."},
@@ -1102,8 +1114,8 @@ func TestRunnerRunEmitsToolStepEvents(t *testing.T) {
 		runtimeevents.TextPart{Text: "done"},
 		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{}},
 	}
-	if !reflect.DeepEqual(sink.events, want) {
-		t.Fatalf("captured events = %#v, want %#v", sink.events, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured events = %#v, want %#v", got, want)
 	}
 }
 
@@ -1141,12 +1153,12 @@ func TestToolCallSubtitleFormatsCommonTools(t *testing.T) {
 
 func TestRunnerRunEmitsInterruptedEventWhenContextCancelled(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	sink := &recordingEventSink{}
-	runner := NewWithToolExecutorAndEvents(staticEngine{}, nil, sink, Config{
+	w := wire.New(0)
+	runner := NewWithToolExecutor(staticEngine{}, nil, Config{
 		MaxStepsPerRun: 2,
 	})
 
-	rootCtx, cancel := context.WithCancel(context.Background())
+	rootCtx, cancel := context.WithCancel(wire.WithCurrent(context.Background(), w))
 	stepCalls := 0
 	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
 		stepCalls++
@@ -1175,12 +1187,13 @@ func TestRunnerRunEmitsInterruptedEventWhenContextCancelled(t *testing.T) {
 		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
 	}
 
+	got := receiveWireEvents(t, w, 5)
 	wantLast := runtimeevents.StepInterrupted{}
-	if len(sink.events) == 0 {
+	if len(got) == 0 {
 		t.Fatalf("captured events = 0, want at least 1")
 	}
-	if sink.events[len(sink.events)-1] != wantLast {
-		t.Fatalf("last event = %#v, want %#v", sink.events[len(sink.events)-1], wantLast)
+	if !reflect.DeepEqual(got[len(got)-1], wantLast) {
+		t.Fatalf("last event = %#v, want %#v", got[len(got)-1], wantLast)
 	}
 }
 
@@ -1306,6 +1319,27 @@ func rawHistoryRoles(path string) ([]string, error) {
 	}
 
 	return roles, nil
+}
+
+func receiveWireEvents(t *testing.T, w *wire.Wire, count int) []runtimeevents.Event {
+	t.Helper()
+
+	events := make([]runtimeevents.Event, 0, count)
+	for i := 0; i < count; i++ {
+		msg, err := w.Receive(context.Background())
+		if err != nil {
+			t.Fatalf("wire.Receive() error = %v", err)
+		}
+
+		eventMsg, ok := msg.(wire.EventMessage)
+		if !ok {
+			t.Fatalf("wire message = %T, want EventMessage", msg)
+		}
+
+		events = append(events, eventMsg.Event)
+	}
+
+	return events
 }
 
 type staticEngine struct {

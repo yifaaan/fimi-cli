@@ -1,6 +1,10 @@
 package wire
 
 import (
+	"context"
+	errorspkg "errors"
+	"sync"
+
 	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
@@ -16,6 +20,9 @@ type EventMessage struct {
 
 func (EventMessage) isMessage() {}
 
+var ErrApprovalRequestNotWaiting = errorspkg.New("approval request is not waiting for a response")
+var ErrApprovalRequestResolved = errorspkg.New("approval request already resolved")
+
 // ApprovalRequest represents a request for user approval.
 type ApprovalRequest struct {
 	ID          string // unique request ID
@@ -23,19 +30,59 @@ type ApprovalRequest struct {
 	Action      string // action type (e.g., "bash_execute")
 	Description string // human-readable description
 
-	responseCh chan ApprovalResponse // internal: response channel
+	mu         sync.Mutex
+	responseCh chan ApprovalResponse
+	wireDone   <-chan struct{}
+	waiting    bool
+	resolved   bool
 }
 
-func (ApprovalRequest) isMessage() {}
+func (*ApprovalRequest) isMessage() {}
+
+func (req *ApprovalRequest) Wait(ctx context.Context) (ApprovalResponse, error) {
+	if req == nil {
+		return ApprovalReject, ErrApprovalRequestNotWaiting
+	}
+
+	req.mu.Lock()
+	if req.responseCh == nil {
+		req.responseCh = make(chan ApprovalResponse, 1)
+	}
+	req.waiting = true
+	respCh := req.responseCh
+	wireDone := req.wireDone
+	req.mu.Unlock()
+
+	select {
+	case resp := <-respCh:
+		return resp, nil
+	case <-wireDone:
+		return ApprovalReject, ErrWireClosed
+	case <-ctx.Done():
+		return ApprovalReject, ctx.Err()
+	}
+}
 
 // Resolve completes the approval request with the user's response.
 // Called by UI after user makes a decision.
-func (req *ApprovalRequest) Resolve(resp ApprovalResponse) {
-	select {
-	case req.responseCh <- resp:
-	default:
-		// Already resolved (shouldn't happen, but safe)
+func (req *ApprovalRequest) Resolve(resp ApprovalResponse) error {
+	if req == nil {
+		return ErrApprovalRequestNotWaiting
 	}
+
+	req.mu.Lock()
+	defer req.mu.Unlock()
+
+	if !req.waiting || req.responseCh == nil {
+		return ErrApprovalRequestNotWaiting
+	}
+	if req.resolved {
+		return ErrApprovalRequestResolved
+	}
+
+	req.resolved = true
+	req.responseCh <- resp
+	return nil
 }
 
 // ApprovalResponse is the user's response to an approval request.

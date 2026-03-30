@@ -8,7 +8,6 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
-	runtimeevents "fimi-cli/internal/runtime/events"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -65,8 +64,8 @@ func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
 	if gotModel.mode != ModeThinking {
 		t.Fatalf("mode = %v, want %v", gotModel.mode, ModeThinking)
 	}
-	if gotModel.eventsCh == nil {
-		t.Fatal("eventsCh = nil, want initialized channel")
+	if gotModel.wire == nil {
+		t.Fatal("wire = nil, want initialized wire")
 	}
 	if gotModel.activeShellActionCommand != spec.CommandText {
 		t.Fatalf("active shell action = %q, want %q", gotModel.activeShellActionCommand, spec.CommandText)
@@ -237,7 +236,6 @@ func TestHandleCheckpointSelectKeyPressRewindsConversation(t *testing.T) {
 	model.output = model.output.SetPending([]TranscriptLine{{Type: LineTypeAssistant, Content: "pending"}})
 	model.runtime.Step = 3
 	model.runtime.AssistantText = "stale"
-	model.eventsCh = make(chan runtimeevents.Event)
 
 	updatedModel, cmd := model.handleCheckpointSelectKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
@@ -256,9 +254,6 @@ func TestHandleCheckpointSelectKeyPressRewindsConversation(t *testing.T) {
 	}
 	if updated.checkpointScrollOffset != 0 {
 		t.Fatalf("checkpoint scroll offset = %d, want 0", updated.checkpointScrollOffset)
-	}
-	if updated.eventsCh != nil {
-		t.Fatal("eventsCh != nil, want nil")
 	}
 	if updated.runtime.Step != 0 {
 		t.Fatalf("runtime step = %d, want 0", updated.runtime.Step)
@@ -318,9 +313,6 @@ func TestStartShellActionRejectsEmptyInputs(t *testing.T) {
 	if gotModel.mode != ModeIdle {
 		t.Fatalf("mode = %v, want %v", gotModel.mode, ModeIdle)
 	}
-	if gotModel.eventsCh != nil {
-		t.Fatal("eventsCh != nil, want nil")
-	}
 	if len(gotModel.output.lines) != 1 {
 		t.Fatalf("output lines = %d, want 1", len(gotModel.output.lines))
 	}
@@ -352,7 +344,6 @@ func TestFinishRuntimeCompactsSessionHistory(t *testing.T) {
 	model.output = model.output.AppendLine(TranscriptLine{Type: LineTypeSystem, Content: "Compacting..."})
 	model.output = model.output.SetPending([]TranscriptLine{{Type: LineTypeAssistant, Content: "draft compact output"}})
 	model.runtime.AssistantText = "draft compact output"
-	model.eventsCh = make(chan runtimeevents.Event)
 
 	updated := model.finishRuntime(RuntimeCompleteMsg{Result: runtime.Result{
 		UserRecord: ptrTextRecord(contextstore.NewUserTextRecord("/compact")),
@@ -378,9 +369,6 @@ func TestFinishRuntimeCompactsSessionHistory(t *testing.T) {
 	}
 	if updated.mode != ModeIdle {
 		t.Fatalf("mode = %v, want %v", updated.mode, ModeIdle)
-	}
-	if updated.eventsCh != nil {
-		t.Fatal("eventsCh != nil, want nil")
 	}
 	backupStore := contextstore.New(historyFile + ".compact.1")
 	backupRecords, err := backupStore.ReadAll()

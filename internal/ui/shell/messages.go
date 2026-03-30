@@ -7,11 +7,7 @@ import (
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
-
-	"github.com/charmbracelet/bubbletea"
 )
-
-const runtimeEventBatchSize = 64
 
 // RuntimeEventMsg 包装一个 runtime 事件，使其成为 Bubble Tea 消息。
 // 这允许将现有的 channel-based 事件系统桥接到 Bubble Tea 的消息循环。
@@ -79,35 +75,3 @@ type SessionDeleteMsg struct {
 
 // ClearMsg 表示用户请求清屏。
 type ClearMsg struct{}
-
-// waitForRuntimeEvents 返回一个 Bubble Tea 命令。
-// 它会阻塞等待首个事件，然后尽可能多地批量提取后续已缓冲事件，
-// 避免在流式输出时为每个 token 触发一次完整 UI 更新。
-func waitForRuntimeEvents(ch <-chan runtimeevents.Event) tea.Cmd {
-	return func() tea.Msg {
-		first, ok := <-ch
-		if !ok {
-			return RuntimeEventsMsg{Closed: true}
-		}
-
-		events := make([]runtimeevents.Event, 0, runtimeEventBatchSize)
-		events = append(events, first)
-
-		for len(events) < runtimeEventBatchSize {
-			select {
-			case event, ok := <-ch:
-				if !ok {
-					return RuntimeEventsMsg{
-						Events: events,
-						Closed: true,
-					}
-				}
-				events = append(events, event)
-			default:
-				return RuntimeEventsMsg{Events: events}
-			}
-		}
-
-		return RuntimeEventsMsg{Events: events}
-	}
-}

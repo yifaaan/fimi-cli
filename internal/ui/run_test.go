@@ -3,32 +3,42 @@ package ui
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/wire"
 )
 
 func TestRunStreamsEventsAndReturnsRunResult(t *testing.T) {
 	wantResult := runtime.Result{
 		Status: runtime.RunStatusFinished,
 	}
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 
 	gotEvents := make([]runtimeevents.Event, 0, 2)
 	result, err := Run(
 		context.Background(),
-		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-			if err := sink.Emit(ctx, runtimeevents.StepBegin{Number: 1}); err != nil {
+		func(ctx context.Context, s contextstore.Context, input runtime.Input) (runtime.Result, error) {
+			w, ok := wire.Current(ctx)
+			if !ok {
+				return runtime.Result{}, errors.New("no wire in context")
+			}
+			if err := w.Send(wire.EventMessage{Event: runtimeevents.StepBegin{Number: 1}}); err != nil {
 				return runtime.Result{}, err
 			}
-			if err := sink.Emit(ctx, runtimeevents.TextPart{Text: "hello"}); err != nil {
+			if err := w.Send(wire.EventMessage{Event: runtimeevents.TextPart{Text: "hello"}}); err != nil {
 				return runtime.Result{}, err
 			}
 
 			return wantResult, nil
 		},
+		store,
+		runtime.Input{Prompt: "test"},
 		func(ctx context.Context, events <-chan runtimeevents.Event) error {
 			for event := range events {
 				gotEvents = append(gotEvents, event)
@@ -55,17 +65,16 @@ func TestRunStreamsEventsAndReturnsRunResult(t *testing.T) {
 
 func TestRunUsesNoopSinkWhenVisualizerNil(t *testing.T) {
 	called := false
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 
 	result, err := Run(
 		context.Background(),
-		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
+		func(ctx context.Context, s contextstore.Context, input runtime.Input) (runtime.Result, error) {
 			called = true
-			if err := sink.Emit(ctx, runtimeevents.StepBegin{Number: 1}); err != nil {
-				return runtime.Result{}, err
-			}
-
 			return runtime.Result{Status: runtime.RunStatusFinished}, nil
 		},
+		store,
+		runtime.Input{Prompt: "test"},
 		nil,
 	)
 	if err != nil {
@@ -80,16 +89,24 @@ func TestRunUsesNoopSinkWhenVisualizerNil(t *testing.T) {
 }
 
 func TestRunReturnsErrorWhenVisualizerStopsEarly(t *testing.T) {
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+
 	result, err := Run(
 		context.Background(),
-		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-			if err := sink.Emit(ctx, runtimeevents.StepBegin{Number: 1}); err != nil {
+		func(ctx context.Context, s contextstore.Context, input runtime.Input) (runtime.Result, error) {
+			w, ok := wire.Current(ctx)
+			if !ok {
+				return runtime.Result{Status: runtime.RunStatusInterrupted}, errors.New("no wire")
+			}
+			if err := w.Send(wire.EventMessage{Event: runtimeevents.StepBegin{Number: 1}}); err != nil {
 				return runtime.Result{Status: runtime.RunStatusInterrupted}, err
 			}
 
 			<-ctx.Done()
 			return runtime.Result{Status: runtime.RunStatusInterrupted}, ctx.Err()
 		},
+		store,
+		runtime.Input{Prompt: "test"},
 		func(ctx context.Context, events <-chan runtimeevents.Event) error {
 			<-events
 			return nil
@@ -105,17 +122,24 @@ func TestRunReturnsErrorWhenVisualizerStopsEarly(t *testing.T) {
 
 func TestRunReturnsVisualizerError(t *testing.T) {
 	wantErr := errors.New("visualizer failed")
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 
 	result, err := Run(
 		context.Background(),
-		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
-			if err := sink.Emit(ctx, runtimeevents.StepBegin{Number: 1}); err != nil {
+		func(ctx context.Context, s contextstore.Context, input runtime.Input) (runtime.Result, error) {
+			w, ok := wire.Current(ctx)
+			if !ok {
+				return runtime.Result{Status: runtime.RunStatusInterrupted}, errors.New("no wire")
+			}
+			if err := w.Send(wire.EventMessage{Event: runtimeevents.StepBegin{Number: 1}}); err != nil {
 				return runtime.Result{Status: runtime.RunStatusInterrupted}, err
 			}
 
 			<-ctx.Done()
 			return runtime.Result{Status: runtime.RunStatusInterrupted}, ctx.Err()
 		},
+		store,
+		runtime.Input{Prompt: "test"},
 		func(ctx context.Context, events <-chan runtimeevents.Event) error {
 			<-events
 			return wantErr
@@ -131,6 +155,7 @@ func TestRunReturnsVisualizerError(t *testing.T) {
 
 func TestRunReturnsContextCancellation(t *testing.T) {
 	rootCtx, cancel := context.WithCancel(context.Background())
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 
 	resultCh := make(chan struct{})
 	go func() {
@@ -141,10 +166,12 @@ func TestRunReturnsContextCancellation(t *testing.T) {
 
 	result, err := Run(
 		rootCtx,
-		func(ctx context.Context, sink runtimeevents.Sink) (runtime.Result, error) {
+		func(ctx context.Context, s contextstore.Context, input runtime.Input) (runtime.Result, error) {
 			<-ctx.Done()
 			return runtime.Result{Status: runtime.RunStatusInterrupted}, ctx.Err()
 		},
+		store,
+		runtime.Input{Prompt: "test"},
 		func(ctx context.Context, events <-chan runtimeevents.Event) error {
 			<-ctx.Done()
 			for range events {
@@ -163,7 +190,8 @@ func TestRunReturnsContextCancellation(t *testing.T) {
 }
 
 func TestRunReturnsErrorForNilRunFunc(t *testing.T) {
-	_, err := Run(context.Background(), nil, nil)
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	_, err := Run(context.Background(), nil, store, runtime.Input{Prompt: "test"}, nil)
 	if !errors.Is(err, ErrNilRunFunc) {
 		t.Fatalf("Run() error = %v, want wrapped %v", err, ErrNilRunFunc)
 	}

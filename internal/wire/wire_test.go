@@ -11,12 +11,11 @@ import (
 
 func TestEventMessageIsMessage(t *testing.T) {
 	msg := EventMessage{Event: runtimeevents.StepBegin{Number: 1}}
-	// The isMessage() method must exist and satisfy Message interface
 	var _ Message = msg
 }
 
 func TestApprovalRequestIsMessage(t *testing.T) {
-	req := ApprovalRequest{
+	req := &ApprovalRequest{
 		ID:          "test-id",
 		ToolCallID:  "call-1",
 		Action:      "bash_execute",
@@ -37,11 +36,36 @@ func TestApprovalResponseConstants(t *testing.T) {
 	}
 }
 
+func TestWithCurrentAndCurrent(t *testing.T) {
+	w := New(0)
+	ctx := WithCurrent(context.Background(), w)
+
+	got, ok := Current(ctx)
+	if !ok {
+		t.Fatal("Current() ok = false, want true")
+	}
+	if got != w {
+		t.Fatal("Current() returned wrong wire")
+	}
+}
+
+func TestCurrentWithoutWire(t *testing.T) {
+	got, ok := Current(context.Background())
+	if ok {
+		t.Fatal("Current() ok = true, want false")
+	}
+	if got != nil {
+		t.Fatal("Current() wire != nil, want nil")
+	}
+}
+
 func TestWireSendAndReceive(t *testing.T) {
-	w := New(0) // default buffer size
+	w := New(0)
 
 	msg := EventMessage{Event: runtimeevents.StepBegin{Number: 1}}
-	w.Send(msg)
+	if err := w.Send(msg); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -67,45 +91,41 @@ func TestWireSendAndReceive(t *testing.T) {
 
 func TestWireReceiveReturnsErrorOnShutdown(t *testing.T) {
 	w := New(0)
-
 	w.Shutdown()
 
-	ctx := context.Background()
-	_, err := w.Receive(ctx)
+	_, err := w.Receive(context.Background())
 	if !errors.Is(err, ErrWireClosed) {
 		t.Fatalf("Receive() error = %v, want ErrWireClosed", err)
 	}
 }
 
-func TestWireSendPanicsOnClosedWire(t *testing.T) {
+func TestWireSendReturnsErrorOnClosedWire(t *testing.T) {
 	w := New(0)
 	w.Shutdown()
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatalf("Send() on closed wire should panic")
-		}
-	}()
-
-	w.Send(EventMessage{Event: runtimeevents.StepBegin{Number: 1}})
+	err := w.Send(EventMessage{Event: runtimeevents.StepBegin{Number: 1}})
+	if !errors.Is(err, ErrWireClosed) {
+		t.Fatalf("Send() error = %v, want ErrWireClosed", err)
+	}
 }
 
 func TestWireDefaultBufferSize(t *testing.T) {
 	w := New(0)
 
-	// Should be able to send multiple messages without blocking
 	for i := 0; i < 10; i++ {
-		w.Send(EventMessage{Event: runtimeevents.StepBegin{Number: i}})
+		if err := w.Send(EventMessage{Event: runtimeevents.StepBegin{Number: i}}); err != nil {
+			t.Fatalf("Send() error = %v", err)
+		}
 	}
 
 	w.Shutdown()
 }
 
 func TestWireReceiveRespectsContext(t *testing.T) {
-	w := New(0) // empty wire
+	w := New(0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	_, err := w.Receive(ctx)
 	if !errors.Is(err, context.Canceled) {
@@ -113,101 +133,141 @@ func TestWireReceiveRespectsContext(t *testing.T) {
 	}
 }
 
-func TestWireWaitForApproval(t *testing.T) {
-	w := New(0)
+func TestApprovalRequestResolveWithoutWaiting(t *testing.T) {
+	var req ApprovalRequest
 
-	req := &ApprovalRequest{
-		ID:          "approval-1",
-		ToolCallID:  "call-1",
-		Action:      "bash_execute",
-		Description: "Run: rm -rf /",
+	err := req.Resolve(ApprovalApprove)
+	if !errors.Is(err, ErrApprovalRequestNotWaiting) {
+		t.Fatalf("Resolve() error = %v, want ErrApprovalRequestNotWaiting", err)
+	}
+}
+
+func TestApprovalRequestResolveTwice(t *testing.T) {
+	req := &ApprovalRequest{responseCh: make(chan ApprovalResponse, 1), waiting: true}
+
+	if err := req.Resolve(ApprovalApprove); err != nil {
+		t.Fatalf("first Resolve() error = %v", err)
 	}
 
-	// Simulate UI receiving and resolving in background
+	err := req.Resolve(ApprovalReject)
+	if !errors.Is(err, ErrApprovalRequestResolved) {
+		t.Fatalf("second Resolve() error = %v, want ErrApprovalRequestResolved", err)
+	}
+}
+
+func TestApprovalRequestWaitResolved(t *testing.T) {
+	w := New(0)
+	req := &ApprovalRequest{ID: "approval-1"}
+
+	done := make(chan struct{})
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
+		defer close(done)
 
-		msg, err := w.Receive(ctx)
+		msg, err := w.Receive(context.Background())
 		if err != nil {
-			t.Errorf("UI Receive() error = %v", err)
+			t.Errorf("Receive() error = %v", err)
 			return
 		}
 
-		approvalReq, ok := msg.(*ApprovalRequest)
+		gotReq, ok := msg.(*ApprovalRequest)
 		if !ok {
-			t.Errorf("UI received %T, want *ApprovalRequest", msg)
+			t.Errorf("Receive() got %T, want *ApprovalRequest", msg)
 			return
 		}
 
-		// Simulate user approving
-		approvalReq.Resolve(ApprovalApprove)
+		if err := gotReq.Resolve(ApprovalApprove); err != nil {
+			t.Errorf("Resolve() error = %v", err)
+		}
 	}()
 
-	// Runtime waits for approval
-	ctx := context.Background()
-	resp, err := w.WaitForApproval(ctx, req)
+	if err := w.Send(req); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	resp, err := req.Wait(context.Background())
 	if err != nil {
-		t.Fatalf("WaitForApproval() error = %v", err)
+		t.Fatalf("Wait() error = %v", err)
 	}
 	if resp != ApprovalApprove {
-		t.Fatalf("WaitForApproval() response = %q, want %q", resp, ApprovalApprove)
+		t.Fatalf("Wait() response = %q, want %q", resp, ApprovalApprove)
 	}
+
+	<-done
 }
 
-func TestWireWaitForApprovalReject(t *testing.T) {
+func TestApprovalRequestWaitReject(t *testing.T) {
 	w := New(0)
-
-	req := &ApprovalRequest{
-		ID:         "approval-2",
-		ToolCallID: "call-2",
-		Action:     "bash_execute",
-	}
+	req := &ApprovalRequest{ID: "approval-2"}
 
 	go func() {
-		msg, _ := w.Receive(context.Background())
-		approvalReq := msg.(*ApprovalRequest)
-		approvalReq.Resolve(ApprovalReject)
+		msg, err := w.Receive(context.Background())
+		if err != nil {
+			t.Errorf("Receive() error = %v", err)
+			return
+		}
+
+		gotReq, ok := msg.(*ApprovalRequest)
+		if !ok {
+			t.Errorf("Receive() got %T, want *ApprovalRequest", msg)
+			return
+		}
+
+		if err := gotReq.Resolve(ApprovalReject); err != nil {
+			t.Errorf("Resolve() error = %v", err)
+		}
 	}()
 
-	resp, _ := w.WaitForApproval(context.Background(), req)
+	if err := w.Send(req); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	resp, err := req.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
 	if resp != ApprovalReject {
-		t.Fatalf("WaitForApproval() response = %q, want %q", resp, ApprovalReject)
+		t.Fatalf("Wait() response = %q, want %q", resp, ApprovalReject)
 	}
 }
 
-func TestWireWaitForApprovalContextCancel(t *testing.T) {
+func TestApprovalRequestWaitContextCancel(t *testing.T) {
 	w := New(0)
-
 	req := &ApprovalRequest{ID: "approval-3"}
+
+	if err := w.Send(req); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	resp, err := w.WaitForApproval(ctx, req)
+	resp, err := req.Wait(ctx)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("WaitForApproval() error = %v, want context.Canceled", err)
+		t.Fatalf("Wait() error = %v, want context.Canceled", err)
 	}
 	if resp != ApprovalReject {
-		t.Fatalf("WaitForApproval() on canceled context should return Reject")
+		t.Fatalf("Wait() response = %q, want %q", resp, ApprovalReject)
 	}
 }
 
-func TestWireWaitForApprovalWireClosed(t *testing.T) {
+func TestApprovalRequestWaitWireClosed(t *testing.T) {
 	w := New(0)
-
 	req := &ApprovalRequest{ID: "approval-4"}
+
+	if err := w.Send(req); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		w.Shutdown()
 	}()
 
-	resp, err := w.WaitForApproval(context.Background(), req)
+	resp, err := req.Wait(context.Background())
 	if !errors.Is(err, ErrWireClosed) {
-		t.Fatalf("WaitForApproval() error = %v, want ErrWireClosed", err)
+		t.Fatalf("Wait() error = %v, want ErrWireClosed", err)
 	}
 	if resp != ApprovalReject {
-		t.Fatalf("WaitForApproval() on closed wire should return Reject")
+		t.Fatalf("Wait() response = %q, want %q", resp, ApprovalReject)
 	}
 }

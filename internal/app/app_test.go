@@ -2012,18 +2012,8 @@ type stubRunner struct {
 	appendToContext bool
 }
 
-type stubEventfulRunner struct {
-	sink runtimeevents.Sink
-}
 
-func (r *stubEventfulRunner) Run(_ context.Context, _ contextstore.Context, _ runtime.Input) (runtime.Result, error) {
-	return runtime.Result{Status: runtime.RunStatusFinished}, nil
-}
 
-func (r *stubEventfulRunner) WithEventSink(sink runtimeevents.Sink) runtime.Runner {
-	r.sink = sink
-	return runtime.Runner{}
-}
 
 func (r *stubRunner) Run(_ context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
 	r.gotCtx = store
@@ -2143,39 +2133,42 @@ func TestBuildRuntimePromptInput(t *testing.T) {
 	}
 }
 
-func TestRunWithEventSinkKeepsLegacyRunnerCompatible(t *testing.T) {
+func TestRunRuntimeUsesWireFromContext(t *testing.T) {
 	runner := &stubRunner{
 		result: runtime.Result{Status: runtime.RunStatusFinished},
 	}
 	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	input := runtime.Input{Prompt: "hello", Model: "test-model"}
-	run := runWithEventSink(runner, store, input)
 
-	result, err := run(context.Background(), runtimeevents.NoopSink{})
+	_, err := ui.Run(context.Background(), runner.Run, store, input, nil)
 	if err != nil {
-		t.Fatalf("runWithEventSink() error = %v", err)
-	}
-	if result.Status != runtime.RunStatusFinished {
-		t.Fatalf("result.Status = %q, want %q", result.Status, runtime.RunStatusFinished)
+		t.Fatalf("ui.Run() error = %v", err)
 	}
 	if runner.gotInput != input {
 		t.Fatalf("runner.gotInput = %#v, want %#v", runner.gotInput, input)
 	}
 }
 
-func TestRunWithEventSinkUsesEventfulRunnerWhenAvailable(t *testing.T) {
-	runner := &stubEventfulRunner{}
+func TestRunRuntimeStreamsEventsThroughWire(t *testing.T) {
+	runner := &stubRunner{
+		result: runtime.Result{Status: runtime.RunStatusFinished},
+	}
 	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	input := runtime.Input{Prompt: "hello", Model: "test-model"}
-	run := runWithEventSink(runner, store, input)
-	sink := runtimeevents.NoopSink{}
 
-	_, err := run(context.Background(), sink)
+	gotEvents := make([]runtimeevents.Event, 0)
+	_, err := ui.Run(context.Background(), runner.Run, store, input, func(ctx context.Context, events <-chan runtimeevents.Event) error {
+		for event := range events {
+			gotEvents = append(gotEvents, event)
+		}
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("runWithEventSink() error = %v", err)
+		t.Fatalf("ui.Run() error = %v", err)
 	}
-	if runner.sink == nil {
-		t.Fatal("runner.sink = nil, want non-nil")
+	// stubRunner doesn't emit events, so we just verify the visualizer completes
+	if len(gotEvents) != 0 {
+		t.Fatalf("got %d events, want 0 from stub runner", len(gotEvents))
 	}
 }
 

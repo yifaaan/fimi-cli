@@ -210,17 +210,22 @@ func formatToolFailureContent(err *ToolExecutionError) string {
 	return fmt.Sprintf("tool execution failed (failure_kind: %s): %s", failureKind, err.Err.Error())
 }
 
-// EventSinkCapableRunner 描述支持事件接收的 Runner 能力。
-// 消费方通过类型断言检测 runner 是否支持事件流，
-// 避免强制所有 Runner 都实现该方法。
-type EventSinkCapableRunner interface {
-	WithEventSink(sink runtimeevents.Sink) Runner
-}
-
 // Engine 负责为 runtime 生成 assistant 回复文本。
 // 这里先保持最小接口，后面再扩展为真正的模型调用边界。
 type Engine interface {
 	Reply(ctx context.Context, input ReplyInput) (AssistantReply, error)
+}
+
+// StreamHandler handles low-level LLM stream events for runtime.
+type StreamHandler interface {
+	HandleStreamEvent(ctx context.Context, event any) error
+}
+
+// StreamHandlerFunc adapts a function into a StreamHandler.
+type StreamHandlerFunc func(ctx context.Context, event any) error
+
+func (f StreamHandlerFunc) HandleStreamEvent(ctx context.Context, event any) error {
+	return f(ctx, event)
 }
 
 // StreamingEngine 是支持流式的 engine 扩展接口。
@@ -228,9 +233,7 @@ type Engine interface {
 // 这是 Go 的接口隔离原则：不强制所有 Engine 实现都支持流式。
 type StreamingEngine interface {
 	Engine
-	// ReplyStream 执行流式 LLM 调用，实时发送事件到 sink。
-	// sink 已有 Emit 方法，天然适合接收流式事件。
-	ReplyStream(ctx context.Context, input ReplyInput, sink runtimeevents.Sink) (AssistantReply, error)
+	ReplyStream(ctx context.Context, input ReplyInput, handler StreamHandler) (AssistantReply, error)
 }
 
 // StepConfig 持有每个 step 需要的不可变 engine 参数。
@@ -244,8 +247,6 @@ type StepConfig struct {
 type Runner struct {
 	engine       Engine
 	toolExecutor ToolExecutor
-	eventSink    runtimeevents.Sink // keep for backward compatibility
-	wire         *wire.Wire         // new: bidirectional channel
 	dmailer      DMailer
 	config       Config
 	runStepFn    func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error)
@@ -255,29 +256,16 @@ type Runner struct {
 // New 创建最小 runtime runner。
 // 调用方必须显式注入 engine，避免 core runtime 反向依赖具体适配器。
 func New(engine Engine, cfg Config) Runner {
-	return NewWithToolExecutorAndEvents(engine, nil, nil, cfg)
+	return NewWithToolExecutor(engine, nil, cfg)
 }
 
 // NewWithToolExecutor 创建带显式工具执行边界的 runtime runner。
 func NewWithToolExecutor(engine Engine, toolExecutor ToolExecutor, cfg Config) Runner {
-	return NewWithToolExecutorAndEvents(engine, toolExecutor, nil, cfg)
-}
-
-// NewWithToolExecutorAndEvents 创建带工具执行器和事件输出边界的 runtime runner。
-func NewWithToolExecutorAndEvents(
-	engine Engine,
-	toolExecutor ToolExecutor,
-	eventSink runtimeevents.Sink,
-	cfg Config,
-) Runner {
 	if engine == nil {
 		engine = missingEngine{}
 	}
 	if toolExecutor == nil {
 		toolExecutor = NoopToolExecutor{}
-	}
-	if eventSink == nil {
-		eventSink = runtimeevents.NoopSink{}
 	}
 	if cfg.ReplyHistoryTurnLimit <= 0 {
 		cfg.ReplyHistoryTurnLimit = DefaultReplyHistoryTurnLimit
@@ -292,7 +280,6 @@ func NewWithToolExecutorAndEvents(
 	return Runner{
 		engine:       engine,
 		toolExecutor: toolExecutor,
-		eventSink:    eventSink,
 		config:       cfg,
 	}
 }
@@ -300,23 +287,6 @@ func NewWithToolExecutorAndEvents(
 // WithDMailer returns a Runner copy with the D-Mail state machine attached.
 func (r Runner) WithDMailer(dmailer DMailer) Runner {
 	r.dmailer = dmailer
-	return r
-}
-
-// WithEventSink 返回一个绑定新事件输出边界的 Runner 副本。
-// 这里用值语义返回副本，避免 UI/transport 在共享 Runner 上互相覆盖 sink。
-func (r Runner) WithEventSink(eventSink runtimeevents.Sink) Runner {
-	if eventSink == nil {
-		eventSink = runtimeevents.NoopSink{}
-	}
-
-	r.eventSink = eventSink
-	return r
-}
-
-// WithWire returns a Runner copy bound to a wire.
-func (r Runner) WithWire(w *wire.Wire) Runner {
-	r.wire = w
 	return r
 }
 
@@ -568,10 +538,19 @@ func (r Runner) runStep(
 	var assistantReply AssistantReply
 	var textStreamed bool
 
-	// 检查 engine 是否支持流式，以及是否有 eventSink
-	// 这是 Go 的"能力检测"模式：通过类型断言检查可选能力
-	if streamingEngine, ok := r.engine.(StreamingEngine); ok && r.eventSink != nil {
-		assistantReply, err = streamingEngine.ReplyStream(ctx, replyInput, r.eventSink)
+	if streamingEngine, ok := r.engine.(StreamingEngine); ok {
+		handler := StreamHandlerFunc(func(ctx context.Context, event any) error {
+			switch ev := event.(type) {
+			case interface{ TextDelta() string }:
+				return r.emitEvent(ctx, runtimeevents.TextPart{Text: ev.TextDelta()})
+			case interface{ ToolCallDelta() (string, string) }:
+				toolCallID, delta := ev.ToolCallDelta()
+				return r.emitEvent(ctx, runtimeevents.ToolCallPart{ToolCallID: toolCallID, Delta: delta})
+			default:
+				return nil
+			}
+		})
+		assistantReply, err = streamingEngine.ReplyStream(ctx, replyInput, handler)
 		textStreamed = true
 	} else {
 		assistantReply, err = r.engine.Reply(ctx, replyInput)
@@ -747,20 +726,13 @@ func (r Runner) emitStepEvents(
 }
 
 func (r Runner) emitEvent(ctx context.Context, event runtimeevents.Event) error {
-	// Try wire first (new path)
-	if r.wire != nil {
-		r.wire.Send(wire.EventMessage{Event: event})
+	w, ok := wire.Current(ctx)
+	if !ok {
 		return nil
 	}
 
-	// Fall back to Sink (legacy path)
-	sink := r.eventSink
-	if sink == nil {
-		sink = runtimeevents.NoopSink{}
-	}
-
-	if err := sink.Emit(ctx, event); err != nil {
-		return fmt.Errorf("emit runtime event %q: %w", event.Kind(), err)
+	if err := w.Send(wire.EventMessage{Event: event}); err != nil {
+		return fmt.Errorf("send runtime event %q: %w", event.Kind(), err)
 	}
 
 	return nil

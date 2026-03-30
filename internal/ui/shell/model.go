@@ -66,12 +66,6 @@ type Model struct {
 	deps    Dependencies
 	history *historyStore
 
-	// 运行时事件通道 (由 Run() 创建)
-	eventsCh <-chan runtimeevents.Event
-
-	// runtime 已结束，但仍需等待尾部事件排空后再切回 idle。
-	pendingCompletion *RuntimeCompleteMsg
-
 	// 当前正在运行的 shell 动作命令字，用于在完成态识别后处理。
 	activeShellActionCommand string
 
@@ -238,12 +232,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSubmit(msg.Text)
 
 	case RuntimeCompleteMsg:
-		// 先等待事件通道排空，再进入最终完成态，避免尾部流式内容丢失。
-		if m.eventsCh != nil {
-			complete := msg
-			m.pendingCompletion = &complete
-			return m, nil
-		}
 		m = m.finishRuntime(msg)
 		return m, nil
 
@@ -544,57 +532,32 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	m.mode = ModeThinking
 
 	// 启动 runtime 执行
-	eventsCh := make(chan runtimeevents.Event, 256)
-	m.eventsCh = eventsCh
-
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
-		waitForRuntimeEvents(eventsCh),
-		m.startRuntimeExecution(m.deps.Store, text, eventsCh),
+		m.wireReceiveLoop(),
+		m.startRuntimeExecution(m.deps.Store, text),
 	)
 }
 
 func (m Model) handleRuntimeEvents(msg RuntimeEventsMsg) (tea.Model, tea.Cmd) {
-	// 已完成后迟到的事件批次不能再污染 UI。
-	if m.eventsCh == nil && !msg.Closed {
-		return m, nil
-	}
-
 	for _, event := range msg.Events {
 		if stepBegin, ok := event.(runtimeevents.StepBegin); ok && stepBegin.Number > 1 {
 			m.output = m.output.FlushPending()
 		}
 		m.runtime = m.runtime.ApplyEvent(event)
 		m.mode = ModeStreaming
-		// pending 持有“当前 step 的完整快照”。
-		// 遇到新的 StepBegin 时，上一个 step 已先 flush 到 transcript。
 		m.output = m.output.SetPending(m.runtime.ToLines())
-	}
-
-	if msg.Closed {
-		m.eventsCh = nil
-		if m.pendingCompletion != nil {
-			m = m.finishRuntime(*m.pendingCompletion)
-		}
-		return m, nil
-	}
-
-	if m.eventsCh == nil {
-		return m, nil
 	}
 
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
-		waitForRuntimeEvents(m.eventsCh),
+		m.wireReceiveLoop(),
 	)
 }
-
 func (m Model) finishRuntime(msg RuntimeCompleteMsg) Model {
 	m.mode = ModeIdle
 	m.output = m.output.FlushPending()
 	m.runtime = m.runtime.Reset()
-	m.eventsCh = nil
-	m.pendingCompletion = nil
 	if msg.Err != nil {
 		m.err = msg.Err
 		m.output = m.output.AppendLine(TranscriptLine{
@@ -1035,14 +998,10 @@ func (m Model) startShellAction(spec shellActionSpec) (tea.Model, tea.Cmd) {
 	m.input = m.input.Clear()
 	m.mode = ModeThinking
 	m.activeShellActionCommand = spec.CommandText
-
-	eventsCh := make(chan runtimeevents.Event, 256)
-	m.eventsCh = eventsCh
-
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
-		waitForRuntimeEvents(eventsCh),
-		m.startRuntimeExecution(m.deps.Store, spec.Prompt, eventsCh),
+		m.wireReceiveLoop(),
+		m.startRuntimeExecution(m.deps.Store, spec.Prompt),
 	)
 }
 
@@ -1091,14 +1050,10 @@ func (m Model) handleInitCommand() (tea.Model, tea.Cmd) {
 	m.mode = ModeThinking
 	m.activeShellActionCommand = spec.CommandText
 	m.initTempFile = tmpPath
-
-	eventsCh := make(chan runtimeevents.Event, 256)
-	m.eventsCh = eventsCh
-
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
-		waitForRuntimeEvents(eventsCh),
-		m.startRuntimeExecution(contextstore.New(tmpPath), spec.Prompt, eventsCh),
+		m.wireReceiveLoop(),
+		m.startRuntimeExecution(contextstore.New(tmpPath), spec.Prompt),
 	)
 }
 
@@ -1133,34 +1088,15 @@ func initActionSpec() shellActionSpec {
 
 // startRuntimeExecution 返回一个启动 runtime 执行的命令。
 // store 参数允许调用方选择在哪个上下文中执行（当前会话或隔离临时存储）。
-func (m Model) startRuntimeExecution(store contextstore.Context, prompt string, eventsCh chan runtimeevents.Event) tea.Cmd {
+func (m Model) startRuntimeExecution(store contextstore.Context, prompt string) tea.Cmd {
 	return func() tea.Msg {
-		runner := m.deps.Runner
+		ctx := wire.WithCurrent(context.Background(), m.wire)
 
-		// Try to use wire first (new path)
-		if runnerWithWire, ok := runner.(interface{ WithWire(*wire.Wire) interface{} }); ok && m.wire != nil {
-			runner = runnerWithWire.WithWire(m.wire).(Runner)
-		} else if eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner); ok {
-			// Fallback to legacy Sink-based event flow
-			sink := runtimeevents.SinkFunc(func(ctx context.Context, event runtimeevents.Event) error {
-				select {
-				case eventsCh <- event:
-					return nil
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			})
-			runner = eventfulRunner.WithEventSink(sink)
-		}
-
-		// 执行 runtime
-		result, err := runner.Run(context.Background(), store, runtime.Input{
+		result, err := m.deps.Runner.Run(ctx, store, runtime.Input{
 			Prompt:       prompt,
 			Model:        m.deps.ModelName,
 			SystemPrompt: m.deps.SystemPrompt,
 		})
-
-		close(eventsCh)
 
 		return RuntimeCompleteMsg{Result: result, Err: err}
 	}
@@ -1731,8 +1667,6 @@ func (m Model) rewindToSelectedCheckpoint() Model {
 
 	m.output = m.output.FlushPending()
 	m.runtime = m.runtime.Reset()
-	m.eventsCh = nil
-	m.pendingCompletion = nil
 	m.activeShellActionCommand = ""
 	m = m.finishCheckpointSelection()
 	m = m.rebuildOutputFromRecords(records)
