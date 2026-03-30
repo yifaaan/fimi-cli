@@ -209,7 +209,8 @@ func (m Model) wireReceiveLoop() tea.Cmd {
 	return func() tea.Msg {
 		msg, err := m.wire.Receive(context.Background())
 		if err != nil {
-			return wireErrorMsg{Err: err}
+			// Return nil on error to stop the loop
+			return nil
 		}
 
 		switch msg := msg.(type) {
@@ -235,6 +236,8 @@ func eventToTeaMsg(event runtimeevents.Event) tea.Msg {
 	case runtimeevents.TextPart:
 		return RuntimeEventMsg{Event: e}
 	case runtimeevents.ToolCall:
+		return RuntimeEventMsg{Event: e}
+	case runtimeevents.ToolCallPart:
 		return RuntimeEventMsg{Event: e}
 	case runtimeevents.ToolResult:
 		return RuntimeEventMsg{Event: e}

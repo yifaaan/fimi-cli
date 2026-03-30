@@ -173,6 +173,7 @@ func NewModel(deps Dependencies, history *historyStore) Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.runtime.SpinnerCmd(),
+		m.wireReceiveLoop(),
 	)
 }
 
@@ -263,6 +264,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CheckpointListMsg:
 		return m.handleCheckpointListResult(msg)
+
+	case wireErrorMsg:
+		m.err = msg.Err
+		return m, nil
+
+	case approvalRequestMsg:
+		if msg.Request != nil {
+			m.pendingApprovals[msg.Request.ID] = msg.Request
+		}
+		return m, m.wireReceiveLoop()
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1118,18 +1129,21 @@ func initActionSpec() shellActionSpec {
 // store 参数允许调用方选择在哪个上下文中执行（当前会话或隔离临时存储）。
 func (m Model) startRuntimeExecution(store contextstore.Context, prompt string, eventsCh chan runtimeevents.Event) tea.Cmd {
 	return func() tea.Msg {
-		// 创建事件 sink
-		sink := runtimeevents.SinkFunc(func(ctx context.Context, event runtimeevents.Event) error {
-			select {
-			case eventsCh <- event:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		})
-
 		runner := m.deps.Runner
-		if eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner); ok {
+
+		// Try to use wire first (new path)
+		if runnerWithWire, ok := runner.(interface{ WithWire(*wire.Wire) interface{} }); ok && m.wire != nil {
+			runner = runnerWithWire.WithWire(m.wire).(Runner)
+		} else if eventfulRunner, ok := runner.(runtime.EventSinkCapableRunner); ok {
+			// Fallback to legacy Sink-based event flow
+			sink := runtimeevents.SinkFunc(func(ctx context.Context, event runtimeevents.Event) error {
+				select {
+				case eventsCh <- event:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
 			runner = eventfulRunner.WithEventSink(sink)
 		}
 
