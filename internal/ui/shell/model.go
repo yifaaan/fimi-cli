@@ -100,6 +100,7 @@ func availableCommands() []CommandInfo {
 		{Name: "/clear", Description: "Clear the screen"},
 		{Name: "/compact", Description: "Compact conversation context"},
 		{Name: "/rewind", Description: "List available rewind checkpoints"},
+		{Name: "/version", Description: "Show version information"},
 		{Name: "/exit", Description: "Exit the shell"},
 		{Name: "/quit", Description: "Exit the shell"},
 		{Name: "/init", Description: "Generate AGENTS.md for the project"},
@@ -669,6 +670,12 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.handleInitCommand()
 	case cmd == "/rewind":
 		return m.handleRewindList()
+	case cmd == "/version":
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: versionText(m.deps.StartupInfo.AppVersion),
+		})
+		return m, nil
 	case cmd == "/resume":
 		return m.handleResumeList()
 	default:

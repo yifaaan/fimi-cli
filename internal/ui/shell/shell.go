@@ -22,6 +22,7 @@ func helpText() string {
 		"  /compact        Compact conversation context",
 		"  /init           Generate AGENTS.md for the project",
 		"  /rewind         List available rewind checkpoints",
+		"  /version        Show version information",
 		"  /exit, /quit    Exit the shell",
 		"  /resume         List available sessions",
 		"  /resume <id>    Switch to a specific session",
@@ -49,6 +50,15 @@ func formatTime(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
+}
+
+// versionText returns the version display string.
+func versionText(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" || version == "dev" {
+		return "fimi-cli dev build"
+	}
+	return "fimi-cli v" + strings.TrimPrefix(version, "v")
 }
 
 const promptText = "fimi> "
