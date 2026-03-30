@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"fimi-cli/internal/contextstore"
@@ -1487,6 +1488,68 @@ func TestRunnerWithoutDMailerIgnoresDMailCheck(t *testing.T) {
 	}
 	if result.Status != RunStatusFinished {
 		t.Fatalf("Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+}
+
+func TestRunnerWithDMailerInjectsCheckpointMarkers(t *testing.T) {
+	dir := t.TempDir()
+	store := contextstore.New(filepath.Join(dir, "history.jsonl"))
+
+	engine := staticEngine{reply: AssistantReply{Text: "done"}}
+	runner := New(engine, Config{})
+	runner = runner.WithDMailer(&mockDMailer{})
+
+	result, err := runner.Run(context.Background(), store, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+
+	records, err := store.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	// Expected: checkpoint, CHECKPOINT 0 marker, user prompt, assistant reply
+	// (per-step checkpoints also inject markers, but this is a single-step run)
+	found := false
+	for _, r := range records {
+		if r.Content == "<system>CHECKPOINT 0</system>" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("records do not contain CHECKPOINT 0 marker; got: %#v", records)
+	}
+}
+
+func TestRunnerWithoutDMailerDoesNotInjectCheckpointMarkers(t *testing.T) {
+	dir := t.TempDir()
+	store := contextstore.New(filepath.Join(dir, "history.jsonl"))
+
+	engine := staticEngine{reply: AssistantReply{Text: "done"}}
+	runner := New(engine, Config{})
+
+	result, err := runner.Run(context.Background(), store, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+
+	records, err := store.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	for _, r := range records {
+		if strings.Contains(r.Content, "<system>CHECKPOINT") {
+			t.Fatalf("found unexpected CHECKPOINT marker in records without D-Mail: %q", r.Content)
+		}
 	}
 }
 

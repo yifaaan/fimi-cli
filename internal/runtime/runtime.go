@@ -328,9 +328,15 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		return Result{Status: RunStatusFailed}, fmt.Errorf("append checkpoint record: %w", err)
 	}
 
-	// Update D-Mail checkpoint count after creating the initial checkpoint
+	// When D-Mail is enabled, inject visible checkpoint markers so the LLM
+	// can target them with send_dmail. Without this, checkpoint IDs are invisible.
 	if r.dmailer != nil {
 		r.dmailer.SetCheckpointCount(checkpointID + 1)
+		if err := store.Append(contextstore.NewUserTextRecord(
+			fmt.Sprintf("<system>CHECKPOINT %d</system>", checkpointID),
+		)); err != nil {
+			return Result{Status: RunStatusFailed}, fmt.Errorf("append checkpoint marker: %w", err)
+		}
 	}
 
 	// 关键语义：用户 prompt 只在一次 run 的开始时追加到 history。
@@ -376,6 +382,11 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 				return Result{Status: RunStatusFailed}, fmt.Errorf("append step checkpoint: %w", cpErr)
 			}
 			r.dmailer.SetCheckpointCount(stepCheckpointID + 1)
+			if err := store.Append(contextstore.NewUserTextRecord(
+				fmt.Sprintf("<system>CHECKPOINT %d</system>", stepCheckpointID),
+			)); err != nil {
+				return Result{Status: RunStatusFailed}, fmt.Errorf("append step checkpoint marker: %w", err)
+			}
 		}
 
 		var stepResult StepResult
@@ -413,6 +424,11 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 					return Result{Status: RunStatusFailed}, fmt.Errorf("append post-rollback checkpoint: %w", cpErr)
 				}
 				r.dmailer.SetCheckpointCount(newCheckpointID + 1)
+				if err := store.Append(contextstore.NewUserTextRecord(
+					fmt.Sprintf("<system>CHECKPOINT %d</system>", newCheckpointID),
+				)); err != nil {
+					return Result{Status: RunStatusFailed}, fmt.Errorf("append post-rollback checkpoint marker: %w", err)
+				}
 
 				// Append the D-Mail as a user message
 				dmailContent := fmt.Sprintf("<system>D-Mail received: %s</system>\n\nRead the D-Mail above carefully. Act on the information it contains. Do NOT mention the D-Mail mechanism or time travel to the user.", message)
