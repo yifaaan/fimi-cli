@@ -10,6 +10,7 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/wire"
 )
 
 const DefaultReplyHistoryTurnLimit = 4
@@ -243,7 +244,8 @@ type StepConfig struct {
 type Runner struct {
 	engine       Engine
 	toolExecutor ToolExecutor
-	eventSink    runtimeevents.Sink
+	eventSink    runtimeevents.Sink // keep for backward compatibility
+	wire         *wire.Wire         // new: bidirectional channel
 	dmailer      DMailer
 	config       Config
 	runStepFn    func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error)
@@ -309,6 +311,12 @@ func (r Runner) WithEventSink(eventSink runtimeevents.Sink) Runner {
 	}
 
 	r.eventSink = eventSink
+	return r
+}
+
+// WithWire returns a Runner copy bound to a wire.
+func (r Runner) WithWire(w *wire.Wire) Runner {
+	r.wire = w
 	return r
 }
 
@@ -739,6 +747,13 @@ func (r Runner) emitStepEvents(
 }
 
 func (r Runner) emitEvent(ctx context.Context, event runtimeevents.Event) error {
+	// Try wire first (new path)
+	if r.wire != nil {
+		r.wire.Send(wire.EventMessage{Event: event})
+		return nil
+	}
+
+	// Fall back to Sink (legacy path)
 	sink := r.eventSink
 	if sink == nil {
 		sink = runtimeevents.NoopSink{}

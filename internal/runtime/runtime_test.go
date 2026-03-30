@@ -14,7 +14,59 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/wire"
 )
+
+func TestRunnerWithWire(t *testing.T) {
+	engine := &staticEngine{reply: AssistantReply{Text: "done"}}
+	runner := New(engine, DefaultConfig())
+
+	w := wire.New(0)
+	runnerWithWire := runner.WithWire(w)
+
+	if runnerWithWire.wire != w {
+		t.Fatalf("WithWire() did not set wire")
+	}
+
+	// Original runner should not be modified
+	if runner.wire != nil {
+		t.Fatalf("WithWire() modified original runner")
+	}
+}
+
+func TestRunnerEmitEventThroughWire(t *testing.T) {
+	engine := &staticEngine{reply: AssistantReply{Text: "hello"}}
+	w := wire.New(0)
+
+	runner := New(engine, DefaultConfig()).WithWire(w)
+
+	ctx := context.Background()
+	err := runner.emitEvent(ctx, runtimeevents.TextPart{Text: "test"})
+	if err != nil {
+		t.Fatalf("emitEvent() error = %v", err)
+	}
+
+	// Receive the event from wire
+	gotMsg, err := w.Receive(ctx)
+	if err != nil {
+		t.Fatalf("wire.Receive() error = %v", err)
+	}
+
+	eventMsg, ok := gotMsg.(wire.EventMessage)
+	if !ok {
+		t.Fatalf("wire message = %T, want EventMessage", gotMsg)
+	}
+
+	textPart, ok := eventMsg.Event.(runtimeevents.TextPart)
+	if !ok {
+		t.Fatalf("Event = %T, want TextPart", eventMsg.Event)
+	}
+	if textPart.Text != "test" {
+		t.Fatalf("TextPart.Text = %q, want %q", textPart.Text, "test")
+	}
+
+	w.Shutdown()
+}
 
 func TestRunnerRunAppendsPromptAndEngineReply(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
