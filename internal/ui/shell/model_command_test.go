@@ -8,7 +8,9 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
+	runtimeevents "fimi-cli/internal/runtime/events"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestRenderLiveStatusTextUsesCurrentToolSummary(t *testing.T) {
@@ -423,6 +425,89 @@ func TestCompactActionSpecIncludesSummaryIntent(t *testing.T) {
 		if !strings.Contains(got.Prompt, want) {
 			t.Fatalf("compactActionSpec().Prompt missing %q in %q", want, got.Prompt)
 		}
+	}
+}
+
+func TestHandleRuntimeEventsCommitsLateAssistantTextAfterCompletion(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeStreaming
+	model.output = model.output.SetPending([]TranscriptLine{{Type: LineTypeSystem, Content: "Step 1"}})
+
+	finished := model.finishRuntime(RuntimeCompleteMsg{})
+	if len(finished.output.lines) != 1 {
+		t.Fatalf("output lines after finish = %d, want 1 committed step line", len(finished.output.lines))
+	}
+	if len(finished.output.pending) != 0 {
+		t.Fatalf("pending lines after finish = %d, want 0", len(finished.output.pending))
+	}
+
+	updatedModel, cmd := finished.handleRuntimeEvents(RuntimeEventsMsg{Events: []runtimeevents.Event{
+		runtimeevents.TextPart{Text: "late assistant reply"},
+	}})
+	if cmd != nil {
+		t.Fatalf("handleRuntimeEvents(late text) cmd = %#v, want nil while idle", cmd)
+	}
+
+	updated := updatedModel.(Model)
+	if len(updated.output.pending) != 0 {
+		t.Fatalf("pending lines after late text = %d, want 0", len(updated.output.pending))
+	}
+	if len(updated.output.lines) != 2 {
+		t.Fatalf("output lines after late text = %d, want 2", len(updated.output.lines))
+	}
+	if updated.output.lines[0].Type != LineTypeSystem || updated.output.lines[0].Content != "Step 1" {
+		t.Fatalf("first output line = %#v, want committed step line", updated.output.lines[0])
+	}
+	if updated.output.lines[1].Type != LineTypeAssistant || updated.output.lines[1].Content != "late assistant reply" {
+		t.Fatalf("second output line = %#v, want committed late assistant reply", updated.output.lines[1])
+	}
+}
+
+func TestViewKeepsTranscriptWithinTerminalHeight(t *testing.T) {
+	model := NewModel(Dependencies{
+		StartupInfo: StartupInfo{
+			SessionID:      "1234567890abcdef",
+			ModelName:      "test-model",
+			AppVersion:     "dev",
+			LastRole:       "assistant",
+			LastSummary:    "a previous reply that should stay in the banner",
+			ConversationDB: "history.jsonl",
+		},
+	}, nil)
+	model.showBanner = true
+	model.width = 80
+	model.height = 12
+	model.input.width = 80
+
+	for i := 0; i < 10; i++ {
+		model.output = model.output.AppendLine(TranscriptLine{Type: LineTypeAssistant, Content: "line"})
+	}
+
+	view := model.View()
+	if got := lipgloss.Height(view); got > model.height {
+		t.Fatalf("view height = %d, want <= %d\nview:\n%s", got, model.height, view)
+	}
+	if !strings.Contains(view, "fimi>") {
+		t.Fatalf("view = %q, want input prompt present", view)
+	}
+}
+
+func TestRenderStatusBarHiddenWhenIdle(t *testing.T) {
+	model := NewModel(Dependencies{ModelName: "test-model"}, nil)
+	model.mode = ModeIdle
+	model.width = 80
+
+	if got := model.renderStatusBar(); got != "" {
+		t.Fatalf("renderStatusBar() = %q, want empty when idle", got)
+	}
+}
+
+func TestInputViewUsesSingleLinePrompt(t *testing.T) {
+	input := NewInputModel()
+	input.width = 80
+
+	if got := lipgloss.Height(input.View()); got != 1 {
+		t.Fatalf("input view height = %d, want 1", got)
 	}
 }
 

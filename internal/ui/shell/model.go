@@ -101,8 +101,9 @@ type Model struct {
 	setupState SetupState
 
 	// Wire for bidirectional communication with runtime
-	wire             *wire.Wire
-	pendingApprovals map[string]*wire.ApprovalRequest
+	wire                    *wire.Wire
+	pendingApprovals        map[string]*wire.ApprovalRequest
+	commitLateRuntimeEvents bool
 
 	// Approval selection state (for ModeApprovalPrompt)
 	approvalSelection int // 0=Approve, 1=Approve for session, 2=Reject
@@ -165,19 +166,19 @@ func NewModel(deps Dependencies, history *historyStore) Model {
 		output = output.AppendLine(line)
 	}
 
-		return Model{
-			input:            NewInputModel(),
-			output:           output,
-			runtime:          NewRuntimeModel(),
-			toasts:           NewToastModel(),
-			mode:             ModeIdle,
-			showBanner:       showBanner,
-			deps:             deps,
-			history:          history,
-			wire:             w,
-			pendingApprovals: make(map[string]*wire.ApprovalRequest),
-			fileIndexer:      completer.NewFileIndexer(deps.WorkDir),
-		}
+	return Model{
+		input:            NewInputModel(),
+		output:           output,
+		runtime:          NewRuntimeModel(),
+		toasts:           NewToastModel(),
+		mode:             ModeIdle,
+		showBanner:       showBanner,
+		deps:             deps,
+		history:          history,
+		wire:             w,
+		pendingApprovals: make(map[string]*wire.ApprovalRequest),
+		fileIndexer:      completer.NewFileIndexer(deps.WorkDir),
+	}
 }
 
 // Init 实现 tea.Model 接口。
@@ -191,7 +192,26 @@ func (m Model) Init() tea.Cmd {
 
 // Update 实现 tea.Model 接口。
 // 处理所有传入的消息并更新模型状态。
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
+	updated = m
+	defer func() {
+		model, ok := updated.(Model)
+		if !ok {
+			return
+		}
+		var printCmd tea.Cmd
+		model, printCmd = model.consumeTranscriptPrintCmd()
+		updated = model
+		if printCmd == nil {
+			return
+		}
+		if cmd == nil {
+			cmd = printCmd
+			return
+		}
+		cmd = tea.Sequence(printCmd, cmd)
+	}()
+
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -208,7 +228,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleCheckpointSelectKeyPress(msg)
 		}
 		var outputCmd tea.Cmd
-		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
+		m.output, outputCmd = m.output.Update(msg, m.width, m.currentOutputViewportHeight())
 		if outputCmd != nil {
 			cmds = append(cmds, outputCmd)
 		}
@@ -216,7 +236,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		var outputCmd tea.Cmd
-		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
+		m.output, outputCmd = m.output.Update(msg, m.width, m.currentOutputViewportHeight())
 		return m, outputCmd
 
 	case spinner.TickMsg:
@@ -233,7 +253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 更新子模型的尺寸
 		var inputCmd, outputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg, m.width)
-		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
+		m.output, outputCmd = m.output.Update(msg, m.width, m.currentOutputViewportHeight())
 		m.toasts = m.toasts.SetWidth(msg.Width)
 		return m, tea.Batch(inputCmd, outputCmd)
 
@@ -258,6 +278,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ClearMsg:
 		m.output = m.output.Clear()
+		m.commitLateRuntimeEvents = false
 		return m, nil
 
 	case ErrorMsg:
@@ -320,61 +341,57 @@ func (m Model) View() string {
 		return m.renderApprovalView()
 	}
 
+	leadingSections, trailingSections := m.mainViewLayoutSections()
+
 	var sections []string
-
-	// 0. 启动横幅（只显示一次）
-	if m.showBanner {
-		banner := m.renderBanner()
-		sections = append(sections, banner)
-		sections = append(sections, "") // 空行
-	}
-
-	// 1. 输出区域 (可滚动的 transcript)
-	outputView := m.output.View()
+	sections = append(sections, leadingSections...)
+	outputView := m.renderOutputForLayout(leadingSections, trailingSections)
 	if outputView != "" {
 		sections = append(sections, outputView)
 	}
-
-	// 2. 实时状态区域 (spinner + 工具信息)
-	if m.mode != ModeIdle {
-		liveStatus := m.renderLiveStatus()
-		if liveStatus != "" {
-			sections = append(sections, liveStatus)
-		}
-	}
-
-	// 2.5 Toast notifications
-	toastsView := m.toasts.View()
-	if toastsView != "" {
-		sections = append(sections, toastsView)
-	}
-
-	// 3. 输入区域
-	sections = append(sections, m.input.View())
-
-	// 3.5 命令建议（内联下拉框）
-	if m.showCommandSuggestions {
-		suggestions := m.renderCommandSuggestions()
-		if suggestions != "" {
-			sections = append(sections, suggestions)
-		}
-	}
-
-	// 3.6 文件补全建议（内联下拉框）
-	if m.showFileCompletion {
-		suggestions := m.renderFileCompletion()
-		if suggestions != "" {
-			sections = append(sections, suggestions)
-		}
-	}
-
-	// 4. 状态栏
-	statusBar := m.renderStatusBar()
-	if statusBar != "" {
-		sections = append(sections, statusBar)
-	}
+	sections = append(sections, trailingSections...)
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+func (m Model) mainViewLayoutSections() ([]string, []string) {
+	var leadingSections []string
+	var trailingSections []string
+
+	if m.showBanner {
+		leadingSections = append(leadingSections, m.renderBanner())
+		leadingSections = append(leadingSections, "")
+	}
+
+	if m.mode != ModeIdle {
+		if liveStatus := m.renderLiveStatus(); liveStatus != "" {
+			trailingSections = append(trailingSections, liveStatus)
+		}
+	}
+
+	if toastsView := m.toasts.View(); toastsView != "" {
+		trailingSections = append(trailingSections, toastsView)
+	}
+
+	trailingSections = append(trailingSections, m.input.View())
+
+	if m.showCommandSuggestions {
+		if suggestions := m.renderCommandSuggestions(); suggestions != "" {
+			trailingSections = append(trailingSections, suggestions)
+		}
+	}
+
+	if m.showFileCompletion {
+		if suggestions := m.renderFileCompletion(); suggestions != "" {
+			trailingSections = append(trailingSections, suggestions)
+		}
+	}
+
+	if statusBar := m.renderStatusBar(); statusBar != "" {
+		trailingSections = append(trailingSections, statusBar)
+	}
+
+	return leadingSections, trailingSections
 }
 
 // renderBanner 渲染启动横幅。
@@ -389,6 +406,58 @@ func (m Model) renderBanner() string {
 		LastSummary:    m.deps.StartupInfo.LastSummary,
 		WorkDir:        m.deps.WorkDir,
 	})
+}
+
+func (m Model) renderOutputForLayout(before, after []string) string {
+	output := m.output.WithViewportHeight(m.outputHeightForLayout(before, after))
+	return output.InteractiveView()
+}
+
+func (m Model) outputHeightForLayout(before, after []string) int {
+	if m.height <= 0 {
+		return 1
+	}
+
+	reserved := joinedSectionHeight(before) + joinedSectionHeight(after)
+	if len(before) > 0 {
+		reserved++
+	}
+	if len(after) > 0 {
+		reserved++
+	}
+
+	available := m.height - reserved
+	if available < 1 {
+		return 1
+	}
+	return available
+}
+
+func (m Model) currentOutputViewportHeight() int {
+	if m.mode == ModeApprovalPrompt {
+		if req := m.currentApprovalRequest(); req != nil {
+			return m.outputHeightForLayout(nil, m.approvalViewTrailingSections(req))
+		}
+		return 1
+	}
+	before, after := m.mainViewLayoutSections()
+	return m.outputHeightForLayout(before, after)
+}
+
+func joinedSectionHeight(sections []string) int {
+	if len(sections) == 0 {
+		return 0
+	}
+	return lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, sections...))
+}
+
+func (m Model) consumeTranscriptPrintCmd() (Model, tea.Cmd) {
+	rendered := m.output.RenderUnprintedLines()
+	if len(rendered) == 0 {
+		return m, nil
+	}
+	m.output = m.output.MarkPrinted()
+	return m, tea.Println(strings.Join(rendered, "\n"))
 }
 
 // handleKeyPress 处理键盘输入。
@@ -440,6 +509,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+l":
 		// 清屏
 		m.output = m.output.Clear()
+		m.commitLateRuntimeEvents = false
 		return m, nil
 
 	case "ctrl+o":
@@ -656,6 +726,12 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		return m.handleCommand(text)
 	}
 
+	// 在启动新一轮执行前，先把上一轮残留的 UI 状态落定，
+	// 并切换到新的 wire，避免旧 run 的迟到事件污染当前 run。
+	m.output = m.output.FlushPending()
+	m.runtime = m.runtime.Reset()
+	m = m.prepareRuntimeExecution()
+
 	// 追加到 transcript
 	m.output = m.output.AppendLine(TranscriptLine{
 		Type:    LineTypeUser,
@@ -687,13 +763,21 @@ func (m Model) handleRuntimeEvents(msg RuntimeEventsMsg) (tea.Model, tea.Cmd) {
 	wasIdle := m.mode == ModeIdle
 
 	for _, event := range msg.Events {
+		if wasIdle {
+			if statusUpdate, ok := event.(runtimeevents.StatusUpdate); ok {
+				m.runtime.ContextUsage = statusUpdate.Status.ContextUsage
+			}
+			if m.commitLateRuntimeEvents {
+				m.output = m.output.AppendCommittedRuntimeEvent(event)
+			}
+			continue
+		}
+
 		if stepBegin, ok := event.(runtimeevents.StepBegin); ok && stepBegin.Number > 1 {
 			m.output = m.output.FlushPending()
 		}
 		m.runtime = m.runtime.ApplyEvent(event)
-		if !wasIdle {
-			m.mode = ModeStreaming
-		}
+		m.mode = ModeStreaming
 		m.output = m.output.SetPending(m.runtime.ToLines())
 	}
 
@@ -707,10 +791,15 @@ func (m Model) handleRuntimeEvents(msg RuntimeEventsMsg) (tea.Model, tea.Cmd) {
 	)
 }
 func (m Model) finishRuntime(msg RuntimeCompleteMsg) Model {
+	commitLateEvents := m.activeShellActionCommand == ""
+	if m.wire != nil {
+		m.wire.Shutdown()
+	}
 	m.mode = ModeIdle
 	m.output = m.output.FlushPending()
 	m.runtime = m.runtime.Reset()
 	if msg.Err != nil {
+		m.commitLateRuntimeEvents = commitLateEvents
 		m.err = msg.Err
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeError,
@@ -721,11 +810,14 @@ func (m Model) finishRuntime(msg RuntimeCompleteMsg) Model {
 		return m
 	}
 	if m.activeShellActionCommand == "/compact" {
+		commitLateEvents = false
 		m = m.finishCompactRuntime(msg)
 	} else if m.activeShellActionCommand == "/init" {
+		commitLateEvents = false
 		m = m.finishInitRuntime()
 	}
 	m.activeShellActionCommand = ""
+	m.commitLateRuntimeEvents = commitLateEvents
 
 	return m
 }
@@ -1154,6 +1246,7 @@ func (m Model) startShellAction(spec shellActionSpec) (tea.Model, tea.Cmd) {
 	// 新动作开始前先把上一轮临时 UI 状态落定，并清空 live runtime 状态。
 	m.output = m.output.FlushPending()
 	m.runtime = m.runtime.Reset()
+	m = m.prepareRuntimeExecution()
 
 	m.output = m.output.AppendLine(TranscriptLine{
 		Type:    LineTypeSystem,
@@ -1216,6 +1309,7 @@ func (m Model) handleInitCommand() (tea.Model, tea.Cmd) {
 	// 但不把命令文本作为用户消息追加到 transcript。
 	m.output = m.output.FlushPending()
 	m.runtime = m.runtime.Reset()
+	m = m.prepareRuntimeExecution()
 	m.output = m.output.AppendLine(TranscriptLine{
 		Type:    LineTypeSystem,
 		Content: spec.StatusText,
@@ -1277,6 +1371,16 @@ func (m Model) startRuntimeExecution(store contextstore.Context, prompt string) 
 
 		return RuntimeCompleteMsg{Result: result, Err: err}
 	}
+}
+
+func (m Model) prepareRuntimeExecution() Model {
+	if m.wire != nil {
+		m.wire.Shutdown()
+	}
+	m.wire = wire.New(0)
+	m.pendingApprovals = make(map[string]*wire.ApprovalRequest)
+	m.commitLateRuntimeEvents = false
+	return m
 }
 
 // renderLiveStatus 渲染实时状态区域。
@@ -1936,6 +2040,10 @@ func (m Model) currentShortcutHint() string {
 
 // renderStatusBar renders the status bar.
 func (m Model) renderStatusBar() string {
+	if m.mode == ModeIdle {
+		return ""
+	}
+
 	var leftParts []string
 	var rightParts []string
 
@@ -1986,23 +2094,32 @@ func (m Model) resolveFirstPending(resp wire.ApprovalResponse) (tea.Model, tea.C
 
 // renderApprovalView renders the full-screen approval prompt.
 func (m Model) renderApprovalView() string {
-	// Find the pending approval to display
-	var req *wire.ApprovalRequest
-	for _, r := range m.pendingApprovals {
-		req = r
-		break
-	}
+	req := m.currentApprovalRequest()
 	if req == nil {
 		return ""
 	}
 
-	var sections []string
+	trailingSections := m.approvalViewTrailingSections(req)
 
-	// Transcript area (scrollable, same as normal view)
-	outputView := m.output.View()
+	var sections []string
+	outputView := m.renderOutputForLayout(nil, trailingSections)
 	if outputView != "" {
 		sections = append(sections, outputView)
 	}
+	sections = append(sections, trailingSections...)
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+func (m Model) currentApprovalRequest() *wire.ApprovalRequest {
+	for _, r := range m.pendingApprovals {
+		return r
+	}
+	return nil
+}
+
+func (m Model) approvalViewTrailingSections(req *wire.ApprovalRequest) []string {
+	var trailingSections []string
 
 	// Approval panel
 	panelWidth := min(m.width-4, 60)
@@ -2016,13 +2133,13 @@ func (m Model) renderApprovalView() string {
 		Bold(true)
 
 	actionLabel := fmt.Sprintf("  %s requires approval", req.Action)
-	sections = append(sections, headerStyle.Render(actionLabel))
+	trailingSections = append(trailingSections, headerStyle.Render(actionLabel))
 
 	// Description
 	descStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#AAAAAA"))
-	sections = append(sections, descStyle.Render("  "+req.Description))
-	sections = append(sections, "")
+	trailingSections = append(trailingSections, descStyle.Render("  "+req.Description))
+	trailingSections = append(trailingSections, "")
 
 	// Options
 	options := []struct {
@@ -2042,33 +2159,33 @@ func (m Model) renderApprovalView() string {
 				Bold(true).
 				Padding(0, 1).
 				Width(panelWidth)
-			sections = append(sections, selected.Render(fmt.Sprintf(" > %s %s", opt.icon, opt.label)))
+			trailingSections = append(trailingSections, selected.Render(fmt.Sprintf(" > %s %s", opt.icon, opt.label)))
 		} else {
 			normal := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#888888")).
 				Padding(0, 1).
 				Width(panelWidth)
-			sections = append(sections, normal.Render(fmt.Sprintf("   %s %s", opt.icon, opt.label)))
+			trailingSections = append(trailingSections, normal.Render(fmt.Sprintf("   %s %s", opt.icon, opt.label)))
 		}
 	}
 
-	sections = append(sections, "")
+	trailingSections = append(trailingSections, "")
 
 	// Help hint
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#555555"))
-	sections = append(sections, helpStyle.Render("  ↑/↓ select · Enter confirm"))
+	trailingSections = append(trailingSections, helpStyle.Render("  ↑/↓ select · Enter confirm"))
 
 	// Input area placeholder
-	sections = append(sections, m.input.View())
+	trailingSections = append(trailingSections, m.input.View())
 
 	// Status bar
 	statusBar := m.renderStatusBar()
 	if statusBar != "" {
-		sections = append(sections, statusBar)
+		trailingSections = append(trailingSections, statusBar)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+	return trailingSections
 }
 
 // resolveApproval completes an approval request.

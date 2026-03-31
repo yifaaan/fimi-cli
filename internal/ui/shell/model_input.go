@@ -36,6 +36,7 @@ func NewInputModel() InputModel {
 	}
 }
 
+
 // Value 返回当前输入值。
 func (m InputModel) Value() string {
 	return m.value
@@ -213,15 +214,5 @@ func (m InputModel) View() string {
 		inputLine = lipgloss.JoinHorizontal(lipgloss.Top, prompt, before, cursor, after)
 	}
 
-	// 如果没有宽度信息，直接返回输入行
-	if m.width <= 2 {
-		return inputLine
-	}
-
-	// 输入框容器
-	inputBox := styles.BorderStyle.
-		Width(m.width - 2).
-		Render(inputLine)
-
-	return inputBox
+	return inputLine
 }
