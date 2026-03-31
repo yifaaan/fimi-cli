@@ -160,21 +160,22 @@ func TestRenderToolResultExpandedKeepsTranscriptCompact(t *testing.T) {
 	}
 }
 
-func TestRenderUnprintedLinesReturnsOnlyNewCommittedLines(t *testing.T) {
+func TestRenderUnprintedLinesLeavesLatestTurnInteractive(t *testing.T) {
 	model := NewOutputModel()
 	model = model.AppendLine(TranscriptLine{Type: LineTypeUser, Content: "first"})
-	if got := model.RenderUnprintedLines(); len(got) != 1 {
-		t.Fatalf("RenderUnprintedLines() len = %d, want 1", len(got))
-	}
+	model = model.AppendLine(TranscriptLine{Type: LineTypeAssistant, Content: "first reply"})
+	model = model.AppendLine(TranscriptLine{Type: LineTypeUser, Content: "second"})
+	model = model.AppendLine(TranscriptLine{Type: LineTypeAssistant, Content: "second reply"})
 
-	model = model.MarkPrinted()
-	model = model.AppendLine(TranscriptLine{Type: LineTypeAssistant, Content: "second"})
 	got := model.RenderUnprintedLines()
-	if len(got) != 1 {
-		t.Fatalf("RenderUnprintedLines() len after mark printed = %d, want 1", len(got))
+	if len(got) != 2 {
+		t.Fatalf("RenderUnprintedLines() len = %d, want 2 lines from the older turn", len(got))
 	}
-	if !strings.Contains(got[0], "second") {
-		t.Fatalf("RenderUnprintedLines()[0] = %q, want latest committed line", got[0])
+	if !strings.Contains(got[0], "first") || !strings.Contains(got[1], "first reply") {
+		t.Fatalf("RenderUnprintedLines() = %#v, want only the older completed turn", got)
+	}
+	if strings.Contains(strings.Join(got, "\n"), "second reply") {
+		t.Fatalf("RenderUnprintedLines() = %#v, want latest turn kept interactive", got)
 	}
 }
 
@@ -198,18 +199,20 @@ func TestInteractiveViewShowsExpandedToolResultInStepContext(t *testing.T) {
 	model := NewOutputModel()
 	model.width = 80
 	model.height = 12
+	model.printedCount = 0
 	model = model.AppendLine(TranscriptLine{Type: LineTypeSystem, Content: "Step 1"})
+	model = model.AppendLine(TranscriptLine{Type: LineTypeUser, Content: "list docs dir"})
 	model = model.AppendLine(TranscriptLine{Type: LineTypeToolCall, Content: "Bash(Ran pwd && ls -la)"})
 	model = model.AppendLine(TranscriptLine{Type: LineTypeToolResult, Content: "line 1\nline 2\nline 3"})
 	model = model.AppendLine(TranscriptLine{Type: LineTypeAssistant, Content: "done"})
-	model.expanded[2] = true
+	model.expanded[3] = true
 
 	got := model.InteractiveView()
-	if !containsAll(got, []string{"Step 1", "Bash(Ran pwd && ls -la)", "line 1", "Ctrl+O to collapse"}) {
-		t.Fatalf("InteractiveView() = %q, want expanded tool result inline within its step", got)
+	if !containsAll(got, []string{"Bash(Ran pwd && ls -la)", "line 1", "done", "Ctrl+O to collapse"}) {
+		t.Fatalf("InteractiveView() = %q, want expanded tool result inline within the latest turn", got)
 	}
-	if strings.Contains(got, "done") {
-		t.Fatalf("InteractiveView() = %q, want assistant final output kept outside folded tool detail", got)
+	if strings.Index(got, "Bash(Ran pwd && ls -la)") > strings.Index(got, "line 1") {
+		t.Fatalf("InteractiveView() = %q, want expanded result rendered under the tool call", got)
 	}
 }
 

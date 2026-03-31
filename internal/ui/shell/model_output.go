@@ -459,21 +459,24 @@ func (m OutputModel) allLines() []TranscriptLine {
 }
 
 func (m OutputModel) RenderUnprintedLines() []string {
-	if m.printedCount >= len(m.lines) {
+	tailStart := m.interactiveTailStart()
+	if m.printedCount >= tailStart {
 		return nil
 	}
 
-	rendered := make([]string, 0, len(m.lines)-m.printedCount)
-	for idx := m.printedCount; idx < len(m.lines); idx++ {
+	rendered := make([]string, 0, tailStart-m.printedCount)
+	for idx := m.printedCount; idx < tailStart; idx++ {
 		rendered = append(rendered, m.renderLine(m.lines[idx], idx))
 	}
 	return rendered
 }
 
 func (m OutputModel) interactiveSelection() ([]indexedTranscriptLine, bool) {
-	context := m.expandedToolResultContextSelection()
-	selection := make([]indexedTranscriptLine, 0, len(context)+len(m.pending))
-	selection = append(selection, context...)
+	tailStart := m.interactiveTailStart()
+	selection := make([]indexedTranscriptLine, 0, len(m.lines)-tailStart+len(m.pending))
+	for idx := tailStart; idx < len(m.lines); idx++ {
+		selection = append(selection, indexedTranscriptLine{idx: idx, line: m.lines[idx]})
+	}
 
 	base := len(m.lines)
 	for i, line := range m.pending {
@@ -483,36 +486,24 @@ func (m OutputModel) interactiveSelection() ([]indexedTranscriptLine, bool) {
 	if len(selection) == 0 {
 		return nil, false
 	}
-	return selection, len(context) > 0 && len(m.pending) == 0
+	return selection, false
 }
 
-func (m OutputModel) expandedToolResultContextSelection() []indexedTranscriptLine {
-	idx, _, ok := m.latestExpandedToolResult()
-	if !ok {
-		return nil
+func (m OutputModel) interactiveTailStart() int {
+	if m.printedCount < 0 {
+		return 0
+	}
+	if m.printedCount > len(m.lines) {
+		return len(m.lines)
 	}
 
-	allLines := m.allLines()
-	start := idx
-	for i := idx; i >= 0; i-- {
-		if allLines[i].Type == LineTypeSystem && strings.HasPrefix(allLines[i].Content, "Step ") {
-			start = i
-			break
+	for i := len(m.lines) - 1; i >= m.printedCount; i-- {
+		if m.lines[i].Type == LineTypeUser {
+			return i
 		}
 	}
-	if start == idx && idx > 0 && allLines[idx-1].Type == LineTypeToolCall {
-		start = idx - 1
-	}
 
-	// 只展开到当前 tool result 为止；后续 assistant 最终回答保留在终端 scrollback 中，
-	// 不应被视为 Ctrl+O 折叠的一部分。
-	end := idx + 1
-
-	selection := make([]indexedTranscriptLine, 0, end-start)
-	for i := start; i < end; i++ {
-		selection = append(selection, indexedTranscriptLine{idx: i, line: allLines[i]})
-	}
-	return selection
+	return m.printedCount
 }
 
 func (m OutputModel) renderIndexedSelection(selection []indexedTranscriptLine, anchorTop bool) string {
@@ -637,20 +628,6 @@ func (m OutputModel) ToggleExpand() (OutputModel, bool) {
 
 	m.expanded[lastToolResultIdx] = !m.expanded[lastToolResultIdx]
 	return m, true
-}
-
-func (m OutputModel) latestExpandedToolResult() (int, TranscriptLine, bool) {
-	allLines := m.allLines()
-	for i := len(allLines) - 1; i >= 0; i-- {
-		if allLines[i].Type != LineTypeToolResult {
-			continue
-		}
-		if !m.expanded[i] {
-			continue
-		}
-		return i, allLines[i], true
-	}
-	return -1, TranscriptLine{}, false
 }
 
 // HasExpandedResults returns true if any tool result is currently expanded.
