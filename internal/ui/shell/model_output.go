@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
+	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/ui/shell/styles"
 
 	"github.com/charmbracelet/bubbletea"
@@ -46,17 +48,25 @@ const foldThreshold = 10
 type OutputModel struct {
 	// 已完成的行
 	lines []TranscriptLine
+	// 已打印到终端 scrollback 的已完成行数量
+	printedCount int
 	// 正在更新的实时内容（流式输出）
 	pending []TranscriptLine
 	// 视口尺寸
-	width  int
-	height int
+	width          int
+	height         int
+	viewportHeight int
 	// 是否自动滚动到底部
 	atBottom bool
 	// 相对底部的滚动偏移量（按行）
 	scrollOffset int
 	// 已展开的 ToolResult 行索引（key 为 lines 中的索引）
 	expanded map[int]bool
+}
+
+type indexedTranscriptLine struct {
+	idx  int
+	line TranscriptLine
 }
 
 // NewOutputModel 创建一个新的输出模型。
@@ -176,6 +186,7 @@ func (m OutputModel) FlushPending() OutputModel {
 // Clear 清空 transcript。
 func (m OutputModel) Clear() OutputModel {
 	m.lines = nil
+	m.printedCount = 0
 	m.pending = nil
 	m.scrollOffset = 0
 	m.atBottom = true
@@ -222,11 +233,31 @@ func (m OutputModel) View() string {
 
 	var b strings.Builder
 	for i := startIdx; i < endIdx; i++ {
+		if i > startIdx {
+			b.WriteByte('\n')
+		}
 		b.WriteString(rows[i])
-		b.WriteString("\n")
 	}
 
 	return b.String()
+}
+
+func (m OutputModel) PendingView() string {
+	if len(m.pending) == 0 {
+		return ""
+	}
+	pendingOnly := m
+	pendingOnly.lines = nil
+	pendingOnly.printedCount = 0
+	return pendingOnly.View()
+}
+
+func (m OutputModel) InteractiveView() string {
+	selection, anchorTop := m.interactiveSelection()
+	if len(selection) == 0 {
+		return ""
+	}
+	return m.renderIndexedSelection(selection, anchorTop)
 }
 
 // renderLine 渲染单行。
@@ -253,7 +284,7 @@ func (m OutputModel) renderLine(line TranscriptLine, idx int) string {
 // renderToolResult 渲染工具结果，默认隐藏正文，展开后才显示完整内容。
 func (m OutputModel) renderToolResult(content string, idx int) string {
 	if m.expanded[idx] {
-		return styles.SystemStyle.Render(content)
+		return styles.SystemStyle.Render(m.expandedToolResultContent(content))
 	}
 
 	// Take only the first line for the preview
@@ -271,13 +302,55 @@ func (m OutputModel) renderToolResult(content string, idx int) string {
 	return styles.HelpStyle.Render("  ⎿  " + preview + "  (Ctrl+O to expand)")
 }
 
+func (m OutputModel) expandedToolResultContent(content string) string {
+	trimmed := strings.TrimRight(content, "\n")
+	if strings.TrimSpace(trimmed) == "" {
+		return "  ⎿  No output\n     (Ctrl+O to collapse)"
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	hidden := 0
+	if len(lines) > foldThreshold {
+		hidden = len(lines) - foldThreshold
+		lines = lines[:foldThreshold]
+	}
+
+	formatted := make([]string, 0, len(lines)+1)
+	for i, line := range lines {
+		prefix := "     "
+		if i == 0 {
+			prefix = "  ⎿  "
+		}
+		formatted = append(formatted, prefix+line)
+	}
+	if hidden > 0 {
+		formatted = append(formatted, fmt.Sprintf("     ... %d more lines hidden (Ctrl+O to collapse)", hidden))
+	} else {
+		formatted = append(formatted, "     (Ctrl+O to collapse)")
+	}
+
+	return strings.Join(formatted, "\n")
+}
+
 func (m OutputModel) visibleHeight() int {
+	if m.viewportHeight > 0 {
+		return m.viewportHeight
+	}
+
 	availableHeight := m.height - 6
-	if availableHeight < 5 {
-		availableHeight = 5
+	if availableHeight < 1 {
+		availableHeight = 1
 	}
 
 	return availableHeight
+}
+
+func (m OutputModel) WithViewportHeight(height int) OutputModel {
+	if height < 1 {
+		height = 1
+	}
+	m.viewportHeight = height
+	return m
 }
 
 func (m OutputModel) totalLines() int {
@@ -385,6 +458,159 @@ func (m OutputModel) allLines() []TranscriptLine {
 	return allLines
 }
 
+func (m OutputModel) RenderUnprintedLines() []string {
+	if m.printedCount >= len(m.lines) {
+		return nil
+	}
+
+	rendered := make([]string, 0, len(m.lines)-m.printedCount)
+	for idx := m.printedCount; idx < len(m.lines); idx++ {
+		rendered = append(rendered, m.renderLine(m.lines[idx], idx))
+	}
+	return rendered
+}
+
+func (m OutputModel) interactiveSelection() ([]indexedTranscriptLine, bool) {
+	context := m.expandedToolResultContextSelection()
+	selection := make([]indexedTranscriptLine, 0, len(context)+len(m.pending))
+	selection = append(selection, context...)
+
+	base := len(m.lines)
+	for i, line := range m.pending {
+		selection = append(selection, indexedTranscriptLine{idx: base + i, line: line})
+	}
+
+	if len(selection) == 0 {
+		return nil, false
+	}
+	return selection, len(context) > 0 && len(m.pending) == 0
+}
+
+func (m OutputModel) expandedToolResultContextSelection() []indexedTranscriptLine {
+	idx, _, ok := m.latestExpandedToolResult()
+	if !ok {
+		return nil
+	}
+
+	allLines := m.allLines()
+	start := idx
+	for i := idx; i >= 0; i-- {
+		if allLines[i].Type == LineTypeSystem && strings.HasPrefix(allLines[i].Content, "Step ") {
+			start = i
+			break
+		}
+	}
+	if start == idx && idx > 0 && allLines[idx-1].Type == LineTypeToolCall {
+		start = idx - 1
+	}
+
+	// 只展开到当前 tool result 为止；后续 assistant 最终回答保留在终端 scrollback 中，
+	// 不应被视为 Ctrl+O 折叠的一部分。
+	end := idx + 1
+
+	selection := make([]indexedTranscriptLine, 0, end-start)
+	for i := start; i < end; i++ {
+		selection = append(selection, indexedTranscriptLine{idx: i, line: allLines[i]})
+	}
+	return selection
+}
+
+func (m OutputModel) renderIndexedSelection(selection []indexedTranscriptLine, anchorTop bool) string {
+	rows := make([]string, 0, len(selection))
+	for _, item := range selection {
+		rendered := m.renderLine(item.line, item.idx)
+		rows = append(rows, strings.Split(wrap.String(rendered, m.renderWidth()), "\n")...)
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+
+	visible := m.visibleHeight()
+	start := 0
+	end := len(rows)
+	if len(rows) > visible {
+		if anchorTop {
+			end = visible
+		} else {
+			start = len(rows) - visible
+		}
+	}
+
+	return strings.Join(rows[start:end], "\n")
+}
+
+func (m OutputModel) MarkPrinted() OutputModel {
+	m.printedCount = len(m.lines)
+	return m
+}
+
+func (m OutputModel) AppendCommittedRuntimeEvent(event runtimeevents.Event) OutputModel {
+	switch e := event.(type) {
+	case runtimeevents.StepBegin:
+		return m.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: fmt.Sprintf("Step %d", e.Number),
+		})
+	case runtimeevents.StepInterrupted:
+		return m.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: "Interrupted",
+		})
+	case runtimeevents.TextPart:
+		return m.appendCommittedAssistantText(e.Text)
+	case runtimeevents.ToolCall:
+		return m.AppendLine(TranscriptLine{
+			Type: LineTypeToolCall,
+			Content: formatToolCallLine(ToolCallInfo{
+				ID:     e.ID,
+				Name:   e.Name,
+				Status: ToolStatusRunning,
+				Args:   toolCallDisplaySummary(e.Name, e.Subtitle, e.Arguments),
+			}),
+		})
+	case runtimeevents.ToolCallPart:
+		return m.appendCommittedToolCallDelta(e.Delta)
+	case runtimeevents.ToolResult:
+		lineType := LineTypeToolResult
+		if e.IsError {
+			lineType = LineTypeError
+		}
+		return m.AppendLine(TranscriptLine{
+			Type:    lineType,
+			Content: strings.TrimSpace(e.Output),
+		})
+	default:
+		return m
+	}
+}
+
+func (m OutputModel) appendCommittedAssistantText(delta string) OutputModel {
+	if delta == "" {
+		return m
+	}
+	if len(m.lines) > 0 && m.lines[len(m.lines)-1].Type == LineTypeAssistant {
+		m.lines[len(m.lines)-1].Content += delta
+		return m
+	}
+	return m.AppendLine(TranscriptLine{
+		Type:    LineTypeAssistant,
+		Content: delta,
+	})
+}
+
+func (m OutputModel) appendCommittedToolCallDelta(delta string) OutputModel {
+	if delta == "" {
+		return m
+	}
+	for i := len(m.lines) - 1; i >= 0; i-- {
+		if m.lines[i].Type == LineTypeToolCall {
+			m.lines[i].Content += delta
+			return m
+		}
+	}
+	return m
+}
+
 func (m OutputModel) renderWidth() int {
 	if m.width <= 1 {
 		return 1
@@ -411,6 +637,20 @@ func (m OutputModel) ToggleExpand() (OutputModel, bool) {
 
 	m.expanded[lastToolResultIdx] = !m.expanded[lastToolResultIdx]
 	return m, true
+}
+
+func (m OutputModel) latestExpandedToolResult() (int, TranscriptLine, bool) {
+	allLines := m.allLines()
+	for i := len(allLines) - 1; i >= 0; i-- {
+		if allLines[i].Type != LineTypeToolResult {
+			continue
+		}
+		if !m.expanded[i] {
+			continue
+		}
+		return i, allLines[i], true
+	}
+	return -1, TranscriptLine{}, false
 }
 
 // HasExpandedResults returns true if any tool result is currently expanded.

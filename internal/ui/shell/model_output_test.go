@@ -133,6 +133,86 @@ func TestOutputModelUpdateScrollsWithMouseWheel(t *testing.T) {
 	}
 }
 
+func TestRenderToolResultExpandedKeepsTranscriptCompact(t *testing.T) {
+	model := NewOutputModel()
+	model.expanded[0] = true
+
+	content := strings.Join([]string{
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+		"line 8",
+		"line 9",
+		"line 10",
+		"line 11",
+	}, "\n")
+
+	got := model.renderLine(TranscriptLine{Type: LineTypeToolResult, Content: content}, 0)
+	if !containsAll(got, []string{"line 1", "line 10", "1 more lines hidden", "Ctrl+O to collapse"}) {
+		t.Fatalf("expanded tool result = %q, want bounded expanded content with collapse hint", got)
+	}
+	if strings.Contains(got, "line 11") {
+		t.Fatalf("expanded tool result = %q, want lines beyond threshold hidden", got)
+	}
+}
+
+func TestRenderUnprintedLinesReturnsOnlyNewCommittedLines(t *testing.T) {
+	model := NewOutputModel()
+	model = model.AppendLine(TranscriptLine{Type: LineTypeUser, Content: "first"})
+	if got := model.RenderUnprintedLines(); len(got) != 1 {
+		t.Fatalf("RenderUnprintedLines() len = %d, want 1", len(got))
+	}
+
+	model = model.MarkPrinted()
+	model = model.AppendLine(TranscriptLine{Type: LineTypeAssistant, Content: "second"})
+	got := model.RenderUnprintedLines()
+	if len(got) != 1 {
+		t.Fatalf("RenderUnprintedLines() len after mark printed = %d, want 1", len(got))
+	}
+	if !strings.Contains(got[0], "second") {
+		t.Fatalf("RenderUnprintedLines()[0] = %q, want latest committed line", got[0])
+	}
+}
+
+func TestPendingViewOmitsCommittedLines(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+	model.height = 12
+	model = model.AppendLine(TranscriptLine{Type: LineTypeUser, Content: "committed"})
+	model = model.SetPending([]TranscriptLine{{Type: LineTypeAssistant, Content: "pending"}})
+
+	got := model.PendingView()
+	if strings.Contains(got, "committed") {
+		t.Fatalf("PendingView() = %q, want committed transcript omitted", got)
+	}
+	if !strings.Contains(got, "pending") {
+		t.Fatalf("PendingView() = %q, want pending transcript included", got)
+	}
+}
+
+func TestInteractiveViewShowsExpandedToolResultInStepContext(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+	model.height = 12
+	model = model.AppendLine(TranscriptLine{Type: LineTypeSystem, Content: "Step 1"})
+	model = model.AppendLine(TranscriptLine{Type: LineTypeToolCall, Content: "Bash(Ran pwd && ls -la)"})
+	model = model.AppendLine(TranscriptLine{Type: LineTypeToolResult, Content: "line 1\nline 2\nline 3"})
+	model = model.AppendLine(TranscriptLine{Type: LineTypeAssistant, Content: "done"})
+	model.expanded[2] = true
+
+	got := model.InteractiveView()
+	if !containsAll(got, []string{"Step 1", "Bash(Ran pwd && ls -la)", "line 1", "Ctrl+O to collapse"}) {
+		t.Fatalf("InteractiveView() = %q, want expanded tool result inline within its step", got)
+	}
+	if strings.Contains(got, "done") {
+		t.Fatalf("InteractiveView() = %q, want assistant final output kept outside folded tool detail", got)
+	}
+}
+
 func containsAny(s string, needles []string) bool {
 	for _, needle := range needles {
 		if needle != "" && strings.Contains(s, needle) {

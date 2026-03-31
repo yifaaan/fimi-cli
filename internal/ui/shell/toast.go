@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"fimi-cli/internal/ui/shell/styles"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"fimi-cli/internal/ui/shell/styles"
 )
 
 // ToastLevel represents the severity/type of a toast notification.
@@ -107,7 +107,10 @@ func (m ToastModel) View() string {
 		return ""
 	}
 	var b strings.Builder
-	for _, t := range m.toasts {
+	for i, t := range m.toasts {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
 		style := toastStyle(t.Level)
 		icon := toastIcon(t.Level)
 		line := fmt.Sprintf(" %s %s", icon, t.Message)
@@ -122,7 +125,6 @@ func (m ToastModel) View() string {
 		} else {
 			b.WriteString(style.Render(line))
 		}
-		b.WriteString("\n")
 	}
 	return b.String()
 }

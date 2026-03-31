@@ -145,6 +145,10 @@ func Run(ctx context.Context, deps Dependencies) error {
 
 	// 创建 Bubble Tea 模型
 	model := NewModel(deps, &history)
+	if initialTranscript := model.output.RenderUnprintedLines(); len(initialTranscript) > 0 {
+		fmt.Fprintln(output, strings.Join(initialTranscript, "\n"))
+		model.output = model.output.MarkPrinted()
+	}
 
 	// 创建 Bubble Tea 程序
 	// 不使用 alt screen 和鼠标捕获，这样终端原生的文本选择和滚轮翻页都可以正常工作。
