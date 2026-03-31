@@ -256,9 +256,13 @@ func (m OutputModel) renderToolResult(content string, idx int) string {
 		return styles.SystemStyle.Render(content)
 	}
 
+	// Take only the first line for the preview
 	preview := strings.TrimSpace(content)
 	if preview == "" {
 		preview = "No output"
+	}
+	if nl := strings.IndexByte(preview, '\n'); nl >= 0 {
+		preview = preview[:nl]
 	}
 	if len(preview) > 80 {
 		preview = preview[:77] + "..."
