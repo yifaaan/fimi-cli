@@ -54,6 +54,7 @@ type Model struct {
 	input   InputModel
 	output  OutputModel
 	runtime RuntimeModel
+	toasts  ToastModel
 
 	// 共享状态
 	width  int
@@ -168,6 +169,7 @@ func NewModel(deps Dependencies, history *historyStore) Model {
 			input:            NewInputModel(),
 			output:           output,
 			runtime:          NewRuntimeModel(),
+			toasts:           NewToastModel(),
 			mode:             ModeIdle,
 			showBanner:       showBanner,
 			deps:             deps,
@@ -232,6 +234,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var inputCmd, outputCmd tea.Cmd
 		m.input, inputCmd = m.input.Update(msg, m.width)
 		m.output, outputCmd = m.output.Update(msg, m.width, m.height)
+		m.toasts = m.toasts.SetWidth(msg.Width)
 		return m, tea.Batch(inputCmd, outputCmd)
 
 	case RuntimeEventMsg:
@@ -290,6 +293,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case FileIndexResultMsg:
 		return m.handleFileIndexResult(msg)
+
+	case ToastAddMsg, ToastDismissMsg, ToastTickMsg:
+		var cmd tea.Cmd
+		m.toasts, cmd = m.toasts.Update(msg)
+		return m, cmd
 	}
 
 	return m, tea.Batch(cmds...)
@@ -333,6 +341,12 @@ func (m Model) View() string {
 		if liveStatus != "" {
 			sections = append(sections, liveStatus)
 		}
+	}
+
+	// 2.5 Toast notifications
+	toastsView := m.toasts.View()
+	if toastsView != "" {
+		sections = append(sections, toastsView)
 	}
 
 	// 3. 输入区域
