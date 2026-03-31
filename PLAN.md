@@ -5,7 +5,7 @@
 This file tracks the migration gap between the Python reference snapshot in `temp/`
 and the current Go rewrite.
 
-Updated: 2026-03-30 (comprehensive update after parallel agent exploration of v0.35)
+Updated: 2026-03-31
 
 ---
 
@@ -161,7 +161,7 @@ class AgentGlobals(NamedTuple):
 
 ## Current Go Snapshot
 
-Updated: 2026-03-30
+Updated: 2026-03-31
 
 ### Implemented Core
 
@@ -180,6 +180,9 @@ Updated: 2026-03-30
 - Tool subtitle extraction (`internal/runtime/toolsubtitle.go`)
 - Output shaping (50K chars total, 2K per line)
 - D-Mail integration (`internal/dmail`) with runtime rollback
+- Wire system (`internal/wire`) — bidirectional buffered channel between runtime and UI
+- Approval system (`internal/approval`) — yolo mode, auto-approve actions, approve-for-session
+- Tool approval gates on bash, write_file, replace_file
 
 ### Go Tools (12 registered)
 
@@ -213,6 +216,8 @@ Updated: 2026-03-30
 - Inline slash command suggestions
 - Scrollable transcript
 - Tool result folding with Ctrl+O toggle
+- Approval panel with arrow-key selection (approve / approve-for-session / reject)
+- Ctrl+C resolves pending approvals on exit
 - Context usage display in status bar
 - Markdown rendering via glamour
 - Tool subtitle extraction via `toolsubtitle.go`
@@ -240,14 +245,14 @@ Updated: 2026-03-30
 | Context history (JSONL) | yes | yes | `done` |
 | Checkpoint storage | yes | yes | `done` |
 | D-Mail / rollback | BackToTheFuture + DenwaRenji | yes (`internal/dmail` + runtime integration) | `done` |
-| **Wire system** | `Wire` class with ContextVar | `events.Sink` interface only | `partial` (no bidirectional, no ContextVar) |
-| **Approval system** | `Approval` class with yolo/auto-approve/reject | no | `missing` |
-| **Tool context tracking** | `CustomToolset` + ContextVar | no | `missing` |
+| Wire system | `Wire` class with ContextVar | `internal/wire` (buffered chan 64, context key, Send/Receive/Shutdown) | `done` |
+| Approval system | `Approval` class with yolo/auto-approve/reject | `internal/approval` (yolo, auto-approve, approve-for-session, reject) | `done` |
+| Tool context tracking | `CustomToolset` + ContextVar | approval context propagation via `approval.WithContext` | `done` |
 | Runtime: steer input | no explicit mechanism | no | `same` |
 | Multi-step runtime | yes | yes | `done` |
 | Step retry | tenacity + jitter + connection recovery | retryable error classification | `partial` (no backoff/jitter) |
 | Streaming text/tool deltas | yes | yes | `done` |
-| Runtime events | 7 types + ApprovalRequest | 7 types | `partial` (no ApprovalRequest) |
+| Runtime events | 7 types + ApprovalRequest | 7 types + ApprovalRequest via wire | `done` |
 | Tool subtitle extraction | yes (per-tool logic) | yes (`toolsubtitle.go`) | `done` |
 | Output shaping | 50K chars, 2K/line | 50K chars, 2K/line | `done` |
 | Print UI: text | yes | yes | `done` |
@@ -264,7 +269,7 @@ Updated: 2026-03-30
 | Shell: `@` file completer | yes (fuzzy, 2-tier, cached) | no | `missing` |
 | Shell: bottom toolbar | yes (time + mode + context) | yes (status bar with time + keyboard hint) | `done` |
 | Shell: tool result cards | yes | defined but dead | `partial` |
-| Shell: approval panel | yes | no | `missing` |
+| Shell: approval panel | yes | yes (ModeApprovalPrompt, arrow-key selection) | `done` |
 | Shell: mode toggle (agent/shell) | yes | no | `missing` |
 | Shell: toast notifications | yes | no | `missing` |
 | Shell: background tasks | yes (auto-update) | no | `missing` |
@@ -284,7 +289,7 @@ Updated: 2026-03-30
 
 | Python Tool | Go Equivalent | Status |
 | --- | --- | --- |
-| `Bash` | `bash` | `partial` (no approval gate; different timeout default 60s vs 120s) |
+| `Bash` | `bash` | `done` (approval gate added; timeout 120s vs Python 60s) |
 | `ReadFile` | `read_file` | `done` |
 | `WriteFile` | `write_file` | `done` |
 | `Glob` | `glob` | `done` (Go supports `**`, Python rejects prefix) |
@@ -310,30 +315,30 @@ Updated: 2026-03-30
 - [x] Add keyboard shortcut hint to status bar (Ctrl+O展开/折叠)
 - [x] Add `/setup` command (interactive config wizard with ModeSetup)
 - [x] Add config.Save() and SaveFile() for atomic config writes
-- [ ] Add `/reload` command (config hot-reload)
-- [ ] Add bottom toolbar time display (already in status bar)
+- [x] Add approval panel (ModeApprovalPrompt, arrow-key selection, approve/approve-for-session/reject)
+- [x] Add `@` file mention completer (fuzzy, 2-tier lazy index, ignore list, cursor positioning)
+- [x] Add `/reload` command (config hot-reload + file index refresh)
+- [x] Add cursor positioning to InputModel (left/right arrows, mid-string insert/delete)
 - [ ] Add toast notifications system
-- [ ] Add approval panel / question panel
-- [ ] Add `@` file mention completer (fuzzy, 2-tier lazy index, ignore list)
-- [ ] Add prompt history UI integration (fuzzy search)
+- [ ] Add prompt history persistence (per-directory JSONL)
 - [ ] Add mode toggle (agent/shell) -- lower priority
 - [ ] Add external editor (Ctrl-O) -- lower priority
 - [ ] Add clipboard paste -- lower priority
 - [ ] Add background task browser (`/task`) -- lower priority
 
-### Phase 13: Wire/Approval System (NEW)
+### Phase 13: Wire/Approval System -- DONE
 
-- [ ] Implement bidirectional Wire-like channel (events + approval requests)
-- [ ] Add ContextVar-equivalent for implicit wire access (context key pattern)
-- [ ] Implement Approval system with yolo mode and auto-approve actions
-- [ ] Add `ApprovalRequest` event type
-- [ ] Add tool context tracking (current tool call in context)
-- [ ] Integrate approval with bash tool for dangerous operations
+- [x] Implement bidirectional Wire-like channel (events + approval requests)
+- [x] Add context key pattern for implicit wire access (`wire.WithCurrent` / `wire.Current`)
+- [x] Implement Approval system with yolo mode and auto-approve actions
+- [x] Add `ApprovalRequest` message type via wire
+- [x] Add tool approval gates (bash, write_file, replace_file)
+- [x] Add approval panel UI (ModeApprovalPrompt, arrow keys, 3-way resolve)
+- [x] Race condition fix: `wasIdle` pattern for late wire events after completion
 
 ### Phase 14: Runtime Parity
 
 - [ ] Add exponential backoff with jitter for step retry
-- [ ] Expand runtime event types to match Python (ApprovalRequest)
 - [ ] Add shield equivalent for context writes (prevent cancellation corruption)
 - [ ] Add background task management in ShellApp
 
@@ -354,12 +359,12 @@ Updated: 2026-03-30
 
 ## Immediate Next Steps
 
-The highest-impact items in order:
+With Phase 13 (Wire/Approval) complete, the highest-impact items in order:
 
-1. **Shell parity** (Phase 12) -- file completer, `/setup`, `/version`, toast notifications
-2. **Wire/Approval system** (Phase 13) -- critical for tool safety
+1. **Shell parity** (Phase 12) -- `@` file completer, `/reload`, toast notifications
+2. **Runtime parity** (Phase 14) -- backoff/jitter, shield for context writes
 3. **Auto-update** (Phase 15) -- user experience improvement
-4. **Runtime parity** (Phase 14) -- fill remaining runtime gaps
+4. **Go-specific cleanup** (Phase 16) -- align tool defaults with Python
 
 ---
 
@@ -382,6 +387,8 @@ internal/app
   +-- internal/mcp         (MCP client lifecycle, tool discovery)
   +-- internal/runtime     (step loop, events, retry, subtitle)
   +-- internal/dmail       (D-Mail state machine, rollback trigger)
+  +-- internal/wire        (bidirectional channel, events + approval)
+  +-- internal/approval    (permission gating, yolo, auto-approve)
   +-- internal/acp         (JSON-RPC server, event projection)
   +-- internal/ui
   |     +-- printui        (text output, stream-json)

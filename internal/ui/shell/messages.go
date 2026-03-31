@@ -75,3 +75,8 @@ type SessionDeleteMsg struct {
 
 // ClearMsg 表示用户请求清屏。
 type ClearMsg struct{}
+
+// FileIndexResultMsg delivers asynchronously-indexed file paths.
+type FileIndexResultMsg struct {
+	Paths []string
+}

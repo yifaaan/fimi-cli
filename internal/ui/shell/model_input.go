@@ -15,6 +15,8 @@ import (
 type InputModel struct {
 	// 当前输入值
 	value string
+	// 光标位置（字节偏移），0 <= cursorPos <= len(value)
+	cursorPos int
 	// 历史记录（用于上下箭头导航）
 	history []string
 	// 当前历史索引（-1 表示不在历史导航中）
@@ -39,9 +41,15 @@ func (m InputModel) Value() string {
 	return m.value
 }
 
+// CursorPos 返回当前光标位置（字节偏移）。
+func (m InputModel) CursorPos() int {
+	return m.cursorPos
+}
+
 // Clear 清空输入并重置状态。
 func (m InputModel) Clear() InputModel {
 	m.value = ""
+	m.cursorPos = 0
 	m.historyIdx = -1
 	return m
 }
@@ -49,7 +57,36 @@ func (m InputModel) Clear() InputModel {
 // SetValue 设置输入值。
 func (m InputModel) SetValue(v string) InputModel {
 	m.value = v
+	m.cursorPos = len(v)
 	m.historyIdx = -1
+	return m
+}
+
+// InsertAtCursor 在当前光标位置插入文本，并将光标移动到插入文本之后。
+func (m InputModel) InsertAtCursor(text string) InputModel {
+	m.value = m.value[:m.cursorPos] + text + m.value[m.cursorPos:]
+	m.cursorPos += len(text)
+	m.historyIdx = -1
+	return m
+}
+
+// DeleteRange 删除 [start, end) 范围的字节，并调整光标位置。
+func (m InputModel) DeleteRange(start, end int) InputModel {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(m.value) {
+		end = len(m.value)
+	}
+	if start >= end {
+		return m
+	}
+	m.value = m.value[:start] + m.value[end:]
+	if m.cursorPos > end {
+		m.cursorPos -= end - start
+	} else if m.cursorPos > start {
+		m.cursorPos = start
+	}
 	return m
 }
 
@@ -77,22 +114,39 @@ func (m InputModel) Update(msg tea.Msg, width int) (InputModel, tea.Cmd) {
 func (m InputModel) handleKeyPress(msg tea.KeyMsg) (InputModel, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyRunes:
-		// 输入字符
-		m.value += string(msg.Runes)
+		runes := string(msg.Runes)
+		m.value = m.value[:m.cursorPos] + runes + m.value[m.cursorPos:]
+		m.cursorPos += len(runes)
 		m.historyIdx = -1
 
 	case tea.KeySpace:
-		// Bubble Tea 会把空格作为独立按键类型发送。
-		m.value += " "
+		m.value = m.value[:m.cursorPos] + " " + m.value[m.cursorPos:]
+		m.cursorPos++
 		m.historyIdx = -1
 
 	case tea.KeyBackspace:
-		// 删除最后一个 Unicode 字符，而不是最后一个字节。
-		if len(m.value) > 0 {
-			_, size := utf8.DecodeLastRuneInString(m.value)
-			if size > 0 {
-				m.value = m.value[:len(m.value)-size]
-			}
+		if m.cursorPos > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.value[:m.cursorPos])
+			m.value = m.value[:m.cursorPos-size] + m.value[m.cursorPos:]
+			m.cursorPos -= size
+		}
+
+	case tea.KeyDelete:
+		if m.cursorPos < len(m.value) {
+			_, size := utf8.DecodeRuneInString(m.value[m.cursorPos:])
+			m.value = m.value[:m.cursorPos] + m.value[m.cursorPos+size:]
+		}
+
+	case tea.KeyLeft:
+		if m.cursorPos > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.value[:m.cursorPos])
+			m.cursorPos -= size
+		}
+
+	case tea.KeyRight:
+		if m.cursorPos < len(m.value) {
+			_, size := utf8.DecodeRuneInString(m.value[m.cursorPos:])
+			m.cursorPos += size
 		}
 
 	case tea.KeyEnter:
@@ -113,6 +167,7 @@ func (m InputModel) handleKeyPress(msg tea.KeyMsg) (InputModel, tea.Cmd) {
 			}
 			if m.historyIdx >= 0 && m.historyIdx < len(m.history) {
 				m.value = m.history[m.historyIdx]
+				m.cursorPos = len(m.value)
 			}
 		}
 
@@ -123,8 +178,10 @@ func (m InputModel) handleKeyPress(msg tea.KeyMsg) (InputModel, tea.Cmd) {
 			if m.historyIdx >= len(m.history) {
 				m.historyIdx = -1
 				m.value = ""
+				m.cursorPos = 0
 			} else {
 				m.value = m.history[m.historyIdx]
+				m.cursorPos = len(m.value)
 			}
 		}
 	}
@@ -144,11 +201,17 @@ func (m InputModel) View() string {
 		inputValue = styles.HelpStyle.Render("Type your message...")
 	}
 
-	// 光标
+	// 光标渲染在 cursorPos 位置
 	cursor := "▌"
+	before := m.value[:m.cursorPos]
+	after := m.value[m.cursorPos:]
 
-	// 组合
-	inputLine := lipgloss.JoinHorizontal(lipgloss.Top, prompt, inputValue, cursor)
+	var inputLine string
+	if m.value == "" {
+		inputLine = lipgloss.JoinHorizontal(lipgloss.Top, prompt, inputValue, cursor)
+	} else {
+		inputLine = lipgloss.JoinHorizontal(lipgloss.Top, prompt, before, cursor, after)
+	}
 
 	// 如果没有宽度信息，直接返回输入行
 	if m.width <= 2 {

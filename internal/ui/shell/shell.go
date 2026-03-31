@@ -29,6 +29,7 @@ func helpText() string {
 		"  /resume         List available sessions",
 		"  /resume <id>    Switch to a specific session",
 		"  /setup          Setup LLM provider and model",
+		"  /reload         Reload configuration",
 		"",
 		"Keyboard shortcuts:",
 		"  Ctrl+C/Ctrl+D   Exit (when idle)",

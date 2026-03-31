@@ -15,6 +15,7 @@ import (
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
+	"fimi-cli/internal/ui/shell/completer"
 	"fimi-cli/internal/ui/shell/components"
 	"fimi-cli/internal/ui/shell/styles"
 	"fimi-cli/internal/wire"
@@ -88,6 +89,13 @@ type Model struct {
 	showCommandSuggestions bool
 	selectedSuggestion     int
 
+	// File mention completion state
+	showFileCompletion     bool
+	fileCompletionItems    []string
+	selectedFileCompletion int
+	fileIndexer            *completer.FileIndexer
+	fileCompletionAtPos    int // byte offset of '@' that triggered completion
+
 	// Setup wizard state (active when mode == ModeSetup)
 	setupState SetupState
 
@@ -139,6 +147,7 @@ func availableCommands() []CommandInfo {
 		{Name: "/init", Description: "Generate AGENTS.md for the project"},
 		{Name: "/setup", Description: "Setup LLM provider and model"},
 		{Name: "/resume", Description: "List available sessions"},
+		{Name: "/reload", Description: "Reload configuration"},
 	}
 }
 
@@ -155,17 +164,18 @@ func NewModel(deps Dependencies, history *historyStore) Model {
 		output = output.AppendLine(line)
 	}
 
-	return Model{
-		input:            NewInputModel(),
-		output:           output,
-		runtime:          NewRuntimeModel(),
-		mode:             ModeIdle,
-		showBanner:       showBanner,
-		deps:             deps,
-		history:          history,
-		wire:             w,
-		pendingApprovals: make(map[string]*wire.ApprovalRequest),
-	}
+		return Model{
+			input:            NewInputModel(),
+			output:           output,
+			runtime:          NewRuntimeModel(),
+			mode:             ModeIdle,
+			showBanner:       showBanner,
+			deps:             deps,
+			history:          history,
+			wire:             w,
+			pendingApprovals: make(map[string]*wire.ApprovalRequest),
+			fileIndexer:      completer.NewFileIndexer(deps.WorkDir),
+		}
 }
 
 // Init 实现 tea.Model 接口。
@@ -277,6 +287,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case approvalResolveMsg:
 		return m.resolveApproval(msg.ID, msg.Response)
+
+	case FileIndexResultMsg:
+		return m.handleFileIndexResult(msg)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -328,6 +341,14 @@ func (m Model) View() string {
 	// 3.5 命令建议（内联下拉框）
 	if m.showCommandSuggestions {
 		suggestions := m.renderCommandSuggestions()
+		if suggestions != "" {
+			sections = append(sections, suggestions)
+		}
+	}
+
+	// 3.6 文件补全建议（内联下拉框）
+	if m.showFileCompletion {
+		suggestions := m.renderFileCompletion()
 		if suggestions != "" {
 			sections = append(sections, suggestions)
 		}
@@ -425,7 +446,43 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// 如果显示命令建议，处理导航和选择
+	// 如果显示文件补全建议，处理导航和选择
+		if m.showFileCompletion {
+			switch msg.String() {
+			case "up", "ctrl+p":
+				m.selectedFileCompletion--
+				if m.selectedFileCompletion < 0 {
+					m.selectedFileCompletion = len(m.fileCompletionItems) - 1
+				}
+				return m, nil
+			case "down", "ctrl+n":
+				m.selectedFileCompletion++
+				if m.selectedFileCompletion >= len(m.fileCompletionItems) {
+					m.selectedFileCompletion = 0
+				}
+				return m, nil
+			case "enter", "tab":
+				if m.selectedFileCompletion < len(m.fileCompletionItems) {
+					selected := m.fileCompletionItems[m.selectedFileCompletion]
+					// Delete @fragment and insert the selected path
+					endPos := m.input.CursorPos()
+					m.input = m.input.DeleteRange(m.fileCompletionAtPos, endPos)
+					m.input = m.input.InsertAtCursor(selected + " ")
+				}
+				m.showFileCompletion = false
+				m.fileCompletionItems = nil
+				m.selectedFileCompletion = 0
+				return m, nil
+			case "esc":
+				m.showFileCompletion = false
+				m.fileCompletionItems = nil
+				m.selectedFileCompletion = 0
+				return m, nil
+			}
+			// Fall through for typing more characters
+		}
+
+		// 如果显示命令建议，处理导航和选择
 	if m.showCommandSuggestions {
 		filtered := m.filteredCommands()
 		if len(filtered) == 0 {
@@ -467,8 +524,31 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg, m.width)
 
-	// 检查是否需要显示命令建议
 	input := m.input.Value()
+
+	// Check for @ file mention trigger
+	if m.fileIndexer != nil {
+		fragment, atPos, ok := completer.ExtractFragment(input, m.input.CursorPos())
+		if ok && !isCompletedFile(m.deps.WorkDir, fragment) {
+			paths := m.fileIndexer.Paths(fragment)
+			if len(paths) > 0 {
+				m.fileCompletionItems = completer.FilterAndRank(fragment, paths, 20)
+			} else {
+				m.fileCompletionItems = nil
+			}
+			m.fileCompletionAtPos = atPos
+			m.showFileCompletion = len(m.fileCompletionItems) > 0
+			m.selectedFileCompletion = 0
+			m.showCommandSuggestions = false
+			m.selectedSuggestion = 0
+			return m, cmd
+		}
+		m.showFileCompletion = false
+		m.fileCompletionItems = nil
+		m.selectedFileCompletion = 0
+	}
+
+	// Check for slash command suggestions
 	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
 		filtered := m.filteredCommands()
 		if len(filtered) > 0 {
@@ -576,6 +656,7 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 	// 清空输入并进入 thinking 模式
 	m.input = m.input.Clear()
+	m.resetFileCompletion()
 	m.mode = ModeThinking
 
 	// 启动 runtime 执行
@@ -770,6 +851,8 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.handleResumeList()
 	case cmd == "/setup":
 		return m.enterSetupMode()
+	case cmd == "/reload":
+		return m.handleReloadCommand()
 	default:
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeError,
@@ -777,6 +860,26 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		})
 		return m, nil
 	}
+}
+
+// handleReloadCommand reloads configuration and refreshes the file index.
+func (m Model) handleReloadCommand() (tea.Model, tea.Cmd) {
+	cfg, err := config.Load()
+	msg := "Configuration reloaded."
+	if err != nil {
+		msg = fmt.Sprintf("Failed to reload config: %v", err)
+	} else {
+		m.deps.ModelName = cfg.DefaultModel
+	}
+	// Refresh file index
+	if m.fileIndexer != nil {
+		m.fileIndexer = completer.NewFileIndexer(m.deps.WorkDir)
+	}
+	m.output = m.output.AppendLine(TranscriptLine{
+		Type:    LineTypeSystem,
+		Content: msg,
+	})
+	return m, nil
 }
 
 // enterSetupMode initializes the setup wizard.
@@ -1053,6 +1156,7 @@ func (m Model) startShellAction(spec shellActionSpec) (tea.Model, tea.Cmd) {
 	m.input.AppendHistory(spec.CommandText)
 
 	m.input = m.input.Clear()
+	m.resetFileCompletion()
 	m.mode = ModeThinking
 	m.activeShellActionCommand = spec.CommandText
 	return m, tea.Batch(
@@ -1104,6 +1208,7 @@ func (m Model) handleInitCommand() (tea.Model, tea.Cmd) {
 	})
 
 	m.input = m.input.Clear()
+	m.resetFileCompletion()
 	m.mode = ModeThinking
 	m.activeShellActionCommand = spec.CommandText
 	m.initTempFile = tmpPath
