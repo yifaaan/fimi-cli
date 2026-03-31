@@ -50,6 +50,49 @@ func TestRenderLiveStatusTextIgnoresFinishedTool(t *testing.T) {
 	}
 }
 
+func TestRenderLiveStatusTextShowsRetryWaitWhenActive(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeThinking
+	model.runtime.CurrentTool = &ToolCallInfo{
+		Name:   "bash",
+		Status: ToolStatusRunning,
+		Args:   "go test ./internal/ui/shell",
+	}
+	model.runtime.Retry = &runtimeevents.RetryStatus{
+		Attempt:     2,
+		MaxAttempts: 4,
+		NextDelayMS: 1500,
+	}
+
+	if got := model.renderLiveStatusText(); got != "Retrying in 1.5s (attempt 2/4)..." {
+		t.Fatalf("renderLiveStatusText() = %q, want %q", got, "Retrying in 1.5s (attempt 2/4)...")
+	}
+}
+
+func TestRuntimeModelApplyStatusUpdateStoresRetryWithoutTranscriptLines(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	baseline := model.ToLines()
+
+	model = model.ApplyEvent(runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{
+		ContextUsage: 0.25,
+		Retry: &runtimeevents.RetryStatus{
+			Attempt:     1,
+			MaxAttempts: 3,
+			NextDelayMS: 750,
+		},
+	}})
+
+	if model.Retry == nil {
+		t.Fatal("runtime retry = nil, want retry status stored")
+	}
+	if model.Retry.Attempt != 1 || model.Retry.MaxAttempts != 3 || model.Retry.NextDelayMS != 750 {
+		t.Fatalf("runtime retry = %#v, want attempt=1 max=3 delay=750", model.Retry)
+	}
+	if got := model.ToLines(); !reflect.DeepEqual(got, baseline) {
+		t.Fatalf("ToLines() after status update = %#v, want unchanged %#v", got, baseline)
+	}
+}
 
 func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
 	model := NewModel(Dependencies{ModelName: "test-model", SystemPrompt: "system"}, nil)

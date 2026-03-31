@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	runtimeevents "fimi-cli/internal/runtime/events"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -55,6 +56,96 @@ func TestToolResultSummaryUsesCompactClaudeLikeCopy(t *testing.T) {
 	}
 	if got := toolResultSummary(ToolCallInfo{IsError: true}); got != "Error" {
 		t.Fatalf("toolResultSummary(error empty) = %q, want %q", got, "Error")
+	}
+}
+
+func TestRuntimeModelTracksLatestRunningToolAfterOtherToolCompletes(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_1",
+		Name:      "bash",
+		Arguments: `{"command":"pwd"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_2",
+		Name:      "read",
+		Arguments: `{"file_path":"/tmp/a"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID: "call_2",
+		ToolName:   "read",
+		Output:     "file-contents",
+		IsError:    false,
+	})
+
+	if model.CurrentTool == nil {
+		t.Fatal("CurrentTool = nil, want running tool")
+	}
+	if model.CurrentTool.ID != "call_1" {
+		t.Fatalf("CurrentTool.ID = %q, want %q", model.CurrentTool.ID, "call_1")
+	}
+	if model.CurrentTool.Name != "bash" {
+		t.Fatalf("CurrentTool.Name = %q, want %q", model.CurrentTool.Name, "bash")
+	}
+	if model.CurrentTool.Status != ToolStatusRunning {
+		t.Fatalf("CurrentTool.Status = %v, want %v", model.CurrentTool.Status, ToolStatusRunning)
+	}
+}
+
+func TestRuntimeModelAppliesToolCallPartByToolCallID(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_1",
+		Name:      "bash",
+		Arguments: `{"command":"pw"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_2",
+		Name:      "read",
+		Arguments: `{"file_path":"/tmp/a"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCallPart{
+		ToolCallID: "call_1",
+		Delta:      ` --json`,
+	})
+
+	got := model.ToLines()
+	if len(got) != 3 {
+		t.Fatalf("len(ToLines()) = %d, want 3; lines=%#v", len(got), got)
+	}
+	if got[1].Type != LineTypeToolCall || got[1].Content != `Bash(bash {"command":"pw"} --json)` {
+		t.Fatalf("ToLines()[1] = %#v, want updated call_1 line", got[1])
+	}
+	if got[2].Type != LineTypeToolCall || got[2].Content != `read {"file_path":"/tmp/a"}` {
+		t.Fatalf("ToLines()[2] = %#v, want unchanged call_2 line", got[2])
+	}
+}
+
+func TestRuntimeModelDoesNotSwitchActiveToolOnOlderToolCallPart(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_1",
+		Name:      "bash",
+		Arguments: `{"command":"pwd"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "call_2",
+		Name:      "read",
+		Arguments: `{"file_path":"/tmp/a"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCallPart{
+		ToolCallID: "call_1",
+		Delta:      ` --json`,
+	})
+
+	if model.CurrentTool == nil {
+		t.Fatal("CurrentTool = nil, want latest running tool")
+	}
+	if model.CurrentTool.ID != "call_2" {
+		t.Fatalf("CurrentTool.ID = %q, want %q", model.CurrentTool.ID, "call_2")
 	}
 }
 

@@ -205,6 +205,32 @@ func TestVisualizeTextClampsStatusUsageToOneHundredPercent(t *testing.T) {
 	}
 }
 
+func TestVisualizeTextIncludesRetryStatus(t *testing.T) {
+	var out bytes.Buffer
+	visualize := VisualizeText(&out)
+
+	events := make(chan runtimeevents.Event, 1)
+	events <- runtimeevents.StatusUpdate{
+		Status: runtimeevents.StatusSnapshot{
+			ContextUsage: 0.25,
+			Retry: &runtimeevents.RetryStatus{
+				Attempt:     2,
+				MaxAttempts: 4,
+				NextDelayMS: 1500,
+			},
+		},
+	}
+	close(events)
+
+	if err := visualize(context.Background(), events); err != nil {
+		t.Fatalf("visualize() error = %v", err)
+	}
+
+	if out.String() != "[status] retrying in 1.5s (attempt 2/4); context used 25%\n" {
+		t.Fatalf("printed output = %q, want %q", out.String(), "[status] retrying in 1.5s (attempt 2/4); context used 25%\n")
+	}
+}
+
 func TestVisualizeTextClampsLongToolCallSummary(t *testing.T) {
 	var out bytes.Buffer
 	visualize := VisualizeText(&out)
@@ -372,6 +398,40 @@ func TestVisualizeStreamJSONWritesEventPerLine(t *testing.T) {
 	}
 	if got2["output"] != "ok" {
 		t.Fatalf("tool result output = %#v, want %q", got2["output"], "ok")
+	}
+}
+
+func TestVisualizeStreamJSONIncludesRetryStatusFields(t *testing.T) {
+	line, err := marshalEventJSON(runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{
+		ContextUsage: 0.25,
+		Retry: &runtimeevents.RetryStatus{
+			Attempt:     2,
+			MaxAttempts: 4,
+			NextDelayMS: 1500,
+		},
+	}})
+	if err != nil {
+		t.Fatalf("marshalEventJSON() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(line), &got); err != nil {
+		t.Fatalf("json.Unmarshal(status) error = %v", err)
+	}
+	if got["type"] != "status_update" {
+		t.Fatalf("status event type = %#v, want %q", got["type"], "status_update")
+	}
+	if got["context_usage"] != 0.25 {
+		t.Fatalf("context_usage = %#v, want %v", got["context_usage"], 0.25)
+	}
+	if got["retry_attempt"] != float64(2) {
+		t.Fatalf("retry_attempt = %#v, want %v", got["retry_attempt"], 2)
+	}
+	if got["retry_max_attempts"] != float64(4) {
+		t.Fatalf("retry_max_attempts = %#v, want %v", got["retry_max_attempts"], 4)
+	}
+	if got["retry_next_delay_ms"] != float64(1500) {
+		t.Fatalf("retry_next_delay_ms = %#v, want %v", got["retry_next_delay_ms"], 1500)
 	}
 }
 

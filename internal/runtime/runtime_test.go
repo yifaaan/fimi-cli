@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"fimi-cli/internal/contextstore"
 	runtimeevents "fimi-cli/internal/runtime/events"
@@ -369,9 +370,9 @@ func TestRunnerRunReturnsMaxStepsStatusWhenLoopExhausted(t *testing.T) {
 
 func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
 	runner := New(staticEngine{}, Config{
-		ReplyHistoryTurnLimit: 1,
-		MaxStepsPerRun:        0,
-		MaxRetriesPerStep:     0,
+		ReplyHistoryTurnLimit:       1,
+		MaxStepsPerRun:              0,
+		MaxAdditionalRetriesPerStep: 0,
 	})
 
 	if runner.config.ReplyHistoryTurnLimit != 1 {
@@ -380,8 +381,8 @@ func TestNewUsesDefaultMaxStepsPerRunWhenInvalid(t *testing.T) {
 	if runner.config.MaxStepsPerRun != DefaultMaxStepsPerRun {
 		t.Fatalf("runner.config.MaxStepsPerRun = %d, want %d", runner.config.MaxStepsPerRun, DefaultMaxStepsPerRun)
 	}
-	if runner.config.MaxRetriesPerStep != DefaultMaxRetriesPerStep {
-		t.Fatalf("runner.config.MaxRetriesPerStep = %d, want %d", runner.config.MaxRetriesPerStep, DefaultMaxRetriesPerStep)
+	if runner.config.MaxAdditionalRetriesPerStep != 0 {
+		t.Fatalf("runner.config.MaxAdditionalRetriesPerStep = %d, want %d", runner.config.MaxAdditionalRetriesPerStep, 0)
 	}
 }
 
@@ -790,10 +791,10 @@ func TestRunnerRunStopsImmediatelyOnTemporaryToolExecutionError(t *testing.T) {
 	}
 }
 
-func TestRunnerRunRetriesRetryableStepError(t *testing.T) {
+func TestRunnerRunRetriesRetryableStepErrorWithinAdditionalRetryBudget(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	runner := New(staticEngine{}, Config{
-		MaxRetriesPerStep: 3,
+		MaxAdditionalRetriesPerStep: 2,
 	})
 
 	attempts := 0
@@ -821,11 +822,36 @@ func TestRunnerRunRetriesRetryableStepError(t *testing.T) {
 	}
 }
 
-func TestRunnerRunStopsAtConfiguredRetryAttemptLimit(t *testing.T) {
+func TestRunnerRunStopsAfterInitialAttemptWhenNoAdditionalRetriesConfigured(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
 	wantErr := retryableStepError{err: errors.New("temporary llm outage")}
 	runner := New(staticEngine{}, Config{
-		MaxRetriesPerStep: 2,
+		MaxAdditionalRetriesPerStep: 0,
+	})
+
+	attempts := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		attempts++
+		return StepResult{}, wantErr
+	}
+
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("runStep attempts = %d, want %d", attempts, 1)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+}
+
+func TestRunnerRunStopsAtConfiguredAdditionalRetryLimit(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	wantErr := retryableStepError{err: errors.New("temporary llm outage")}
+	runner := New(staticEngine{}, Config{
+		MaxAdditionalRetriesPerStep: 1,
 	})
 
 	attempts := 0
@@ -846,11 +872,11 @@ func TestRunnerRunStopsAtConfiguredRetryAttemptLimit(t *testing.T) {
 	}
 }
 
-func TestRunnerRunDoesNotRetryNonRetryableStepError(t *testing.T) {
+func TestRunnerRunClampsNegativeAdditionalRetriesToZero(t *testing.T) {
 	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
-	wantErr := errors.New("bad request")
+	wantErr := retryableStepError{err: errors.New("temporary llm outage")}
 	runner := New(staticEngine{}, Config{
-		MaxRetriesPerStep: 3,
+		MaxAdditionalRetriesPerStep: -1,
 	})
 
 	attempts := 0
@@ -868,6 +894,285 @@ func TestRunnerRunDoesNotRetryNonRetryableStepError(t *testing.T) {
 	}
 	if result.Status != RunStatusFailed {
 		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+}
+func TestRunnerRunDoesNotRetryNonRetryableStepError(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	wantErr := errors.New("bad request")
+	runner := New(staticEngine{}, Config{
+		MaxAdditionalRetriesPerStep: 3,
+	})
+
+	attempts := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		attempts++
+		return StepResult{}, wantErr
+	}
+
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("runStep attempts = %d, want %d", attempts, 1)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+}
+
+func TestRunnerRunWaitsBetweenRetryableStepFailures(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{}, Config{
+		MaxAdditionalRetriesPerStep: 1,
+	})
+
+	var slept []time.Duration
+	runner.retryBackoffDelayFn = func(attempt int) time.Duration {
+		if attempt != 1 {
+			t.Fatalf("retryBackoffDelayFn attempt = %d, want 1", attempt)
+		}
+		return 25 * time.Millisecond
+	}
+	runner.retrySleepFn = func(ctx context.Context, delay time.Duration) error {
+		slept = append(slept, delay)
+		return nil
+	}
+
+	attempts := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		attempts++
+		if attempts == 1 {
+			return StepResult{}, retryableStepError{err: errors.New("temporary llm outage")}
+		}
+
+		return StepResult{Status: StepStatusFinished, Kind: StepKindFinished}, nil
+	}
+
+	result, err := runner.Run(context.Background(), ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("runStep attempts = %d, want 2", attempts)
+	}
+	if !reflect.DeepEqual(slept, []time.Duration{25 * time.Millisecond}) {
+		t.Fatalf("retry sleep calls = %#v, want %#v", slept, []time.Duration{25 * time.Millisecond})
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+}
+
+func TestRunnerRunDoesNotWaitOrEmitRetryStatusWhenNoAdditionalRetriesConfigured(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	w := wire.New(0)
+	t.Cleanup(w.Shutdown)
+
+	wantErr := retryableStepError{err: errors.New("temporary llm outage")}
+	runner := New(staticEngine{}, Config{
+		MaxAdditionalRetriesPerStep: 0,
+	})
+
+	sleepCalls := 0
+	runner.retrySleepFn = func(ctx context.Context, delay time.Duration) error {
+		sleepCalls++
+		return nil
+	}
+
+	attempts := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		attempts++
+		return StepResult{}, wantErr
+	}
+
+	result, err := runner.Run(wire.WithCurrent(context.Background(), w), ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("runStep attempts = %d, want 1", attempts)
+	}
+	if sleepCalls != 0 {
+		t.Fatalf("retry sleep calls = %d, want 0", sleepCalls)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+
+	got := receiveWireEvents(t, w, 1)
+	want := []runtimeevents.Event{
+		runtimeevents.StepBegin{Number: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured events = %#v, want %#v", got, want)
+	}
+}
+
+func TestCalculateRetryBackoffDelayDoublesByAttemptBeforeJitter(t *testing.T) {
+	tests := []struct {
+		name    string
+		attempt int
+		want    time.Duration
+	}{
+		{name: "first retry uses base delay", attempt: 1, want: 200 * time.Millisecond},
+		{name: "second retry doubles once", attempt: 2, want: 400 * time.Millisecond},
+		{name: "third retry doubles twice", attempt: 3, want: 800 * time.Millisecond},
+		{name: "fourth retry doubles three times", attempt: 4, want: 1600 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculateRetryBackoffDelay(tt.attempt, 0)
+			if got != tt.want {
+				t.Fatalf("calculateRetryBackoffDelay(%d, 0) = %v, want %v", tt.attempt, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCalculateRetryBackoffDelayClampsBaseAndFinalDelay(t *testing.T) {
+	if got := calculateRetryBackoffDelay(10, 0); got != retryBackoffMaxDelay {
+		t.Fatalf("calculateRetryBackoffDelay(10, 0) = %v, want %v", got, retryBackoffMaxDelay)
+	}
+	if got := calculateRetryBackoffDelay(10, retryBackoffJitterWindow); got != retryBackoffMaxDelay {
+		t.Fatalf("calculateRetryBackoffDelay(10, %v) = %v, want %v", retryBackoffJitterWindow, got, retryBackoffMaxDelay)
+	}
+}
+
+func TestCalculateRetryBackoffDelayClampsNegativeInputs(t *testing.T) {
+	if got := calculateRetryBackoffDelay(0, -25*time.Millisecond); got != retryBackoffBaseDelay {
+		t.Fatalf("calculateRetryBackoffDelay(0, -25ms) = %v, want %v", got, retryBackoffBaseDelay)
+	}
+	if got := calculateRetryBackoffDelay(-3, 50*time.Millisecond); got != retryBackoffBaseDelay+50*time.Millisecond {
+		t.Fatalf("calculateRetryBackoffDelay(-3, 50ms) = %v, want %v", got, retryBackoffBaseDelay+50*time.Millisecond)
+	}
+}
+
+func TestRunnerRunCancelsPromptlyDuringRetryBackoff(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{}, Config{
+		MaxAdditionalRetriesPerStep: 1,
+	})
+	runner.retryBackoffDelayFn = func(attempt int) time.Duration {
+		return time.Second
+	}
+	runner.retrySleepFn = func(ctx context.Context, delay time.Duration) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		attempts++
+		cancel()
+		return StepResult{}, retryableStepError{err: errors.New("temporary llm outage")}
+	}
+
+	result, err := runner.Run(rootCtx, ctx, Input{Prompt: "hello"})
+	if err != context.Canceled {
+		t.Fatalf("Run() error = %v, want %v", err, context.Canceled)
+	}
+	if attempts != 1 {
+		t.Fatalf("runStep attempts = %d, want 1", attempts)
+	}
+	if result.Status != RunStatusInterrupted {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
+	}
+}
+
+func TestRunnerRunEmitsRetryStatusBeforeWaitingAndClearsItAfterCompletion(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	w := wire.New(0)
+	t.Cleanup(w.Shutdown)
+
+	runner := New(staticEngine{}, Config{
+		MaxAdditionalRetriesPerStep: 1,
+		ContextWindowTokens:         100,
+	})
+	runner.retryBackoffDelayFn = func(attempt int) time.Duration {
+		return 25 * time.Millisecond
+	}
+	runner.retrySleepFn = func(ctx context.Context, delay time.Duration) error {
+		return nil
+	}
+
+	attempts := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		attempts++
+		if attempts == 1 {
+			if err := store.AppendUsage(40); err != nil {
+				t.Fatalf("AppendUsage() error = %v", err)
+			}
+			return StepResult{}, retryableStepError{err: errors.New("temporary llm outage")}
+		}
+
+		return StepResult{Status: StepStatusFinished, Kind: StepKindFinished, AssistantText: "done"}, nil
+	}
+
+	result, err := runner.Run(wire.WithCurrent(context.Background(), w), ctx, Input{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+
+	got := receiveWireEvents(t, w, 4)
+	want := []runtimeevents.Event{
+		runtimeevents.StepBegin{Number: 1},
+		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{ContextUsage: 0.4, Retry: &runtimeevents.RetryStatus{Attempt: 1, MaxAttempts: 2, NextDelayMS: 25}}},
+		runtimeevents.TextPart{Text: "done"},
+		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{ContextUsage: 0.4}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured events = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunnerRunEmitsRetryStatusBeforeWaitingAndClearsItAfterFinalFailure(t *testing.T) {
+	ctx := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	w := wire.New(0)
+	t.Cleanup(w.Shutdown)
+
+	wantErr := retryableStepError{err: errors.New("temporary llm outage")}
+	runner := New(staticEngine{}, Config{
+		MaxAdditionalRetriesPerStep: 1,
+		ContextWindowTokens:         100,
+	})
+	runner.retryBackoffDelayFn = func(attempt int) time.Duration {
+		return 25 * time.Millisecond
+	}
+	runner.retrySleepFn = func(ctx context.Context, delay time.Duration) error {
+		return nil
+	}
+
+	attempts := 0
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		attempts++
+		if err := store.AppendUsage(40); err != nil {
+			t.Fatalf("AppendUsage() error = %v", err)
+		}
+		return StepResult{}, wantErr
+	}
+
+	result, err := runner.Run(wire.WithCurrent(context.Background(), w), ctx, Input{Prompt: "hello"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, wantErr)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
+	}
+
+	got := receiveWireEvents(t, w, 3)
+	want := []runtimeevents.Event{
+		runtimeevents.StepBegin{Number: 1},
+		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{ContextUsage: 0.4, Retry: &runtimeevents.RetryStatus{Attempt: 1, MaxAttempts: 2, NextDelayMS: 25}}},
+		runtimeevents.StatusUpdate{Status: runtimeevents.StatusSnapshot{ContextUsage: 0.4}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured events = %#v, want %#v", got, want)
 	}
 }
 

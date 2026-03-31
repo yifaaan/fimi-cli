@@ -304,10 +304,10 @@ func buildRuntimeConfig(cfg config.Config, agent loadedAgent) runtime.Config {
 	modelCfg, err := resolveConfiguredModel(resolveModelOverride(cfg, agent))
 
 	return runtime.Config{
-		ReplyHistoryTurnLimit: cfg.HistoryWindow.RuntimeTurns,
-		MaxStepsPerRun:        cfg.LoopControl.MaxStepsPerRun,
-		MaxRetriesPerStep:     cfg.LoopControl.MaxRetriesPerStep,
-		ContextWindowTokens:   resolveContextWindowTokens(modelCfg, err),
+		ReplyHistoryTurnLimit:       cfg.HistoryWindow.RuntimeTurns,
+		MaxStepsPerRun:              cfg.LoopControl.MaxStepsPerRun,
+		MaxAdditionalRetriesPerStep: cfg.LoopControl.MaxAdditionalRetriesPerStep,
+		ContextWindowTokens:         resolveContextWindowTokens(modelCfg, err),
 	}
 }
 

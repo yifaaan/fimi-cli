@@ -110,8 +110,8 @@ func TestBuildWebSearcherBuildsDuckDuckGoSearcherWhenEnabled(t *testing.T) {
 func TestBuildRuntimeConfig(t *testing.T) {
 	cfg := config.Config{
 		LoopControl: config.LoopControl{
-			MaxStepsPerRun:    9,
-			MaxRetriesPerStep: 4,
+			MaxStepsPerRun:              9,
+			MaxAdditionalRetriesPerStep: 4,
 		},
 		HistoryWindow: config.HistoryWindow{
 			RuntimeTurns: 7,
@@ -133,8 +133,8 @@ func TestBuildRuntimeConfig(t *testing.T) {
 	if got.MaxStepsPerRun != 9 {
 		t.Fatalf("buildRuntimeConfig().MaxStepsPerRun = %d, want %d", got.MaxStepsPerRun, 9)
 	}
-	if got.MaxRetriesPerStep != 4 {
-		t.Fatalf("buildRuntimeConfig().MaxRetriesPerStep = %d, want %d", got.MaxRetriesPerStep, 4)
+	if got.MaxAdditionalRetriesPerStep != 4 {
+		t.Fatalf("buildRuntimeConfig().MaxAdditionalRetriesPerStep = %d, want %d", got.MaxAdditionalRetriesPerStep, 4)
 	}
 	if got.ContextWindowTokens != 128000 {
 		t.Fatalf("buildRuntimeConfig().ContextWindowTokens = %d, want %d", got.ContextWindowTokens, 128000)
@@ -2012,9 +2012,6 @@ type stubRunner struct {
 	err             error
 	appendToContext bool
 }
-
-
-
 
 func (r *stubRunner) Run(_ context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
 	r.gotCtx = store
