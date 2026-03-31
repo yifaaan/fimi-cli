@@ -50,6 +50,7 @@ func TestRenderLiveStatusTextIgnoresFinishedTool(t *testing.T) {
 	}
 }
 
+
 func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
 	model := NewModel(Dependencies{ModelName: "test-model", SystemPrompt: "system"}, nil)
 	model.output = model.output.SetPending([]TranscriptLine{{Type: LineTypeAssistant, Content: "pending assistant output"}})

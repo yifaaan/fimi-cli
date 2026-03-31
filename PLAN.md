@@ -16,9 +16,7 @@ Updated: 2026-03-31
 | File | Description |
 | --- | --- |
 | `soul/kimisoul.py` | Main runtime loop: `run() -> _agent_loop() -> _step()` with D-Mail rollback, Wire-based event dispatch, approval piping task |
-| `soul/wire.py` | **NEW** Bidirectional channel (`Wire` class) between soul and UI via `asyncio.Queue[WireMessage]`. ContextVar `current_wire` for implicit access. Carries both events and `ApprovalRequest`. |
-| `soul/context.py` | JSONL history persistence, checkpoint records (incremental ID), revert-to-checkpoint with atomic file rotation |
-| `soul/event.py` | Event types: `StepBegin`, `StepInterrupted`, `StatusUpdate` (ControlFlowEvent) + ContentPart/ToolCall/ToolCallPart/ToolResult from kosong |
+| `soul/wire.py` | Bidirectional channel (`Wire` class) between soul and UI via `asyncio.Queue[WireMessage]`. ContextVar `current_wire` for implicit access. Carries events, `ApprovalRequest`, and control-flow types (`StepBegin`, `StepInterrupted`, `StatusUpdate`, `ControlFlowEvent`, `Event`). **Note:** No separate `soul/event.py` — all event types live in `wire.py`. |
 | `soul/denwarenji.py` | D-Mail state machine (`DenwaRenji`): `_pending_dmail`, `_n_checkpoints`, `send_dmail()` / `fetch_pending_dmail()` |
 | `soul/message.py` | Message utilities, tool result conversion (`tool_result_to_messages`, `tool_ok_to_message_content`, `system()` helper for `<system>` tags) |
 | `soul/approval.py` | **NEW** Permission gating for tools. `Approval` class with `_yolo` mode, `_auto_approve_actions`, `request()` → `ApprovalRequest` via wire. Must be called from within tool context. |
@@ -184,14 +182,14 @@ Updated: 2026-03-31
 - Approval system (`internal/approval`) — yolo mode, auto-approve actions, approve-for-session
 - Tool approval gates on bash, write_file, replace_file
 
-### Go Tools (12 registered)
+### Go Tools (13 registered)
 
 | Tool | Kind | Handler | Description |
 | --- | --- | --- | --- |
 | `agent` | agent | yes | Subagent delegation with continuation prompt (auto-re-prompts if response < 200 chars), max-steps detection |
 | `think` | utility | yes | Private reasoning note |
 | `set_todo_list` | utility | yes | Todo list management |
-| `bash` | command | yes | Shell commands with 120s default/300s max timeout, streaming output |
+| `bash` | command | yes | Shell commands with 120s default/300s max timeout, streaming output, **background mode** (`background:true`, `task_id`) via `BackgroundManager` (24h timeout) |
 | `search_web` | utility | yes | DuckDuckGo HTML scraper |
 | `fetch_url` | utility | yes | HTTP fetch with heuristic content extraction + scoring |
 | `read_file` | file | yes | Read file with offset/limit |
@@ -200,14 +198,15 @@ Updated: 2026-03-31
 | `write_file` | file | yes | Write file with parent dir creation, path sandboxing |
 | `replace_file` | file | yes | String replace with `replace_all` support, batch edits |
 | `patch_file` | file | yes | Unified diff patch application, path sandboxing |
+| `send_dmail` | utility | yes | D-Mail time-travel message, triggers runtime rollback |
 
 ### Go UI
 
 | Component | Location | Features |
 | --- | --- | --- |
 | Print UI | `internal/ui/printui` | Text mode, stream-json mode (via `--output`) |
-| Shell UI | `internal/ui/shell` | Bubble Tea interactive UI, session resume, checkpoint/rewind, `/compact`, `/help`, `/clear`, `/exit`, `/resume`, `/rewind`, `/init` |
-| ACP Server | `internal/acp` | Multi-session JSON-RPC over stdio, event projection, cancel propagation |
+| Shell UI | `internal/ui/shell` | Bubble Tea interactive UI, session resume, checkpoint/rewind, toast notifications, `@` file completer, tool cards, history persistence |
+| ACP Server | `internal/acp` | Multi-session JSON-RPC over stdio, event projection, cancel propagation, `set_session_mode` handler |
 
 #### Go Shell Features
 
@@ -215,12 +214,17 @@ Updated: 2026-03-31
 - Command autocomplete popup on `/`
 - Inline slash command suggestions
 - Scrollable transcript
+- Tool result cards with status icon, args box, output box (`components/tool_card.go`)
 - Tool result folding with Ctrl+O toggle
 - Approval panel with arrow-key selection (approve / approve-for-session / reject)
 - Ctrl+C resolves pending approvals on exit
 - Context usage display in status bar
-- Markdown rendering via glamour
+- Markdown rendering via glamour (`renderers/markdown.go`)
 - Tool subtitle extraction via `toolsubtitle.go`
+- Toast notifications (`toast.go`): 4 levels (Info/Warning/Error/Success), TTL auto-dismiss, max 5 stack
+- Prompt history persistence (`history.go`): line-delimited file, up/down arrow navigation
+- `@` file mention completer (`completer/`): fuzzy matching, 2-tier TTL cache, 11-category ignore list
+- Cursor positioning in InputModel: left/right arrows, mid-string insert/delete
 - `/rewind` command for checkpoint selection and revert
 - `/resume` command for session switching
 - `/compact` command for context compaction with backup
@@ -228,6 +232,16 @@ Updated: 2026-03-31
 - `/version` command for version display
 - `/release-notes` command for changelog display
 - `/setup` command for interactive config wizard
+- `/reload` command for config hot-reload + file index refresh
+
+#### Go Shell Subpackages
+
+| Subpackage | Files | Description |
+| --- | --- | --- |
+| `completer/` | `fileindex.go`, `fuzzy.go` | File indexer (2-tier TTL cache, ignore list) + fuzzy matcher (prefix/consecutive/position scoring) |
+| `components/` | `banner.go`, `status_bar.go`, `tool_card.go` | Reusable UI widgets |
+| `renderers/` | `markdown.go` | Glamour-based markdown rendering |
+| `styles/` | `colors.go`, `lipgloss.go` | Lipgloss color/style definitions |
 
 ---
 
@@ -252,7 +266,7 @@ Updated: 2026-03-31
 | Multi-step runtime | yes | yes | `done` |
 | Step retry | tenacity + jitter + connection recovery | retryable error classification | `partial` (no backoff/jitter) |
 | Streaming text/tool deltas | yes | yes | `done` |
-| Runtime events | 7 types + ApprovalRequest | 7 types + ApprovalRequest via wire | `done` |
+| Runtime events | 7 types + ApprovalRequest | 7 runtime event types + ApprovalRequest + ToastMessage via wire | `done+extra` |
 | Tool subtitle extraction | yes (per-tool logic) | yes (`toolsubtitle.go`) | `done` |
 | Output shaping | 50K chars, 2K/line | 50K chars, 2K/line | `done` |
 | Print UI: text | yes | yes | `done` |
@@ -264,18 +278,20 @@ Updated: 2026-03-31
 | Shell: `/release-notes` | yes | yes (embedded changelog) | `done` |
 | Shell: `/version` | yes | yes | `done` |
 | Shell: `/setup` | yes (interactive wizard) | yes (ModeSetup with 5 phases) | `done` |
-| Shell: `/reload` | yes (config hot-reload) | no | `missing` |
+| Shell: `/reload` | yes (config hot-reload) | yes (config.Load + file index refresh) | `done` |
 | Shell: `/init` (AGENTS.md) | yes | yes | `done` |
-| Shell: `@` file completer | yes (fuzzy, 2-tier, cached) | no | `missing` |
+| Shell: `@` file completer | yes (fuzzy, 2-tier, cached) | yes (`completer/` subpackage, fuzzy matching, 2-tier TTL cache) | `done` |
 | Shell: bottom toolbar | yes (time + mode + context) | yes (status bar with time + keyboard hint) | `done` |
-| Shell: tool result cards | yes | defined but dead | `partial` |
+| Shell: tool result cards | yes | yes (`components/tool_card.go`, wired into runtime event pipeline) | `done` |
 | Shell: approval panel | yes | yes (ModeApprovalPrompt, arrow-key selection) | `done` |
-| Shell: mode toggle (agent/shell) | yes | no | `missing` |
-| Shell: toast notifications | yes | no | `missing` |
+| Shell: mode toggle (agent/shell) | yes (Ctrl-K) | no | `missing` |
+| Shell: toast notifications | yes | yes (`toast.go`, 4 levels, TTL auto-dismiss, max 5 stack, via wire `ToastMessage`) | `done` |
+| Shell: prompt history | yes (per-directory JSONL) | yes (line-delimited file, up/down arrow) | `done` |
 | Shell: background tasks | yes (auto-update) | no | `missing` |
 | Auto-update | yes (background check + install) | no | `missing` |
 | First-run setup wizard | yes (`/setup`) | yes (`/setup` interactive wizard) | `done` |
 | ACP server mode | yes (multi-session) | yes (multi-session) | `done` |
+| ACP: RPC handlers | `initialize`, `new_session`, `load_session`, `resume_session`, `list_sessions`, `prompt`, `cancel`, `set_session_model`, `authenticate` | same + `set_session_mode` | `done+extra` |
 | ACP: event projection | yes | yes | `done` |
 | ACP: content block conversion | Text/Image/Audio/Resource | text only | `partial` |
 | ACP: tool result conversion | full schema | truncated at 10K chars | `partial` |
@@ -289,7 +305,7 @@ Updated: 2026-03-31
 
 | Python Tool | Go Equivalent | Status |
 | --- | --- | --- |
-| `Bash` | `bash` | `done` (approval gate added; timeout 120s vs Python 60s) |
+| `Bash` | `bash` | `done` (approval gate added; timeout 120s vs Python 60s; Go adds background mode) |
 | `ReadFile` | `read_file` | `done` |
 | `WriteFile` | `write_file` | `done` |
 | `Glob` | `glob` | `done` (Go supports `**`, Python rejects prefix) |
@@ -303,6 +319,13 @@ Updated: 2026-03-31
 | `SearchWeb` | `search_web` | `diverged` (Moonshot vs DuckDuckGo) |
 | `FetchURL` | `fetch_url` | `diverged` (trafilatura vs heuristic) |
 | `MCPTool` | MCP handler in `tools/mcp.go` | `done` |
+
+### Snapshot Corrections / Notes
+
+- Python reference has **no separate `soul/event.py`**; event types are defined in `soul/wire.py`.
+- Python shell currently auto-approves `ApprovalRequest` in `ui/shell/__init__.py`; approval UI there is still a TODO stub.
+- Go shell parity has moved ahead in several places: toast notifications, prompt history, `@` completer, `/reload`, and live tool cards are implemented.
+- Main remaining Go parity gaps are runtime retry backoff/jitter, shield-like protection around context writes, shell mode toggle, and the Python auto-update system.
 
 ---
 
@@ -319,8 +342,8 @@ Updated: 2026-03-31
 - [x] Add `@` file mention completer (fuzzy, 2-tier lazy index, ignore list, cursor positioning)
 - [x] Add `/reload` command (config hot-reload + file index refresh)
 - [x] Add cursor positioning to InputModel (left/right arrows, mid-string insert/delete)
-- [ ] Add toast notifications system
-- [ ] Add prompt history persistence (per-directory JSONL)
+- [x] Add toast notifications system (`toast.go` + wire `ToastMessage`)
+- [x] Add prompt history persistence (`history.go`, line-delimited local file)
 - [ ] Add mode toggle (agent/shell) -- lower priority
 - [ ] Add external editor (Ctrl-O) -- lower priority
 - [ ] Add clipboard paste -- lower priority
@@ -342,7 +365,9 @@ Updated: 2026-03-31
 - [ ] Add shield equivalent for context writes (prevent cancellation corruption)
 - [ ] Add background task management in ShellApp
 
-### Phase 15: Auto-Update System (NEW)
+### Phase 15: Auto-Update System
+
+Python reference has this system (`ui/shell/update.py` + background check in `ShellApp`), but Go does not yet.
 
 - [ ] Add version check against CDN
 - [ ] Add tar.gz download and extraction
@@ -359,11 +384,11 @@ Updated: 2026-03-31
 
 ## Immediate Next Steps
 
-With Phase 13 (Wire/Approval) complete, the highest-impact items in order:
+Highest-impact remaining items in order:
 
-1. **Shell parity** (Phase 12) -- `@` file completer, `/reload`, toast notifications
-2. **Runtime parity** (Phase 14) -- backoff/jitter, shield for context writes
-3. **Auto-update** (Phase 15) -- user experience improvement
+1. **Runtime parity** (Phase 14) -- backoff/jitter, shield for context writes
+2. **Auto-update** (Phase 15) -- background version check + install flow
+3. **Shell remaining polish** (Phase 12) -- mode toggle, external editor, clipboard paste, background task browser
 4. **Go-specific cleanup** (Phase 16) -- align tool defaults with Python
 
 ---
@@ -378,23 +403,27 @@ cmd/fimi
   v
 internal/app
   |
-  +-- internal/config      (models, providers, web, MCP)
-  +-- internal/session     (session metadata)
-  +-- internal/agentspec   (YAML agent definitions)
+  +-- internal/config       (models, providers, web, MCP, history window)
+  +-- internal/session      (session metadata)
+  +-- internal/agentspec    (YAML agent definitions)
   +-- internal/contextstore (JSONL history, checkpoints)
-  +-- internal/tools       (12 builtin tools + MCP bridge)
-  +-- internal/llm         (OpenAI/Qwen providers, dual wire API)
-  +-- internal/mcp         (MCP client lifecycle, tool discovery)
-  +-- internal/runtime     (step loop, events, retry, subtitle)
-  +-- internal/dmail       (D-Mail state machine, rollback trigger)
-  +-- internal/wire        (bidirectional channel, events + approval)
-  +-- internal/approval    (permission gating, yolo, auto-approve)
-  +-- internal/acp         (JSON-RPC server, event projection)
+  +-- internal/tools        (13 builtin tools + MCP bridge + background manager)
+  +-- internal/llm          (OpenAI/Qwen providers, dual wire API)
+  +-- internal/mcp          (MCP client lifecycle, tool discovery)
+  +-- internal/runtime      (step loop, events, retry, subtitle)
+  +-- internal/dmail        (D-Mail state machine, rollback trigger)
+  +-- internal/wire         (bidirectional channel, events + approval + toast)
+  +-- internal/approval     (permission gating, yolo, auto-approve)
+  +-- internal/acp          (JSON-RPC server, event projection)
   +-- internal/ui
-  |     +-- printui        (text output, stream-json)
-  |     +-- shell          (Bubble Tea interactive)
-  +-- internal/websearch   (DuckDuckGo scraper)
-  +-- internal/webfetch    (HTTP fetch, content extraction)
+  |     +-- printui         (text output, stream-json)
+  |     +-- shell           (Bubble Tea interactive)
+  |           +-- completer (file index + fuzzy match)
+  |           +-- components (banner, status bar, tool card)
+  |           +-- renderers (markdown)
+  |           +-- styles    (lipgloss styles)
+  +-- internal/websearch    (DuckDuckGo scraper)
+  +-- internal/webfetch     (HTTP fetch, content extraction)
 ```
 
 ### Target Architecture (After Gaps Closed)
