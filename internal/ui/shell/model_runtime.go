@@ -247,6 +247,13 @@ func eventToTeaMsg(event runtimeevents.Event) tea.Msg {
 		return RuntimeEventMsg{Event: e}
 	case runtimeevents.ToolResult:
 		return RuntimeEventMsg{Event: e}
+	case runtimeevents.EventToast:
+		return ToastAddMsg{Toast: Toast{
+			Level:   parseToastLevel(e.Level),
+			Message: e.Message,
+			Detail:  e.Detail,
+			Action:  e.Action,
+		}}
 	default:
 		return nil
 	}
