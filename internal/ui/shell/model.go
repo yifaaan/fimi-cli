@@ -225,19 +225,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(inputCmd, outputCmd)
 
 	case RuntimeEventMsg:
-		// 忽略 runtime 已完成后的延迟事件（竞态条件保护）
-		if m.mode == ModeIdle {
-			return m, nil
-		}
 		return m.handleRuntimeEvents(RuntimeEventsMsg{
 			Events: []runtimeevents.Event{msg.Event},
 		})
 
 	case RuntimeEventsMsg:
-		// 忽略 runtime 已完成后的延迟事件（竞态条件保护）
-		if m.mode == ModeIdle {
-			return m, nil
-		}
 		return m.handleRuntimeEvents(msg)
 
 	case InputSubmitMsg:
@@ -245,7 +237,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case RuntimeCompleteMsg:
 		m = m.finishRuntime(msg)
-		return m, nil
+		// 继续运行 wireReceiveLoop 来消费残留的 wire 事件
+		return m, tea.Batch(
+			m.runtime.SpinnerCmd(),
+			m.wireReceiveLoop(),
+		)
 
 	case ClearMsg:
 		m.output = m.output.Clear()
@@ -591,15 +587,25 @@ func (m Model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleRuntimeEvents(msg RuntimeEventsMsg) (tea.Model, tea.Cmd) {
+	// 如果 runtime 已完成，仍处理事件以消费残留的 wire 消息，
+	// 但不改变 mode，避免把已完成的界面重新拉回 spinning 状态。
+	wasIdle := m.mode == ModeIdle
+
 	for _, event := range msg.Events {
 		if stepBegin, ok := event.(runtimeevents.StepBegin); ok && stepBegin.Number > 1 {
 			m.output = m.output.FlushPending()
 		}
 		m.runtime = m.runtime.ApplyEvent(event)
-		m.mode = ModeStreaming
+		if !wasIdle {
+			m.mode = ModeStreaming
+		}
 		m.output = m.output.SetPending(m.runtime.ToLines())
 	}
 
+	if wasIdle {
+		// 不重开 wireReceiveLoop（runtime 已关闭）
+		return m, nil
+	}
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
 		m.wireReceiveLoop(),
