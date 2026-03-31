@@ -166,8 +166,14 @@ func NewModel(deps Dependencies, history *historyStore) Model {
 		output = output.AppendLine(line)
 	}
 
+	// Pre-load persistent history into input navigation.
+	var historyEntries []string
+	if history != nil {
+		historyEntries = history.Entries()
+	}
+
 	return Model{
-		input:            NewInputModel(),
+		input:            NewInputModelWithHistory(historyEntries),
 		output:           output,
 		runtime:          NewRuntimeModel(),
 		toasts:           NewToastModel(),
@@ -531,42 +537,42 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// 如果显示文件补全建议，处理导航和选择
-		if m.showFileCompletion {
-			switch msg.String() {
-			case "up", "ctrl+p":
-				m.selectedFileCompletion--
-				if m.selectedFileCompletion < 0 {
-					m.selectedFileCompletion = len(m.fileCompletionItems) - 1
-				}
-				return m, nil
-			case "down", "ctrl+n":
-				m.selectedFileCompletion++
-				if m.selectedFileCompletion >= len(m.fileCompletionItems) {
-					m.selectedFileCompletion = 0
-				}
-				return m, nil
-			case "enter", "tab":
-				if m.selectedFileCompletion < len(m.fileCompletionItems) {
-					selected := m.fileCompletionItems[m.selectedFileCompletion]
-					// Delete @fragment and insert the selected path
-					endPos := m.input.CursorPos()
-					m.input = m.input.DeleteRange(m.fileCompletionAtPos, endPos)
-					m.input = m.input.InsertAtCursor(selected + " ")
-				}
-				m.showFileCompletion = false
-				m.fileCompletionItems = nil
-				m.selectedFileCompletion = 0
-				return m, nil
-			case "esc":
-				m.showFileCompletion = false
-				m.fileCompletionItems = nil
-				m.selectedFileCompletion = 0
-				return m, nil
+	if m.showFileCompletion {
+		switch msg.String() {
+		case "up", "ctrl+p":
+			m.selectedFileCompletion--
+			if m.selectedFileCompletion < 0 {
+				m.selectedFileCompletion = len(m.fileCompletionItems) - 1
 			}
-			// Fall through for typing more characters
+			return m, nil
+		case "down", "ctrl+n":
+			m.selectedFileCompletion++
+			if m.selectedFileCompletion >= len(m.fileCompletionItems) {
+				m.selectedFileCompletion = 0
+			}
+			return m, nil
+		case "enter", "tab":
+			if m.selectedFileCompletion < len(m.fileCompletionItems) {
+				selected := m.fileCompletionItems[m.selectedFileCompletion]
+				// Delete @fragment and insert the selected path
+				endPos := m.input.CursorPos()
+				m.input = m.input.DeleteRange(m.fileCompletionAtPos, endPos)
+				m.input = m.input.InsertAtCursor(selected + " ")
+			}
+			m.showFileCompletion = false
+			m.fileCompletionItems = nil
+			m.selectedFileCompletion = 0
+			return m, nil
+		case "esc":
+			m.showFileCompletion = false
+			m.fileCompletionItems = nil
+			m.selectedFileCompletion = 0
+			return m, nil
 		}
+		// Fall through for typing more characters
+	}
 
-		// 如果显示命令建议，处理导航和选择
+	// 如果显示命令建议，处理导航和选择
 	if m.showCommandSuggestions {
 		filtered := m.filteredCommands()
 		if len(filtered) == 0 {
@@ -2016,7 +2022,7 @@ func (m Model) handleResumeSwitch(sessionID string) (tea.Model, tea.Cmd) {
 
 		// 读取新 session 的历史记录
 		newStore := contextstore.New(sess.HistoryFile)
-		records, _ := newStore.ReadRecentTurns(10)
+		records, _ := newStore.ReadAll()
 
 		return ResumeSwitchMsg{
 			Session: sess,

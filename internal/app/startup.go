@@ -121,17 +121,21 @@ func buildShellStartupInfo(
 }
 
 func loadShellInitialRecords(cfg config.Config, store contextstore.Context) ([]contextstore.TextRecord, error) {
-	historyTurnLimit := cfg.HistoryWindow.RuntimeTurns
-	if historyTurnLimit <= 0 {
-		historyTurnLimit = config.DefaultRuntimeTurns
-	}
-
-	records, err := store.ReadRecentTurns(historyTurnLimit)
+	records, err := store.ReadAll()
 	if err != nil {
-		return nil, fmt.Errorf("read recent turns for shell startup: %w", err)
+		return nil, fmt.Errorf("read all history for shell startup: %w", err)
 	}
 
-	return records, nil
+	// Filter out the initial bootstrap system record.
+	var filtered []contextstore.TextRecord
+	for _, r := range records {
+		if r.Role == contextstore.RoleSystem && r.Content == initialRecordContent {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+
+	return filtered, nil
 }
 
 func buildShellDependencies(

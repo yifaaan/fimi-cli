@@ -36,6 +36,14 @@ func NewInputModel() InputModel {
 	}
 }
 
+// NewInputModelWithHistory 创建一个预加载历史记录的输入模型。
+func NewInputModelWithHistory(entries []string) InputModel {
+	return InputModel{
+		history:    entries,
+		historyIdx: -1,
+		focused:    true,
+	}
+}
 
 // Value 返回当前输入值。
 func (m InputModel) Value() string {
