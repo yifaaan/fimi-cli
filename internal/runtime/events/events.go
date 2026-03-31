@@ -13,6 +13,7 @@ const (
 	KindToolCall        Kind = "tool_call"
 	KindToolCallPart    Kind = "tool_call_part"
 	KindToolResult      Kind = "tool_result"
+	KindToast           Kind = "toast"
 )
 
 // Event 是 runtime 事件流里的最小多态边界。
@@ -100,6 +101,19 @@ type ToolResult struct {
 // Kind 返回事件种类。
 func (ToolResult) Kind() Kind {
 	return KindToolResult
+}
+
+// EventToast 表示一条 toast 通知事件。
+type EventToast struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Detail  string `json:"detail,omitempty"`
+	Action  string `json:"action,omitempty"`
+}
+
+// Kind 返回事件种类。
+func (EventToast) Kind() Kind {
+	return KindToast
 }
 
 // Sink 是 runtime 向外发送事件的最小输出边界。
