@@ -190,7 +190,7 @@ func (m *RuntimeModel) appendToolResultLine() {
 	}
 	m.stepLines = append(m.stepLines, TranscriptLine{
 		Type:    lineType,
-		Content: toolResultSummary(*m.CurrentTool),
+		Content: strings.TrimSpace(m.CurrentTool.Output),
 	})
 }
 
