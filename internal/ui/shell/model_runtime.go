@@ -20,10 +20,16 @@ type RuntimeModel struct {
 	Step int
 	// 上下文使用率 (0.0 - 1.0)
 	ContextUsage float64
+	// 当前重试等待状态
+	Retry *runtimeevents.RetryStatus
 	// 助手流式输出文本
 	AssistantText string
 	// 当前工具调用信息
 	CurrentTool *ToolCallInfo
+	// 当前 step 内所有工具状态（按到达顺序保留）
+	toolsByID   map[string]*ToolCallInfo
+	toolOrder   []string
+	toolLineIdx map[string]int
 	// 当前 step 已累积的 transcript 行
 	stepLines []TranscriptLine
 	// Spinner 动画
@@ -74,6 +80,10 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 		m.Step = e.Number
 		m.AssistantText = ""
 		m.CurrentTool = nil
+		m.toolsByID = make(map[string]*ToolCallInfo)
+		m.toolOrder = nil
+		m.toolLineIdx = make(map[string]int)
+		m.Retry = nil
 		m.stepLines = []TranscriptLine{{
 			Type:    LineTypeSystem,
 			Content: fmt.Sprintf("Step %d", e.Number),
@@ -82,36 +92,50 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 
 	case runtimeevents.StatusUpdate:
 		m.ContextUsage = e.Status.ContextUsage
+		m.Retry = cloneRetryStatus(e.Status.Retry)
 
 	case runtimeevents.TextPart:
 		m.AssistantText += e.Text
 		m.appendAssistantText(e.Text)
 
 	case runtimeevents.ToolCall:
-		m.CurrentTool = &ToolCallInfo{
+		tool := &ToolCallInfo{
 			ID:     e.ID,
 			Name:   e.Name,
 			Status: ToolStatusRunning,
 			Args:   toolCallDisplaySummary(e.Name, e.Subtitle, e.Arguments),
 		}
-		m.appendToolCallLine()
+		if m.toolsByID == nil {
+			m.toolsByID = make(map[string]*ToolCallInfo)
+		}
+		if m.toolLineIdx == nil {
+			m.toolLineIdx = make(map[string]int)
+		}
+		m.toolsByID[e.ID] = tool
+		m.toolOrder = append(m.toolOrder, e.ID)
+		m.CurrentTool = tool
+		m.appendToolCallLine(tool)
 
 	case runtimeevents.ToolCallPart:
-		if m.CurrentTool != nil {
-			m.CurrentTool.Args += e.Delta
-			m.updateCurrentToolCallLine()
+		if tool := m.toolsByID[e.ToolCallID]; tool != nil {
+			tool.Args += e.Delta
+			m.updateToolCallLine(e.ToolCallID)
+			if m.CurrentTool != nil && m.CurrentTool.ID == e.ToolCallID {
+				m.CurrentTool = tool
+			}
 		}
 
 	case runtimeevents.ToolResult:
-		if m.CurrentTool != nil {
-			m.CurrentTool.Output = e.Output
-			m.CurrentTool.IsError = e.IsError
+		if tool := m.toolsByID[e.ToolCallID]; tool != nil {
+			tool.Output = e.Output
+			tool.IsError = e.IsError
 			if e.IsError {
-				m.CurrentTool.Status = ToolStatusError
+				tool.Status = ToolStatusError
 			} else {
-				m.CurrentTool.Status = ToolStatusCompleted
+				tool.Status = ToolStatusCompleted
 			}
-			m.appendToolResultLine()
+			m.appendToolResultLine(tool)
+			m.CurrentTool = m.latestRunningTool()
 		}
 
 	case runtimeevents.StepInterrupted:
@@ -129,11 +153,24 @@ func (m RuntimeModel) ApplyEvent(event runtimeevents.Event) RuntimeModel {
 func (m RuntimeModel) Reset() RuntimeModel {
 	m.Step = 0
 	m.ContextUsage = 0
+	m.Retry = nil
 	m.AssistantText = ""
 	m.CurrentTool = nil
+	m.toolsByID = nil
+	m.toolOrder = nil
+	m.toolLineIdx = nil
 	m.stepLines = nil
 	m.Interrupted = false
 	return m
+}
+
+func cloneRetryStatus(retry *runtimeevents.RetryStatus) *runtimeevents.RetryStatus {
+	if retry == nil {
+		return nil
+	}
+
+	copy := *retry
+	return &copy
 }
 
 // ToLines 将当前状态转换为 transcript 行。
@@ -156,42 +193,54 @@ func (m *RuntimeModel) appendAssistantText(delta string) {
 	})
 }
 
-func (m *RuntimeModel) appendToolCallLine() {
-	if m.CurrentTool == nil {
+func (m *RuntimeModel) appendToolCallLine(tool *ToolCallInfo) {
+	if tool == nil {
 		return
 	}
 
 	m.stepLines = append(m.stepLines, TranscriptLine{
 		Type:    LineTypeToolCall,
-		Content: formatToolCallLine(*m.CurrentTool),
+		Content: formatToolCallLine(*tool),
 	})
+	if m.toolLineIdx == nil {
+		m.toolLineIdx = make(map[string]int)
+	}
+	m.toolLineIdx[tool.ID] = len(m.stepLines) - 1
 }
 
-func (m *RuntimeModel) updateCurrentToolCallLine() {
-	if m.CurrentTool == nil {
+func (m *RuntimeModel) updateToolCallLine(toolCallID string) {
+	tool := m.toolsByID[toolCallID]
+	if tool == nil {
 		return
 	}
-	for i := len(m.stepLines) - 1; i >= 0; i-- {
-		if m.stepLines[i].Type == LineTypeToolCall {
-			m.stepLines[i].Content = formatToolCallLine(*m.CurrentTool)
-			return
-		}
+	if idx, ok := m.toolLineIdx[toolCallID]; ok && idx >= 0 && idx < len(m.stepLines) {
+		m.stepLines[idx].Content = formatToolCallLine(*tool)
 	}
 }
 
-func (m *RuntimeModel) appendToolResultLine() {
-	if m.CurrentTool == nil || m.CurrentTool.Output == "" {
+func (m *RuntimeModel) appendToolResultLine(tool *ToolCallInfo) {
+	if tool == nil || tool.Output == "" {
 		return
 	}
 
 	lineType := LineTypeToolResult
-	if m.CurrentTool.IsError {
+	if tool.IsError {
 		lineType = LineTypeError
 	}
 	m.stepLines = append(m.stepLines, TranscriptLine{
 		Type:    lineType,
-		Content: strings.TrimSpace(m.CurrentTool.Output),
+		Content: strings.TrimSpace(tool.Output),
 	})
+}
+
+func (m RuntimeModel) latestRunningTool() *ToolCallInfo {
+	for i := len(m.toolOrder) - 1; i >= 0; i-- {
+		tool := m.toolsByID[m.toolOrder[i]]
+		if tool != nil && tool.Status == ToolStatusRunning {
+			return tool
+		}
+	}
+	return nil
 }
 
 // wireErrorMsg wraps wire receive errors for tea.Msg.

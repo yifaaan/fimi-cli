@@ -20,9 +20,17 @@ type Event interface {
 	Kind() Kind
 }
 
+// RetryStatus 表示 runtime 当前正在等待下一次 step 重试。
+type RetryStatus struct {
+	Attempt     int
+	MaxAttempts int
+	NextDelayMS int64
+}
+
 // StatusSnapshot 表示 UI 可以消费的最小运行状态快照。
 type StatusSnapshot struct {
 	ContextUsage float64
+	Retry        *RetryStatus
 }
 
 // StepBegin 表示 runtime 开始推进新的 step。

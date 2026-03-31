@@ -40,8 +40,8 @@ type MCPServer struct {
 
 // MCPConfig holds MCP server connections.
 type MCPConfig struct {
-	Enabled bool                   `json:"enabled"`
-	Servers map[string]MCPServer  `json:"servers"`
+	Enabled bool                 `json:"enabled"`
+	Servers map[string]MCPServer `json:"servers"`
 }
 
 type WebConfig struct {
@@ -65,8 +65,8 @@ type Config struct {
 
 // LoopControl 对应 Python 版本里的 agent loop 控制参数。
 type LoopControl struct {
-	MaxStepsPerRun    int `json:"max_steps_per_run"`
-	MaxRetriesPerStep int `json:"max_retries_per_step"`
+	MaxStepsPerRun              int `json:"max_steps_per_run"`
+	MaxAdditionalRetriesPerStep int `json:"max_additional_retries_per_step"`
 }
 
 // HistoryWindow 定义 runtime 和 llm 使用的历史窗口策略。
@@ -108,8 +108,8 @@ func Default() Config {
 	return Config{
 		DefaultModel: DefaultModelName,
 		LoopControl: LoopControl{
-			MaxStepsPerRun:    DefaultMaxStepsPerRun,
-			MaxRetriesPerStep: DefaultMaxRetries,
+			MaxStepsPerRun:              DefaultMaxStepsPerRun,
+			MaxAdditionalRetriesPerStep: DefaultMaxRetries,
 		},
 		HistoryWindow: HistoryWindow{
 			RuntimeTurns: DefaultRuntimeTurns,
@@ -123,7 +123,7 @@ func Default() Config {
 		},
 		Providers: map[string]ProviderConfig{
 			"qwen": {
-				Type: ProviderTypeQWEN,
+				Type:    ProviderTypeQWEN,
 				BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 			},
 		},
@@ -238,6 +238,9 @@ func validate(cfg Config) error {
 
 	if _, ok := cfg.Models[cfg.DefaultModel]; !ok {
 		return fmt.Errorf("default_model %q not found in models", cfg.DefaultModel)
+	}
+	if cfg.LoopControl.MaxAdditionalRetriesPerStep < 0 {
+		return errors.New("loop_control.max_additional_retries_per_step must be >= 0")
 	}
 
 	for modelAlias, modelCfg := range cfg.Models {

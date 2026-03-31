@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1275,10 +1276,18 @@ func (m Model) renderLiveStatus() string {
 }
 
 func (m Model) renderLiveStatusText() string {
+	if retry := m.runtime.Retry; retry != nil {
+		return formatRetryLiveStatusText(*retry)
+	}
 	if m.runtime.CurrentTool != nil && m.runtime.CurrentTool.Status == ToolStatusRunning {
 		return "Running " + formatToolCallLine(*m.runtime.CurrentTool) + "..."
 	}
 	return "Running..."
+}
+
+func formatRetryLiveStatusText(retry runtimeevents.RetryStatus) string {
+	seconds := math.Max(0, float64(retry.NextDelayMS)/1000)
+	return fmt.Sprintf("Retrying in %.1fs (attempt %d/%d)...", seconds, retry.Attempt, retry.MaxAttempts)
 }
 
 // handleResumeListResult 处理 session 列表查询结果。

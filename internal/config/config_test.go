@@ -9,6 +9,12 @@ import (
 func TestDefaultIncludesHistoryWindow(t *testing.T) {
 	cfg := Default()
 
+	if cfg.LoopControl.MaxStepsPerRun != DefaultMaxStepsPerRun {
+		t.Fatalf("Default().LoopControl.MaxStepsPerRun = %d, want %d", cfg.LoopControl.MaxStepsPerRun, DefaultMaxStepsPerRun)
+	}
+	if cfg.LoopControl.MaxAdditionalRetriesPerStep != DefaultMaxRetries {
+		t.Fatalf("Default().LoopControl.MaxAdditionalRetriesPerStep = %d, want %d", cfg.LoopControl.MaxAdditionalRetriesPerStep, DefaultMaxRetries)
+	}
 	if cfg.HistoryWindow.RuntimeTurns != DefaultRuntimeTurns {
 		t.Fatalf("Default().HistoryWindow.RuntimeTurns = %d, want %d", cfg.HistoryWindow.RuntimeTurns, DefaultRuntimeTurns)
 	}
@@ -83,7 +89,7 @@ func TestLoadFileReturnsDefaultWhenMissing(t *testing.T) {
 	}
 }
 
-func TestLoadFileMergesHistoryWindowWithDefaults(t *testing.T) {
+func TestLoadFileMergesLoopControlAndHistoryWindowWithDefaults(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configFile, []byte(`{
 		"default_model": "custom-model",
@@ -92,6 +98,9 @@ func TestLoadFileMergesHistoryWindowWithDefaults(t *testing.T) {
 				"provider": "placeholder",
 				"model": "custom-model"
 			}
+		},
+		"loop_control": {
+			"max_additional_retries_per_step": 0
 		},
 		"history_window": {
 			"llm_turns": 5
@@ -107,6 +116,12 @@ func TestLoadFileMergesHistoryWindowWithDefaults(t *testing.T) {
 
 	if cfg.DefaultModel != "custom-model" {
 		t.Fatalf("LoadFile().DefaultModel = %q, want %q", cfg.DefaultModel, "custom-model")
+	}
+	if cfg.LoopControl.MaxStepsPerRun != DefaultMaxStepsPerRun {
+		t.Fatalf("LoadFile().LoopControl.MaxStepsPerRun = %d, want %d", cfg.LoopControl.MaxStepsPerRun, DefaultMaxStepsPerRun)
+	}
+	if cfg.LoopControl.MaxAdditionalRetriesPerStep != 0 {
+		t.Fatalf("LoadFile().LoopControl.MaxAdditionalRetriesPerStep = %d, want %d", cfg.LoopControl.MaxAdditionalRetriesPerStep, 0)
 	}
 	if cfg.HistoryWindow.RuntimeTurns != DefaultRuntimeTurns {
 		t.Fatalf("LoadFile().HistoryWindow.RuntimeTurns = %d, want %d", cfg.HistoryWindow.RuntimeTurns, DefaultRuntimeTurns)
@@ -301,6 +316,22 @@ func TestLoadFileReturnsValidationErrors(t *testing.T) {
 			wantErrText: `models.custom-model.context_window_tokens must be >= 0`,
 		},
 		{
+			name: "negative max additional retries per step rejected",
+			content: `{
+				"default_model": "custom-model",
+				"models": {
+					"custom-model": {
+						"provider": "placeholder",
+						"model": "custom-model"
+					}
+				},
+				"loop_control": {
+					"max_additional_retries_per_step": -1
+				}
+			}`,
+			wantErrText: `loop_control.max_additional_retries_per_step must be >= 0`,
+		},
+		{
 			name: "web backend required when enabled",
 			content: `{
 				"default_model": "custom-model",
@@ -431,7 +462,6 @@ func TestLoadFileAllowsEmptyModelNameToFallBackToAlias(t *testing.T) {
 		t.Fatalf("LoadFile().Models[\"placeholder-worker\"].Model = %q, want empty string", cfg.Models["placeholder-worker"].Model)
 	}
 }
-
 
 func TestLoadFileParsesEnabledWebConfig(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "config.json")

@@ -105,12 +105,24 @@ func formatEvent(event runtimeevents.Event) string {
 }
 
 func formatStatusUpdate(event runtimeevents.StatusUpdate) string {
-	if event.Status.ContextUsage <= 0 {
+	parts := make([]string, 0, 2)
+	if event.Status.Retry != nil {
+		parts = append(parts, formatRetryStatus(*event.Status.Retry))
+	}
+	if event.Status.ContextUsage > 0 {
+		bounded := math.Max(0, math.Min(event.Status.ContextUsage, 1))
+		parts = append(parts, fmt.Sprintf("context used %.0f%%", bounded*100))
+	}
+	if len(parts) == 0 {
 		return ""
 	}
 
-	bounded := math.Max(0, math.Min(event.Status.ContextUsage, 1))
-	return fmt.Sprintf("[status] context used %.0f%%", bounded*100)
+	return "[status] " + strings.Join(parts, "; ")
+}
+
+func formatRetryStatus(retry runtimeevents.RetryStatus) string {
+	seconds := math.Max(0, float64(retry.NextDelayMS)/1000)
+	return fmt.Sprintf("retrying in %.1fs (attempt %d/%d)", seconds, retry.Attempt, retry.MaxAttempts)
 }
 
 func toolCallSummary(event runtimeevents.ToolCall) string {
@@ -187,10 +199,18 @@ func marshalEventJSON(event runtimeevents.Event) (string, error) {
 	case runtimeevents.StepInterrupted:
 		return `{"type":"step_interrupted"}`, nil
 	case runtimeevents.StatusUpdate:
+		fields := []string{`"type":"status_update"`}
 		if e.Status.ContextUsage > 0 {
-			return fmt.Sprintf(`{"type":"status_update","context_usage":%.2f}`, e.Status.ContextUsage), nil
+			fields = append(fields, fmt.Sprintf(`"context_usage":%.2f`, e.Status.ContextUsage))
 		}
-		return `{"type":"status_update"}`, nil
+		if e.Status.Retry != nil {
+			fields = append(fields,
+				fmt.Sprintf(`"retry_attempt":%d`, e.Status.Retry.Attempt),
+				fmt.Sprintf(`"retry_max_attempts":%d`, e.Status.Retry.MaxAttempts),
+				fmt.Sprintf(`"retry_next_delay_ms":%d`, e.Status.Retry.NextDelayMS),
+			)
+		}
+		return `{` + strings.Join(fields, ",") + `}`, nil
 	case runtimeevents.TextPart:
 		// JSON 字符串需要转义
 		escaped, err := json.Marshal(e.Text)
