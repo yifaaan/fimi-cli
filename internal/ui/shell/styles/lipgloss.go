@@ -110,3 +110,30 @@ var (
 	ModelStyle = lipgloss.NewStyle().
 			Foreground(ColorAccent)
 )
+
+// Toast styles
+var (
+	ToastInfoStyle = lipgloss.NewStyle().
+			Foreground(ColorInfo).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorInfo).
+			Padding(0, 1)
+
+	ToastWarningStyle = lipgloss.NewStyle().
+				Foreground(ColorWarning).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorWarning).
+				Padding(0, 1)
+
+	ToastErrorStyle = lipgloss.NewStyle().
+			Foreground(ColorError).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorError).
+			Padding(0, 1)
+
+	ToastSuccessStyle = lipgloss.NewStyle().
+				Foreground(ColorSuccess).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorSuccess).
+				Padding(0, 1)
+)
