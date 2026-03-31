@@ -20,6 +20,18 @@ type EventMessage struct {
 
 func (EventMessage) isMessage() {}
 
+// ToastMessage carries a toast notification through the wire.
+// Unlike EventMessage, toasts travel on their own channel so they
+// don't interleave with runtime step events.
+type ToastMessage struct {
+	Level   string // "info"|"warning"|"error"|"success"
+	Message string
+	Detail  string
+	Action  string
+}
+
+func (ToastMessage) isMessage() {}
+
 var ErrApprovalRequestNotWaiting = errorspkg.New("approval request is not waiting for a response")
 var ErrApprovalRequestResolved = errorspkg.New("approval request already resolved")
 

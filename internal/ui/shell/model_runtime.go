@@ -224,6 +224,13 @@ func (m Model) wireReceiveLoop() tea.Cmd {
 			return eventToTeaMsg(msg.Event)
 		case *wire.ApprovalRequest:
 			return approvalRequestMsg{Request: msg}
+		case wire.ToastMessage:
+			return ToastAddMsg{Toast: Toast{
+				Level:   parseToastLevel(msg.Level),
+				Message: msg.Message,
+				Detail:  msg.Detail,
+				Action:  msg.Action,
+			}}
 		default:
 			return nil
 		}
@@ -247,13 +254,6 @@ func eventToTeaMsg(event runtimeevents.Event) tea.Msg {
 		return RuntimeEventMsg{Event: e}
 	case runtimeevents.ToolResult:
 		return RuntimeEventMsg{Event: e}
-	case runtimeevents.EventToast:
-		return ToastAddMsg{Toast: Toast{
-			Level:   parseToastLevel(e.Level),
-			Message: e.Message,
-			Detail:  e.Detail,
-			Action:  e.Action,
-		}}
 	default:
 		return nil
 	}
