@@ -253,7 +253,7 @@ func (c *Client) replyChat(request llm.Request) (llm.Response, error) {
 
 	var chatResp chatResponse
 	if err := json.Unmarshal(respBytes, &chatResp); err != nil {
-		return llm.Response{}, fmt.Errorf("parse response: %w", err)
+		return llm.Response{}, fmt.Errorf("parse response: %w (body: %s)", err, responseBodyPreview(respBytes))
 	}
 	if chatResp.Error != nil {
 		return llm.Response{}, fmt.Errorf("api error: %s: %s", chatResp.Error.Type, chatResp.Error.Message)
@@ -312,7 +312,7 @@ func (c *Client) replyResponses(request llm.Request) (llm.Response, error) {
 
 	var apiResp responseAPIResponse
 	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
-		return llm.Response{}, fmt.Errorf("parse response: %w", err)
+		return llm.Response{}, fmt.Errorf("parse response: %w (body: %s)", err, responseBodyPreview(respBytes))
 	}
 	if apiResp.Error != nil {
 		return llm.Response{}, fmt.Errorf("api error: %s: %s", apiResp.Error.Type, apiResp.Error.Message)
@@ -555,4 +555,16 @@ func isRetryableStatus(statusCode int) bool {
 	default:
 		return false
 	}
+}
+
+func responseBodyPreview(body []byte) string {
+	preview := strings.Join(strings.Fields(string(body)), " ")
+	if preview == "" {
+		return "<empty>"
+	}
+	if len(preview) > 160 {
+		return preview[:157] + "..."
+	}
+
+	return preview
 }

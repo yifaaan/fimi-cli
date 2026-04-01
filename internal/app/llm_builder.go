@@ -3,6 +3,8 @@ package app
 import (
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/llm"
@@ -34,16 +36,16 @@ func buildLLMClientForProvider(
 	providerCfg config.ProviderConfig,
 	modelCfg config.ModelConfig,
 ) (llm.Client, error) {
-		switch providerCfg.Type {
-		case config.ProviderTypePlaceholder:
-			return buildPlaceholderClient()
-		case config.ProviderTypeQWEN:
-			return buildQwenClient(providerName, providerCfg, modelCfg)
-		case config.ProviderTypeOpenAI:
-			return buildOpenAIClient(providerName, providerCfg, modelCfg)
-		default:
-			return nil, fmt.Errorf("%w: %s", ErrUnsupportedProviderType, providerCfg.Type)
-		}
+	switch providerCfg.Type {
+	case config.ProviderTypePlaceholder:
+		return buildPlaceholderClient()
+	case config.ProviderTypeQWEN:
+		return buildQwenClient(providerName, providerCfg, modelCfg)
+	case config.ProviderTypeOpenAI:
+		return buildOpenAIClient(providerName, providerCfg, modelCfg)
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedProviderType, providerCfg.Type)
+	}
 }
 
 // resolveConfiguredModel 统一决定当前 run 选择的模型。
@@ -132,8 +134,7 @@ func buildOpenAIClient(
 
 	wireAPI := providerCfg.WireAPI
 	if wireAPI == "" {
-		// OpenAI 官方 provider 默认走 Responses API。
-		wireAPI = config.ProviderWireAPIResponses
+		wireAPI = defaultOpenAIWireAPI(providerCfg.BaseURL)
 	}
 
 	return openai.NewClient(openai.Config{
@@ -142,4 +143,21 @@ func buildOpenAIClient(
 		Model:   modelCfg.Model,
 		WireAPI: wireAPI,
 	}), nil
+}
+
+func defaultOpenAIWireAPI(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return config.ProviderWireAPIResponses
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return config.ProviderWireAPIChatCompletions
+	}
+	if strings.EqualFold(parsed.Hostname(), "api.openai.com") {
+		return config.ProviderWireAPIResponses
+	}
+
+	return config.ProviderWireAPIChatCompletions
 }

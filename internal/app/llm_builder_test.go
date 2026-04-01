@@ -11,6 +11,7 @@ import (
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/llm"
+	"fimi-cli/internal/llm/openai"
 	"fimi-cli/internal/runtime"
 )
 
@@ -349,6 +350,89 @@ func TestBuildLLMClientForProviderUsesQWENBuilder(t *testing.T) {
 	want := "qwen api_key is required; set providers.aliyun-prod.api_key in your ~/.config/fimi/config.json (get your key from https://dashscope.console.aliyun.com/apiKey)"
 	if err.Error() != want {
 		t.Fatalf("buildLLMClientForProvider() error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestDefaultOpenAIWireAPI(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{
+			name: "empty base url uses responses",
+			want: config.ProviderWireAPIResponses,
+		},
+		{
+			name:    "official openai base url uses responses",
+			baseURL: openai.DefaultBaseURL,
+			want:    config.ProviderWireAPIResponses,
+		},
+		{
+			name:    "official openai host with custom path uses responses",
+			baseURL: "https://api.openai.com/custom-prefix",
+			want:    config.ProviderWireAPIResponses,
+		},
+		{
+			name:    "custom compatible provider uses chat completions",
+			baseURL: "https://api.moonshot.cn/v1",
+			want:    config.ProviderWireAPIChatCompletions,
+		},
+		{
+			name:    "invalid base url falls back to chat completions",
+			baseURL: "::not-a-url::",
+			want:    config.ProviderWireAPIChatCompletions,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultOpenAIWireAPI(tt.baseURL); got != tt.want {
+				t.Fatalf("defaultOpenAIWireAPI(%q) = %q, want %q", tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildOpenAIClientDefaultsToChatCompletionsForCustomBaseURL(t *testing.T) {
+	var requestPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client, err := buildOpenAIClient(
+		"moonshot",
+		config.ProviderConfig{
+			Type:    config.ProviderTypeOpenAI,
+			APIKey:  "sk-test-key",
+			BaseURL: server.URL,
+		},
+		config.ModelConfig{
+			Model: "kimi-k2-turbo-preview",
+		},
+	)
+	if err != nil {
+		t.Fatalf("buildOpenAIClient() error = %v", err)
+	}
+
+	resp, err := client.Reply(llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("client.Reply() error = %v", err)
+	}
+
+	if requestPath != "/chat/completions" {
+		t.Fatalf("request path = %q, want %q", requestPath, "/chat/completions")
+	}
+	if resp.Text != "ok" {
+		t.Fatalf("client.Reply().Text = %q, want %q", resp.Text, "ok")
 	}
 }
 

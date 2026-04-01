@@ -462,6 +462,33 @@ func TestClientReplyResponsesParsesMessageAndToolCalls(t *testing.T) {
 	}
 }
 
+func TestClientReplyResponsesParseErrorIncludesBodyPreview(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("error: endpoint /responses is not supported here"))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL,
+		APIKey:  "test-key",
+		Model:   "gpt-5.4",
+		WireAPI: WireAPIResp,
+	})
+
+	_, err := client.Reply(llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "hello"},
+		},
+	})
+	if err == nil {
+		t.Fatal("Reply() error = nil, want non-nil")
+	}
+	if !containsString(err.Error(), "body: error: endpoint /responses is not supported here") {
+		t.Fatalf("Reply() error = %q, want body preview", err.Error())
+	}
+}
+
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
 }
