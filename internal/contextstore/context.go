@@ -13,11 +13,11 @@ import (
 )
 
 const (
-	RoleSystem    = "system"
-	RoleUser      = "user"
-	RoleAssistant = "assistant"
-	RoleTool      = "tool"
-	RoleUsage     = "_usage"      // token 使用量记录
+	RoleSystem     = "system"
+	RoleUser       = "user"
+	RoleAssistant  = "assistant"
+	RoleTool       = "tool"
+	RoleUsage      = "_usage"      // token 使用量记录
 	RoleCheckpoint = "_checkpoint" // 检查点记录
 )
 
@@ -72,6 +72,8 @@ type Context struct {
 }
 
 const readAllRecords = -1
+
+var errStopTextRecordScan = errors.New("stop text record scan")
 
 // New 为给定 history file 创建一个最小上下文存储。
 func New(historyFile string) Context {
@@ -132,26 +134,12 @@ func (c Context) Exists() (bool, error) {
 
 // Append 以 JSONL 形式向 history file 追加一条记录。
 func (c Context) Append(record TextRecord) error {
-	line, err := json.Marshal(record)
+	line, err := marshalJSONLine(record, "text record")
 	if err != nil {
-		return fmt.Errorf("marshal text record: %w", err)
+		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(c.historyFile), 0o755); err != nil {
-		return fmt.Errorf("create history dir: %w", err)
-	}
-
-	f, err := os.OpenFile(c.historyFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open history file %q: %w", c.historyFile, err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("append history file %q: %w", c.historyFile, err)
-	}
-
-	return nil
+	return c.appendJSONLine(line)
 }
 
 // AppendText 是追加文本记录的便捷方法。
@@ -237,35 +225,10 @@ func (c Context) ReadRecentTurns(limit int) ([]TextRecord, error) {
 		return []TextRecord{}, nil
 	}
 
-	f, err := os.Open(c.historyFile)
-	if errors.Is(err, os.ErrNotExist) {
-		return []TextRecord{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open history file %q: %w", c.historyFile, err)
-	}
-	defer f.Close()
-
 	records := make([]TextRecord, 0, limit*2)
 	userCount := 0
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var record TextRecord
-		if err := json.Unmarshal(line, &record); err != nil {
-			return nil, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
-		}
-
-		// 跳过元数据记录（_usage, _checkpoint），避免把存储层标记暴露给对话窗口。
-		if record.Role == RoleUsage || record.Role == RoleCheckpoint {
-			continue
-		}
-
+	err := c.scanTextRecords(func(record TextRecord) error {
 		records = append(records, record)
 		if record.Role == RoleUser {
 			userCount++
@@ -279,10 +242,10 @@ func (c Context) ReadRecentTurns(limit int) ([]TextRecord, error) {
 			records = records[1:]
 			records = dropLeadingNonUserRecords(records)
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan history file %q: %w", c.historyFile, err)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return records, nil
@@ -291,54 +254,61 @@ func (c Context) ReadRecentTurns(limit int) ([]TextRecord, error) {
 // ReadFirstUserRecord 返回 history 中第一条 user 记录（用于快速预览）。
 // 如果不存在 user 记录，返回 (TextRecord{}, false, nil)。
 func (c Context) ReadFirstUserRecord() (TextRecord, bool, error) {
-	f, err := os.Open(c.historyFile)
-	if errors.Is(err, os.ErrNotExist) {
-		return TextRecord{}, false, nil
-	}
+	var firstUser TextRecord
+	found := false
+	err := c.scanTextRecords(func(record TextRecord) error {
+		if record.Role != RoleUser {
+			return nil
+		}
+		firstUser = record
+		found = true
+		return errStopTextRecordScan
+	})
 	if err != nil {
-		return TextRecord{}, false, fmt.Errorf("open history file %q: %w", c.historyFile, err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var record TextRecord
-		if err := json.Unmarshal(line, &record); err != nil {
-			return TextRecord{}, false, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
-		}
-
-		if record.Role == RoleUser {
-			return record, true, nil
-		}
+		return TextRecord{}, false, err
 	}
 
-	if err := scanner.Err(); err != nil {
-		return TextRecord{}, false, fmt.Errorf("scan history file %q: %w", c.historyFile, err)
-	}
-
-	return TextRecord{}, false, nil
+	return firstUser, found, nil
 }
 
 func (c Context) readRecords(limit int) ([]TextRecord, error) {
-	f, err := os.Open(c.historyFile)
-	if errors.Is(err, os.ErrNotExist) {
-		return []TextRecord{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open history file %q: %w", c.historyFile, err)
-	}
-	defer f.Close()
-
 	records := make([]TextRecord, 0)
 	if limit > 0 {
 		records = make([]TextRecord, 0, limit)
 	}
 
+	err := c.scanTextRecords(func(record TextRecord) error {
+		if limit == readAllRecords {
+			records = append(records, record)
+			return nil
+		}
+
+		// 只保留尾部窗口，避免随着 history 增长而无限累积内存。
+		if len(records) < limit {
+			records = append(records, record)
+			return nil
+		}
+
+		records = append(records[1:], record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return records, nil
+}
+
+func (c Context) scanTextRecords(visit func(TextRecord) error) error {
+	f, err := os.Open(c.historyFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open history file %q: %w", c.historyFile, err)
+	}
+	defer f.Close()
+
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -348,33 +318,23 @@ func (c Context) readRecords(limit int) ([]TextRecord, error) {
 
 		var record TextRecord
 		if err := json.Unmarshal(line, &record); err != nil {
-			return nil, fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
+			return fmt.Errorf("decode history line in %q: %w", c.historyFile, err)
 		}
-
-		// 跳过元数据记录（_usage, _checkpoint）
 		if record.Role == RoleUsage || record.Role == RoleCheckpoint {
 			continue
 		}
-
-		if limit == readAllRecords {
-			records = append(records, record)
-			continue
+		if err := visit(record); err != nil {
+			if errors.Is(err, errStopTextRecordScan) {
+				return nil
+			}
+			return err
 		}
-
-		// 只保留尾部窗口，避免随着 history 增长而无限累积内存。
-		if len(records) < limit {
-			records = append(records, record)
-			continue
-		}
-
-		records = append(records[1:], record)
 	}
-
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan history file %q: %w", c.historyFile, err)
+		return fmt.Errorf("scan history file %q: %w", c.historyFile, err)
 	}
 
-	return records, nil
+	return nil
 }
 
 func dropLeadingNonUserRecords(records []TextRecord) []TextRecord {
@@ -388,26 +348,25 @@ func dropLeadingNonUserRecords(records []TextRecord) []TextRecord {
 // Last 返回最后一条文本记录。
 // bool 为 false 表示当前 history 里还没有任何记录。
 func (c Context) Last() (TextRecord, bool, error) {
-	records, err := c.ReadAll()
+	snapshot, err := c.Snapshot()
 	if err != nil {
 		return TextRecord{}, false, err
 	}
-
-	if len(records) == 0 {
+	if !snapshot.HasLastRecord {
 		return TextRecord{}, false, nil
 	}
 
-	return records[len(records)-1], true, nil
+	return snapshot.LastRecord, true, nil
 }
 
 // Count 返回当前 history 中的记录总数。
 func (c Context) Count() (int, error) {
-	records, err := c.ReadAll()
+	snapshot, err := c.Snapshot()
 	if err != nil {
 		return 0, err
 	}
 
-	return len(records), nil
+	return snapshot.Count, nil
 }
 
 // Bootstrap 确保 history 至少包含一条初始记录。
@@ -449,20 +408,15 @@ func (c Context) Bootstrap(initialRecord TextRecord) (BootstrapResult, error) {
 
 // Snapshot 返回 history 的数量和最后一条记录。
 func (c Context) Snapshot() (Snapshot, error) {
-	records, err := c.ReadAll()
-	if err != nil {
+	snapshot := Snapshot{}
+	if err := c.scanTextRecords(func(record TextRecord) error {
+		snapshot.Count++
+		snapshot.LastRecord = record
+		snapshot.HasLastRecord = true
+		return nil
+	}); err != nil {
 		return Snapshot{}, err
 	}
-
-	snapshot := Snapshot{
-		Count: len(records),
-	}
-	if len(records) == 0 {
-		return snapshot, nil
-	}
-
-	snapshot.LastRecord = records[len(records)-1]
-	snapshot.HasLastRecord = true
 
 	return snapshot, nil
 }
@@ -474,26 +428,12 @@ func (c Context) AppendUsage(tokenCount int) error {
 		TokenCount: tokenCount,
 	}
 
-	line, err := json.Marshal(record)
+	line, err := marshalJSONLine(record, "usage record")
 	if err != nil {
-		return fmt.Errorf("marshal usage record: %w", err)
+		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(c.historyFile), 0o755); err != nil {
-		return fmt.Errorf("create history dir: %w", err)
-	}
-
-	f, err := os.OpenFile(c.historyFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open history file %q: %w", c.historyFile, err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("append usage record: %w", err)
-	}
-
-	return nil
+	return c.appendJSONLine(line)
 }
 
 // AppendCheckpoint 追加检查点记录，返回检查点 ID。
@@ -516,26 +456,43 @@ func (c Context) AppendCheckpointWithMetadata(metadata CheckpointMetadata) (int,
 		PromptPreview: strings.TrimSpace(metadata.PromptPreview),
 	}
 
-	line, err := json.Marshal(record)
+	line, err := marshalJSONLine(record, "checkpoint record")
 	if err != nil {
-		return 0, fmt.Errorf("marshal checkpoint record: %w", err)
+		return 0, err
 	}
 
+	if err := c.appendJSONLine(line); err != nil {
+		return 0, err
+	}
+
+	return nextID, nil
+}
+
+func marshalJSONLine(record any, what string) ([]byte, error) {
+	line, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", what, err)
+	}
+
+	return line, nil
+}
+
+func (c Context) appendJSONLine(line []byte) error {
 	if err := os.MkdirAll(filepath.Dir(c.historyFile), 0o755); err != nil {
-		return 0, fmt.Errorf("create history dir: %w", err)
+		return fmt.Errorf("create history dir: %w", err)
 	}
 
 	f, err := os.OpenFile(c.historyFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		return 0, fmt.Errorf("open history file %q: %w", c.historyFile, err)
+		return fmt.Errorf("open history file %q: %w", c.historyFile, err)
 	}
 	defer f.Close()
 
 	if _, err := f.Write(append(line, '\n')); err != nil {
-		return 0, fmt.Errorf("append checkpoint record: %w", err)
+		return fmt.Errorf("append history file %q: %w", c.historyFile, err)
 	}
 
-	return nextID, nil
+	return nil
 }
 
 // nextCheckpointID 返回下一个检查点 ID。

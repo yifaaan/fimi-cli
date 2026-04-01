@@ -176,6 +176,95 @@ func TestContextReadRecentTurnsReturnsEmptyWhenLimitNonPositive(t *testing.T) {
 	}
 }
 
+func TestContextReadFirstUserRecordSkipsMetadata(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	for _, record := range []TextRecord{
+		NewSystemTextRecord("boot"),
+		NewAssistantTextRecord("thinking"),
+	} {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+	if err := ctx.AppendUsage(42); err != nil {
+		t.Fatalf("AppendUsage() error = %v", err)
+	}
+	if _, err := ctx.AppendCheckpoint(); err != nil {
+		t.Fatalf("AppendCheckpoint() error = %v", err)
+	}
+	if err := ctx.Append(NewUserTextRecord("first user prompt")); err != nil {
+		t.Fatalf("Append(user) error = %v", err)
+	}
+
+	got, ok, err := ctx.ReadFirstUserRecord()
+	if err != nil {
+		t.Fatalf("ReadFirstUserRecord() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ReadFirstUserRecord() ok = false, want true")
+	}
+	if want := NewUserTextRecord("first user prompt"); got != want {
+		t.Fatalf("ReadFirstUserRecord() = %#v, want %#v", got, want)
+	}
+}
+
+func TestContextSnapshotAndCountSkipMetadata(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	wantRecords := []TextRecord{
+		NewSystemTextRecord("boot"),
+		NewUserTextRecord("goal"),
+		NewAssistantTextRecord("reply"),
+	}
+	for _, record := range wantRecords {
+		if err := ctx.Append(record); err != nil {
+			t.Fatalf("Append(%#v) error = %v", record, err)
+		}
+	}
+	if err := ctx.AppendUsage(99); err != nil {
+		t.Fatalf("AppendUsage() error = %v", err)
+	}
+	if _, err := ctx.AppendCheckpoint(); err != nil {
+		t.Fatalf("AppendCheckpoint() error = %v", err)
+	}
+
+	snapshot, err := ctx.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.Count != len(wantRecords) {
+		t.Fatalf("Snapshot().Count = %d, want %d", snapshot.Count, len(wantRecords))
+	}
+	if !snapshot.HasLastRecord {
+		t.Fatal("Snapshot().HasLastRecord = false, want true")
+	}
+	if snapshot.LastRecord != wantRecords[len(wantRecords)-1] {
+		t.Fatalf("Snapshot().LastRecord = %#v, want %#v", snapshot.LastRecord, wantRecords[len(wantRecords)-1])
+	}
+
+	count, err := ctx.Count()
+	if err != nil {
+		t.Fatalf("Count() error = %v", err)
+	}
+	if count != len(wantRecords) {
+		t.Fatalf("Count() = %d, want %d", count, len(wantRecords))
+	}
+
+	last, ok, err := ctx.Last()
+	if err != nil {
+		t.Fatalf("Last() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Last() ok = false, want true")
+	}
+	if last != wantRecords[len(wantRecords)-1] {
+		t.Fatalf("Last() = %#v, want %#v", last, wantRecords[len(wantRecords)-1])
+	}
+}
+
 func TestContextRewriteTextRecordsOverwritesExistingHistory(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	ctx := New(historyFile)
