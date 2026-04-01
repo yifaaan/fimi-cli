@@ -1,5 +1,247 @@
 # PLAN
 
+## 2026-04-01 Shell UI Screenshot Parity Plan
+
+### Goal
+
+Make `fimi` shell UI match the provided screenshot as closely as possible in the transcript area:
+
+- user input is rendered as a clearly distinct muted bubble/block
+- assistant output is rendered as narrative bullet paragraphs rather than plain role-tagged lines
+- visible "think" / analysis flow and tool activity are rendered inline in the same conversation stream
+- tool details, command previews, search/read summaries, and edit diffs are shown in the screenshot's grouped style
+
+The screenshot should be treated as the visual source of truth for spacing, separators, prefixes, grouping rhythm, and preview density.
+
+### Current State
+
+- `internal/ui/shell/model_output.go` still uses a flat `[]TranscriptLine` model and renders one line type at a time.
+- `internal/ui/shell/model_runtime.go` converts runtime events into `stepLines`, but the mapping is still mostly `one event -> one line`.
+- `internal/ui/shell/styles/colors.go` and `internal/ui/shell/styles/lipgloss.go` define generic shell styles, not screenshot-specific transcript blocks.
+- `internal/runtime/events/events.go` already has `ToolResult.DisplayOutput`, and `internal/runtime/runtime.go` already forwards it.
+- `internal/tools/builtin_patch.go` already generates a richer `DisplayOutput` for patch diffs, but most other tools still only provide coarse plain-text output.
+- Current shell UI still exposes implementation-oriented affordances such as `Step N`, raw tool-card rows, and status bar text that do not match the screenshot's transcript-first presentation.
+
+### Gap Analysis
+
+The main gap is not only styling. The current transcript data model is too shallow for the target UI.
+
+To reproduce the screenshot, shell needs concepts like:
+
+- user message blocks
+- assistant narrative blocks
+- grouped activity sections such as `Explored`, `Ran ...`, `Edited ...`
+- nested detail rows such as `Read foo.go`, `Search ...`
+- inline preview bodies for command output and file diffs
+- elapsed-time dividers such as `Worked for 1m 11s`
+
+Those concepts do not map cleanly onto the current `LineTypeUser / LineTypeAssistant / LineTypeToolCall / LineTypeToolResult` model.
+
+### Design Decisions
+
+#### 1. Move From Line Model To Block Model
+
+Refactor the shell transcript renderer from a flat line list to richer transcript blocks. A minimal shape can be:
+
+- `UserPromptBlock`
+- `AssistantNoteBlock`
+- `ActivityGroupBlock`
+- `DividerBlock`
+- `ElapsedBlock`
+- `SystemNoticeBlock`
+- `ErrorBlock`
+
+Each activity group should hold:
+
+- semantic title, for example `Explored`, `Ran pwd && rg --files`, `Edited PLAN.md`
+- ordered activity items, for example `Read`, `Search`, `Write`, `Patch`
+- optional preview body, for example command output snippet or inline diff
+- render metadata such as accent color and truncation mode
+
+#### 2. Separate Narrative From Tool Activity
+
+Visible assistant prose and visible tool activity should no longer be flattened into the same primitive.
+
+- `runtimeevents.TextPart` should accumulate into assistant narrative bullet paragraphs.
+- Consecutive tool calls/results should aggregate into activity groups until a new assistant paragraph or step boundary appears.
+- `think` should not render as the current raw tool-call text. It should be mapped to a screenshot-style visible analysis/note block.
+
+Important constraint:
+
+- the current provider/streaming layer does not expose hidden chain-of-thought
+- the visible "think process" can therefore only come from assistant text plus explicit `think` tool content
+- if future providers expose reasoning summaries, add a dedicated runtime event kind instead of overloading `TextPart`
+
+#### 3. Define Activity Grouping Rules
+
+Initial grouping rules:
+
+- `read_file`, `glob`, `grep`, `search_web`, `fetch_url` -> group as `Explored`
+- `bash` -> group as `Ran <command>`
+- `write_file`, `replace_file`, `patch_file` -> group as `Edited` or `Updated`
+- `set_todo_list` -> group as `Planned`
+- `agent` -> group as `Delegated`
+
+Nested detail rows should use screenshot-style tree/list rendering such as:
+
+- `Read internal/ui/shell/model_output.go`
+- `Search renderLiveStatus|renderStatusBar in shell`
+- `Read patch_test.go`
+
+#### 4. Use `DisplayOutput` As The UI Preview Payload
+
+Keep `Output` as the model-facing/full-fidelity result, and treat `DisplayOutput` as shell UI preview payload.
+
+Plan:
+
+- continue preserving full tool result text in `Output`
+- populate `DisplayOutput` for all important tools
+- render inline previews from `DisplayOutput`
+- never require shell to reverse-engineer structure from coarse human text if the tool can provide a richer preview directly
+
+This is the fastest path to screenshot parity without redesigning history persistence.
+
+#### 5. Screenshot-Oriented Visual Language
+
+Update shell transcript styling to match the screenshot:
+
+- user message: full-width muted background block, padded, no explicit role label
+- assistant note: plain white/soft foreground with leading bullet `•`
+- activity group title: stronger title line, subtle accent on verbs or command text
+- nested detail rows: tree glyphs and compact indented previews
+- divider: full-width rule between logical chunks
+- elapsed row: `Worked for 1m 11s`
+
+The current rounded tool card presentation should be removed from the shell transcript path.
+
+### File-Level Modification Plan
+
+#### `internal/ui/shell/model_output.go`
+
+- replace the current line-centric render path with a block-centric render path
+- keep viewport, scrollback, and "latest turn stays interactive" behavior
+- add rendering for user bubble, assistant bullets, grouped activities, inline previews, diff bodies, dividers, and elapsed rows
+- update tests that currently assert the old compact line layout
+
+#### `internal/ui/shell/model_runtime.go`
+
+- replace `stepLines []TranscriptLine` with richer pending turn state
+- maintain grouping state for the current assistant note and current activity group
+- consume `ToolResult.DisplayOutput`
+- map tool names to semantic activity titles and nested item labels
+- add elapsed/progress support for screenshot-style `Worked for ...` separators
+
+#### `internal/ui/shell/model.go`
+
+- keep the existing runtime/wire lifecycle
+- reduce reliance on `renderLiveStatus()` and `renderStatusBar()` for user-visible progress
+- move more progress signaling into transcript blocks
+- ensure redraw cadence supports elapsed divider updates without breaking input responsiveness
+
+#### `internal/ui/shell/styles/colors.go`
+
+- add dedicated palette tokens for transcript foreground, muted foreground, divider, user bubble background, activity accent, command accent, diff add, and diff remove
+
+#### `internal/ui/shell/styles/lipgloss.go`
+
+- replace generic transcript styles with dedicated block styles such as:
+  - `UserBubbleStyle`
+  - `AssistantBulletStyle`
+  - `ActivityTitleStyle`
+  - `ActivityVerbStyle`
+  - `ActivityDetailStyle`
+  - `DividerStyle`
+  - `ElapsedStyle`
+  - `DiffAddStyle`
+  - `DiffRemoveStyle`
+
+#### `internal/runtime/events/events.go`
+
+- keep `ToolResult.DisplayOutput`
+- only add a new event kind if the screenshot parity work proves that assistant text + tool events still cannot represent visible reasoning cleanly
+
+#### `internal/runtime/runtime.go`
+
+- keep forwarding `DisplayOutput`
+- if a new event kind is introduced later, emit it here from streaming/tool-step assembly
+
+#### `internal/tools/builtin.go`
+
+- add `DisplayOutput` for foreground `bash`
+- command preview should show compact stdout/stderr snippets, line counts, and truncation markers in screenshot-friendly form
+- background task query / foreground command output should remain distinguishable
+
+#### `internal/tools/builtin_readonly.go`
+
+- add `DisplayOutput` for `read_file`, `glob`, `grep`, `search_web`, and `fetch_url`
+- previews should be compact and line-count aware
+- file-path listings should support `... +N lines` truncation like the screenshot
+
+#### `internal/tools/builtin_write.go`
+
+- add `DisplayOutput` for `write_file` and `replace_file`
+- `replace_file` should expose a small inline diff or line-level replacement preview instead of only `"replaced N occurrence(s)"`
+
+#### `internal/tools/builtin_patch.go`
+
+- keep the existing patch diff preview path
+- normalize its preview formatting so it fits the new transcript block renderer
+
+#### `internal/ui/printui/printui.go`
+
+- keep plain-text print mode stable
+- only update it if any new runtime event kind requires a textual fallback
+
+### Implementation Order
+
+1. Freeze the target transcript spec from the screenshot
+
+- document exact prefixes, spacing, divider behavior, truncation rules, and activity titles
+- create golden examples for one representative tool-heavy turn
+
+2. Build the new transcript primitives and renderer
+
+- introduce block types and renderers in shell UI
+- preserve scrolling and interactive-tail behavior while changing only the presentation layer
+
+3. Enrich tool preview payloads
+
+- populate `DisplayOutput` across read/search/bash/write/replace/patch tools
+- centralize preview helpers so truncation and formatting are consistent
+
+4. Add grouping and elapsed behavior
+
+- aggregate consecutive tool events into semantic groups
+- insert dividers and elapsed markers at the same rhythm as the screenshot
+
+5. Polish styles against real terminal output
+
+- tune colors, padding, wrap width, and preview density
+- remove remaining rounded tool-card assumptions from shell transcript
+
+6. Add regression coverage
+
+- snapshot/golden tests for `InteractiveView()`
+- unit tests for grouping rules, preview truncation, diff rendering, and elapsed formatting
+- one end-to-end shell test for a multi-step turn with assistant note + explored block + command block + edit diff
+
+### Acceptance Criteria
+
+- submitted user messages are visually distinct and rendered as muted blocks like the screenshot
+- assistant narrative is rendered as bullet-style prose instead of plain assistant lines
+- visible "think" / analysis flow appears inline in the transcript rather than as raw tool-card text
+- tool activity is grouped into sections such as `Explored`, `Ran ...`, and `Edited ...`
+- command output previews and file-edit diffs are shown inline, with compact truncation behavior
+- the shell still supports scrolling, late-event commit, and older-turn scrollback
+- `printui` and persisted history stay compatible with the richer shell presentation
+
+### Risks And Constraints
+
+- exact screenshot parity depends on richer per-tool preview payloads; styling alone will not be enough
+- the current provider stack does not expose hidden chain-of-thought, so visible reasoning can only be built from assistant text and explicit `think` activity
+- replacing the transcript presentation model will touch multiple tests because current assertions assume one-line-per-event rendering
+
+
 # kimi-cli 实现参考（基于 `temp/` 快照）
 
 更新时间：2026-04-01
