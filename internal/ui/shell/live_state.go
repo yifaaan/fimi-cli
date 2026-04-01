@@ -41,7 +41,7 @@ func (s *liveState) Apply(event runtimeevents.Event) {
 		s.toolSummary += e.Delta
 	case runtimeevents.ToolResult:
 		s.toolName = e.ToolName
-		s.toolOutput = e.Output
+		s.toolOutput = firstNonEmpty(strings.TrimSpace(e.DisplayOutput), e.Output)
 		s.toolIsError = e.IsError
 	case runtimeevents.StepInterrupted:
 		s.interrupted = true

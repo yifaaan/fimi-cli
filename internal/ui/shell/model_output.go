@@ -5,177 +5,133 @@ import (
 	"strings"
 	"time"
 
-	"encoding/json"
-
 	"fimi-cli/internal/contextstore"
-	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/ui/shell/styles"
 
-	"github.com/charmbracelet/bubbletea"
-	"github.com/muesli/reflow/wrap"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
-// LineType 表示 transcript 行的类型。
+const defaultRenderWidth = 80
+
 type LineType int
 
 const (
-	// LineTypeUser 用户消息
 	LineTypeUser LineType = iota
-	// LineTypeAssistant 助手消息
 	LineTypeAssistant
-	// LineTypeToolCall 工具调用
 	LineTypeToolCall
-	// LineTypeToolResult 工具结果
 	LineTypeToolResult
-	// LineTypeSystem 系统消息
 	LineTypeSystem
-	// LineTypeError 错误消息
 	LineTypeError
 )
 
-// TranscriptLine 表示 transcript 中的一行。
 type TranscriptLine struct {
 	Type    LineType
 	Content string
 	Time    time.Time
 }
 
-// 折叠阈值：超过此行数的结果将被折叠
-const foldThreshold = 10
-
-// OutputModel 管理可滚动的 transcript 显示。
 type OutputModel struct {
-	// 已完成的行
-	lines []TranscriptLine
-	// 已打印到终端 scrollback 的已完成行数量
+	blocks       []TranscriptBlock
 	printedCount int
-	// 正在更新的实时内容（流式输出）
-	pending []TranscriptLine
-	// 视口尺寸
+	pending      []TranscriptBlock
+
 	width          int
 	height         int
 	viewportHeight int
-	// 是否自动滚动到底部
-	atBottom bool
-	// 相对底部的滚动偏移量（按行）
-	scrollOffset int
-	// 已展开的 ToolResult 行索引（key 为 lines 中的索引）
-	expanded map[int]bool
+	atBottom       bool
+	scrollOffset   int
+
+	expanded map[string]bool
+	nextID   int
 }
 
-type indexedTranscriptLine struct {
-	idx  int
-	line TranscriptLine
+type indexedTranscriptBlock struct {
+	idx   int
+	block TranscriptBlock
 }
 
-// NewOutputModel 创建一个新的输出模型。
 func NewOutputModel() OutputModel {
 	return OutputModel{
-		lines:    make([]TranscriptLine, 0),
-		pending:  make([]TranscriptLine, 0),
+		blocks:   make([]TranscriptBlock, 0),
+		pending:  make([]TranscriptBlock, 0),
 		atBottom: true,
-		expanded: make(map[int]bool),
+		expanded: make(map[string]bool),
 	}
 }
 
-// AppendLine 添加一行到 transcript。
 func (m OutputModel) AppendLine(line TranscriptLine) OutputModel {
-	line.Time = time.Now()
-	m.lines = append(m.lines, line)
+	block := transcriptBlockFromLine(line)
+	return m.AppendBlock(block)
+}
+
+func (m OutputModel) AppendBlock(block TranscriptBlock) OutputModel {
+	if block.ID == "" {
+		m.nextID++
+		block.ID = fmt.Sprintf("output-block-%d", m.nextID)
+	}
+	if block.CreatedAt.IsZero() {
+		block.CreatedAt = time.Now()
+	}
+	m.blocks = append(m.blocks, block)
 	if m.atBottom {
 		m.scrollOffset = 0
 	}
 	return m
 }
 
-func transcriptLineModelsFromRecords(records []contextstore.TextRecord) []TranscriptLine {
-	lines := make([]TranscriptLine, 0, len(records))
-	for _, record := range records {
-		content := strings.TrimSpace(record.Content)
-		if record.Role == contextstore.RoleSystem && content == "session initialized" {
-			continue
+func transcriptBlockFromLine(line TranscriptLine) TranscriptBlock {
+	switch line.Type {
+	case LineTypeUser:
+		return TranscriptBlock{Kind: BlockKindUserPrompt, UserText: line.Content}
+	case LineTypeAssistant:
+		return TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: line.Content}
+	case LineTypeSystem:
+		return TranscriptBlock{Kind: BlockKindSystemNotice, Text: line.Content}
+	case LineTypeError:
+		return TranscriptBlock{Kind: BlockKindError, Text: line.Content}
+	case LineTypeToolCall:
+		return TranscriptBlock{
+			Kind: BlockKindActivityGroup,
+			Activity: ActivityGroupBlock{
+				GroupKind: "activity",
+				Title:     line.Content,
+			},
 		}
-
-		switch record.Role {
-		case contextstore.RoleUser:
-			if content == "" {
-				continue
-			}
-			lines = append(lines, TranscriptLine{
-				Type:    LineTypeUser,
-				Content: content,
-			})
-		case contextstore.RoleAssistant:
-			if content != "" {
-				lines = append(lines, TranscriptLine{
-					Type:    LineTypeAssistant,
-					Content: content,
-				})
-			}
-			for _, summary := range storedToolCallSummaries(record.ToolCallsJSON) {
-				lines = append(lines, TranscriptLine{
-					Type:    LineTypeToolCall,
-					Content: summary,
-				})
-			}
-		case contextstore.RoleTool:
-			if content == "" {
-				continue
-			}
-			lines = append(lines, TranscriptLine{
-				Type:    LineTypeToolResult,
-				Content: content,
-			})
+	case LineTypeToolResult:
+		return TranscriptBlock{
+			Kind: BlockKindActivityGroup,
+			Activity: ActivityGroupBlock{
+				GroupKind: "activity",
+				Title:     "Result",
+				Preview: PreviewBody{
+					Text:        line.Content,
+					Kind:        classifyPreviewKind("", line.Content),
+					Collapsible: previewLineCount(line.Content) > previewDefaultLimit(classifyPreviewKind("", line.Content)),
+				},
+				Collapsible: previewLineCount(line.Content) > previewDefaultLimit(classifyPreviewKind("", line.Content)),
+			},
 		}
+	default:
+		return TranscriptBlock{Kind: BlockKindSystemNotice, Text: line.Content}
 	}
-
-	return lines
 }
 
-func storedToolCallSummaries(encoded string) []string {
-	if strings.TrimSpace(encoded) == "" {
-		return nil
-	}
-
-	var calls []struct {
-		Name      string
-		Arguments string
-	}
-	if err := json.Unmarshal([]byte(encoded), &calls); err != nil {
-		return nil
-	}
-
-	summaries := make([]string, 0, len(calls))
-	for _, call := range calls {
-		summary := strings.TrimSpace(runtime.ToolCallSubtitle(runtime.ToolCall{
-			Name:      call.Name,
-			Arguments: call.Arguments,
-		}))
-		if summary == "" {
-			summary = strings.TrimSpace(toolCallDisplaySummary(call.Name, "", call.Arguments))
-		}
-		if summary == "" {
-			continue
-		}
-		summaries = append(summaries, summary)
-	}
-
-	return summaries
+func transcriptLineModelsFromRecords(records []contextstore.TextRecord) []TranscriptBlock {
+	return buildTranscriptBlocksFromRecords(records)
 }
 
-// SetPending 用最新快照替换实时内容。
-func (m OutputModel) SetPending(lines []TranscriptLine) OutputModel {
-	m.pending = append([]TranscriptLine(nil), lines...)
+func (m OutputModel) SetPending(blocks []TranscriptBlock) OutputModel {
+	m.pending = cloneTranscriptBlocks(blocks)
 	if m.atBottom {
 		m.scrollOffset = 0
 	}
 	return m
 }
 
-// FlushPending 将实时内容刷新到已完成的行。
 func (m OutputModel) FlushPending() OutputModel {
-	m.lines = append(m.lines, m.pending...)
+	m.blocks = append(m.blocks, cloneTranscriptBlocks(m.pending)...)
 	m.pending = nil
 	if m.atBottom {
 		m.scrollOffset = 0
@@ -183,18 +139,16 @@ func (m OutputModel) FlushPending() OutputModel {
 	return m
 }
 
-// Clear 清空 transcript。
 func (m OutputModel) Clear() OutputModel {
-	m.lines = nil
+	m.blocks = nil
 	m.printedCount = 0
 	m.pending = nil
 	m.scrollOffset = 0
 	m.atBottom = true
-	m.expanded = make(map[int]bool)
+	m.expanded = make(map[string]bool)
 	return m
 }
 
-// Update 处理消息并更新状态。
 func (m OutputModel) Update(msg tea.Msg, width, height int) (OutputModel, tea.Cmd) {
 	m.width = width
 	m.height = height
@@ -221,25 +175,13 @@ func (m OutputModel) Update(msg tea.Msg, width, height int) (OutputModel, tea.Cm
 	return m, nil
 }
 
-// View 渲染 transcript 视图。
 func (m OutputModel) View() string {
 	rows := m.renderedRows()
-
 	if len(rows) == 0 {
 		return ""
 	}
-
 	startIdx, endIdx := m.visibleRange(len(rows), m.visibleHeight())
-
-	var b strings.Builder
-	for i := startIdx; i < endIdx; i++ {
-		if i > startIdx {
-			b.WriteByte('\n')
-		}
-		b.WriteString(rows[i])
-	}
-
-	return b.String()
+	return strings.Join(rows[startIdx:endIdx], "\n")
 }
 
 func (m OutputModel) PendingView() string {
@@ -247,7 +189,7 @@ func (m OutputModel) PendingView() string {
 		return ""
 	}
 	pendingOnly := m
-	pendingOnly.lines = nil
+	pendingOnly.blocks = nil
 	pendingOnly.printedCount = 0
 	return pendingOnly.View()
 }
@@ -260,88 +202,221 @@ func (m OutputModel) InteractiveView() string {
 	return m.renderIndexedSelection(selection, anchorTop)
 }
 
-// renderLine 渲染单行。
-// idx 参数用于查找该行的折叠状态（仅对 ToolResult 有效）。
-func (m OutputModel) renderLine(line TranscriptLine, idx int) string {
-	switch line.Type {
-	case LineTypeUser:
-		return styles.UserStyle.Render(line.Content)
-	case LineTypeAssistant:
-		return line.Content
-	case LineTypeToolCall:
-		return styles.ToolNameStyle.Render("● " + line.Content)
-	case LineTypeToolResult:
-		return m.renderToolResult(line.Content, idx)
-	case LineTypeSystem:
-		return styles.SystemStyle.Render(line.Content)
-	case LineTypeError:
-		return styles.ErrorStyle.Render(line.Content)
+func (m OutputModel) renderBlock(block TranscriptBlock) string {
+	if block.Kind == BlockKindDivider {
+		return styles.TranscriptDividerStyle.Width(maxInt(1, m.renderWidth())).Render(strings.Repeat("-", maxInt(1, m.renderWidth()-1)))
+	}
+
+	switch block.Kind {
+	case BlockKindUserPrompt:
+		return styles.UserBubbleStyle.Width(maxInt(1, m.renderWidth()-2)).Render(block.UserText)
+	case BlockKindAssistantNote:
+		return renderAssistantNoteBlock(block.NoteText)
+	case BlockKindActivityGroup:
+		return m.renderActivityGroupBlock(block)
+	case BlockKindApproval:
+		return renderInlineApprovalBlock(block.Approval)
+	case BlockKindDivider:
+		return styles.TranscriptDividerStyle.Width(maxInt(1, m.renderWidth())).Render(strings.Repeat("鈹€", maxInt(1, m.renderWidth()-1)))
+	case BlockKindElapsed:
+		return styles.ElapsedStyle.Render(block.Text)
+	case BlockKindError:
+		return styles.ErrorStyle.Render(block.Text)
+	case BlockKindSystemNotice:
+		return styles.SystemStyle.Render(block.Text)
 	default:
-		return line.Content
+		return block.Text
 	}
 }
 
-// renderToolResult 渲染工具结果，默认隐藏正文，展开后才显示完整内容。
-func (m OutputModel) renderToolResult(content string, idx int) string {
-	if m.expanded[idx] {
-		return styles.SystemStyle.Render(m.expandedToolResultContent(content))
+func renderAssistantNoteBlock(note string) string {
+	paragraphs := splitParagraphs(note)
+	if len(paragraphs) == 0 {
+		return ""
 	}
-
-	// Take only the first line for the preview
-	preview := strings.TrimSpace(content)
-	if preview == "" {
-		preview = "No output"
+	lines := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		lines = append(lines, styles.AssistantBulletStyle.Render(paragraph))
 	}
-	if nl := strings.IndexByte(preview, '\n'); nl >= 0 {
-		preview = preview[:nl]
-	}
-	if len(preview) > 80 {
-		preview = preview[:77] + "..."
-	}
-
-	return styles.HelpStyle.Render("  ⎿  " + preview + "  (Ctrl+O to expand)")
+	return strings.Join(lines, "\n\n")
 }
 
-func (m OutputModel) expandedToolResultContent(content string) string {
-	trimmed := strings.TrimRight(content, "\n")
-	if strings.TrimSpace(trimmed) == "" {
-		return "  ⎿  No output\n     (Ctrl+O to collapse)"
-	}
-
-	lines := strings.Split(trimmed, "\n")
-	hidden := 0
-	if len(lines) > foldThreshold {
-		hidden = len(lines) - foldThreshold
-		lines = lines[:foldThreshold]
-	}
-
-	formatted := make([]string, 0, len(lines)+1)
-	for i, line := range lines {
-		prefix := "     "
-		if i == 0 {
-			prefix = "  ⎿  "
+func splitParagraphs(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	parts := strings.Split(text, "\n\n")
+	paragraphs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			paragraphs = append(paragraphs, strings.ReplaceAll(part, "\n", " "))
 		}
-		formatted = append(formatted, prefix+line)
 	}
-	if hidden > 0 {
-		formatted = append(formatted, fmt.Sprintf("     ... %d more lines hidden (Ctrl+O to collapse)", hidden))
-	} else {
-		formatted = append(formatted, "     (Ctrl+O to collapse)")
+	if len(paragraphs) == 0 && strings.TrimSpace(text) != "" {
+		return []string{strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))}
+	}
+	return paragraphs
+}
+
+func (m OutputModel) renderActivityGroupBlock(block TranscriptBlock) string {
+	group := block.Activity
+	lines := []string{renderActivityTitle(group.Title, group.Accent)}
+	for _, item := range group.Items {
+		lines = append(lines, renderActivityItem(item))
+	}
+	if preview := m.renderPreviewBody(block.ID, group.Preview); preview != "" {
+		lines = append(lines, preview)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderActivityTitle(title string, accent string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Activity"
+	}
+	return styles.ActivityTitleStyle.Render("- " + title)
+}
+
+func renderActivityItem(item ActivityItem) string {
+	verb := strings.TrimSpace(item.Verb)
+	text := strings.TrimSpace(item.Text)
+	if verb == "" && text == "" {
+		return ""
+	}
+	if text == "" {
+		return styles.ActivityDetailStyle.Render("  - " + verb)
+	}
+	return styles.ActivityDetailStyle.Render("  - " + verb + " " + text)
+}
+
+func (m OutputModel) renderPreviewBody(blockID string, preview PreviewBody) string {
+	preview.Text = strings.TrimSpace(preview.Text)
+	if preview.Text == "" {
+		return ""
+	}
+	expanded := m.expanded[blockID]
+	limit := previewDefaultLimit(preview.Kind)
+	hint := "Ctrl+O to expand"
+	if expanded {
+		limit = expandedPreviewLineLimit
+		hint = "Ctrl+O to collapse"
 	}
 
-	return strings.Join(formatted, "\n")
+	lines := strings.Split(strings.TrimRight(preview.Text, "\n"), "\n")
+	hidden := 0
+	if preview.Collapsible && len(lines) > limit {
+		hidden = len(lines) - limit
+		lines = lines[:limit]
+	}
+
+	rendered := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		rendered = append(rendered, renderPreviewLine(preview.Kind, line))
+	}
+	if preview.Collapsible {
+		if hidden > 0 {
+			suffix := "lines"
+			if preview.Kind == PreviewKindDiff {
+				suffix = "diff lines"
+			}
+			rendered = append(rendered, styles.HelpStyle.Render(fmt.Sprintf("    ... +%d %s (%s)", hidden, suffix, hint)))
+		} else {
+			rendered = append(rendered, styles.HelpStyle.Render("    ("+hint+")"))
+		}
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func renderPreviewLine(kind PreviewKind, line string) string {
+	prefix := "    "
+	switch {
+	case kind == PreviewKindDiff && strings.HasPrefix(line, "@@"):
+		return styles.ToolDiffHunkStyle.Render(prefix + line)
+	case kind == PreviewKindDiff && strings.HasPrefix(line, "+"):
+		return styles.ToolDiffAddedStyle.Render(prefix + line)
+	case kind == PreviewKindDiff && strings.HasPrefix(line, "-"):
+		return styles.ToolDiffRemovedStyle.Render(prefix + line)
+	case kind == PreviewKindDiff:
+		return styles.ToolDiffContextStyle.Render(prefix + line)
+	default:
+		return styles.ActivityPreviewStyle.Render(prefix + line)
+	}
+}
+
+func renderInlineApprovalBlock(block ApprovalBlock) string {
+	title := "Approval required"
+	switch block.Status {
+	case ApprovalStatusApproved:
+		title = "Approved"
+	case ApprovalStatusApprovedForSession:
+		title = "Approved for session"
+	case ApprovalStatusRejected:
+		title = "Rejected"
+	}
+
+	lines := []string{styles.ApprovalTitleStyle.Render("- " + title)}
+	if block.Action != "" {
+		lines = append(lines, styles.ActivityDetailStyle.Render("  "+block.Action))
+	}
+	if block.Description != "" {
+		lines = append(lines, styles.ActivityPreviewStyle.Render("  "+block.Description))
+	}
+
+	if block.Status != ApprovalStatusPending {
+		return strings.Join(lines, "\n")
+	}
+
+	options := []string{"Approve", "Approve for session", "Reject"}
+	for i, option := range options {
+		if i == block.Selected {
+			lines = append(lines, styles.ApprovalSelectedStyle.Render("  > "+option))
+			continue
+		}
+		lines = append(lines, styles.ApprovalOptionStyle.Render("  "+option))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderApprovalBlock(block ApprovalBlock) string {
+	title := "- Approval required"
+	switch block.Status {
+	case ApprovalStatusApproved:
+		title = "- Approved"
+	case ApprovalStatusApprovedForSession:
+		title = "- Approved for session"
+	case ApprovalStatusRejected:
+		title = "- Rejected"
+	}
+
+	lines := []string{styles.ApprovalTitleStyle.Render(title)}
+	if block.Action != "" {
+		lines = append(lines, styles.ActivityDetailStyle.Render("  "+block.Action))
+	}
+	if block.Description != "" {
+		lines = append(lines, styles.ActivityPreviewStyle.Render("  "+block.Description))
+	}
+
+	options := []string{"Approve", "Approve for session", "Reject"}
+	for i, option := range options {
+		label := option
+		if block.Status == ApprovalStatusPending && i == block.Selected {
+			label = "> " + label
+			lines = append(lines, styles.ApprovalSelectedStyle.Render("  "+label))
+			continue
+		}
+		lines = append(lines, styles.ApprovalOptionStyle.Render("  "+label))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m OutputModel) visibleHeight() int {
 	if m.viewportHeight > 0 {
 		return m.viewportHeight
 	}
-
 	availableHeight := m.height - 6
 	if availableHeight < 1 {
 		availableHeight = 1
 	}
-
 	return availableHeight
 }
 
@@ -361,14 +436,12 @@ func (m *OutputModel) scrollUp(lines int) {
 	if lines <= 0 {
 		return
 	}
-
 	maxOffset := m.maxScrollOffset()
 	if maxOffset <= 0 {
 		m.scrollOffset = 0
 		m.atBottom = true
 		return
 	}
-
 	m.scrollOffset += lines
 	if m.scrollOffset > maxOffset {
 		m.scrollOffset = maxOffset
@@ -380,7 +453,6 @@ func (m *OutputModel) scrollDown(lines int) {
 	if lines <= 0 {
 		return
 	}
-
 	m.scrollOffset -= lines
 	if m.scrollOffset < 0 {
 		m.scrollOffset = 0
@@ -404,7 +476,6 @@ func (m OutputModel) maxScrollOffset() int {
 	if total <= visible {
 		return 0
 	}
-
 	return total - visible
 }
 
@@ -412,7 +483,6 @@ func (m OutputModel) visibleRange(totalLines int, visibleHeight int) (int, int) 
 	if totalLines <= visibleHeight {
 		return 0, totalLines
 	}
-
 	maxOffset := totalLines - visibleHeight
 	offset := m.scrollOffset
 	if offset < 0 {
@@ -421,7 +491,6 @@ func (m OutputModel) visibleRange(totalLines int, visibleHeight int) (int, int) 
 	if offset > maxOffset {
 		offset = maxOffset
 	}
-
 	startIdx := totalLines - visibleHeight - offset
 	if startIdx < 0 {
 		startIdx = 0
@@ -430,59 +499,66 @@ func (m OutputModel) visibleRange(totalLines int, visibleHeight int) (int, int) 
 	if endIdx > totalLines {
 		endIdx = totalLines
 	}
-
 	return startIdx, endIdx
 }
 
 func (m OutputModel) renderedRows() []string {
-	allLines := m.allLines()
-	if len(allLines) == 0 {
+	allBlocks := m.allBlocks()
+	if len(allBlocks) == 0 {
 		return nil
 	}
-
-	renderWidth := m.renderWidth()
-	rows := make([]string, 0, len(allLines))
-	for idx, line := range allLines {
-		rendered := m.renderLine(line, idx)
-		wrapped := wrap.String(rendered, renderWidth)
-		rows = append(rows, strings.Split(wrapped, "\n")...)
+	rows := make([]string, 0, len(allBlocks))
+	for _, block := range allBlocks {
+		rendered := m.renderBlock(block)
+		rows = append(rows, strings.Split(wrapString(rendered, m.renderWidth()), "\n")...)
 	}
-
 	return rows
 }
 
-func (m OutputModel) allLines() []TranscriptLine {
-	allLines := make([]TranscriptLine, 0, len(m.lines)+len(m.pending))
-	allLines = append(allLines, m.lines...)
-	allLines = append(allLines, m.pending...)
-	return allLines
+func (m OutputModel) allBlocks() []TranscriptBlock {
+	allBlocks := make([]TranscriptBlock, 0, len(m.blocks)+len(m.pending))
+	allBlocks = append(allBlocks, m.blocks...)
+	allBlocks = append(allBlocks, m.pending...)
+	return allBlocks
 }
 
 func (m OutputModel) RenderUnprintedLines() []string {
-	tailStart := m.interactiveTailStart()
-	if m.printedCount >= tailStart {
+	end := m.stablePrintedTarget()
+	if m.printedCount >= end {
 		return nil
 	}
-
-	rendered := make([]string, 0, tailStart-m.printedCount)
-	for idx := m.printedCount; idx < tailStart; idx++ {
-		rendered = append(rendered, m.renderLine(m.lines[idx], idx))
+	rendered := make([]string, 0, end-m.printedCount)
+	for idx := m.printedCount; idx < end; idx++ {
+		rendered = append(rendered, m.renderBlock(m.blocks[idx]))
 	}
 	return rendered
 }
 
-func (m OutputModel) interactiveSelection() ([]indexedTranscriptLine, bool) {
+func (m OutputModel) RenderUnprintedCommitted() []string {
+	if m.printedCount >= len(m.blocks) {
+		return nil
+	}
+	rendered := make([]string, 0, len(m.blocks)-m.printedCount)
+	for idx := m.printedCount; idx < len(m.blocks); idx++ {
+		rendered = append(rendered, m.renderBlock(m.blocks[idx]))
+	}
+	return rendered
+}
+
+func (m OutputModel) stablePrintedTarget() int {
+	return m.interactiveTailStart()
+}
+
+func (m OutputModel) interactiveSelection() ([]indexedTranscriptBlock, bool) {
 	tailStart := m.interactiveTailStart()
-	selection := make([]indexedTranscriptLine, 0, len(m.lines)-tailStart+len(m.pending))
-	for idx := tailStart; idx < len(m.lines); idx++ {
-		selection = append(selection, indexedTranscriptLine{idx: idx, line: m.lines[idx]})
+	selection := make([]indexedTranscriptBlock, 0, len(m.blocks)-tailStart+len(m.pending))
+	for idx := tailStart; idx < len(m.blocks); idx++ {
+		selection = append(selection, indexedTranscriptBlock{idx: idx, block: m.blocks[idx]})
 	}
-
-	base := len(m.lines)
-	for i, line := range m.pending {
-		selection = append(selection, indexedTranscriptLine{idx: base + i, line: line})
+	base := len(m.blocks)
+	for i, block := range m.pending {
+		selection = append(selection, indexedTranscriptBlock{idx: base + i, block: block})
 	}
-
 	if len(selection) == 0 {
 		return nil, false
 	}
@@ -493,29 +569,25 @@ func (m OutputModel) interactiveTailStart() int {
 	if m.printedCount < 0 {
 		return 0
 	}
-	if m.printedCount > len(m.lines) {
-		return len(m.lines)
+	if m.printedCount > len(m.blocks) {
+		return len(m.blocks)
 	}
-
-	for i := len(m.lines) - 1; i >= m.printedCount; i-- {
-		if m.lines[i].Type == LineTypeUser {
+	for i := len(m.blocks) - 1; i >= m.printedCount; i-- {
+		if m.blocks[i].Kind == BlockKindUserPrompt {
 			return i
 		}
 	}
-
 	return m.printedCount
 }
 
-func (m OutputModel) renderIndexedSelection(selection []indexedTranscriptLine, anchorTop bool) string {
+func (m OutputModel) renderIndexedSelection(selection []indexedTranscriptBlock, anchorTop bool) string {
 	rows := make([]string, 0, len(selection))
 	for _, item := range selection {
-		rendered := m.renderLine(item.line, item.idx)
-		rows = append(rows, strings.Split(wrap.String(rendered, m.renderWidth()), "\n")...)
+		rows = append(rows, strings.Split(wrapString(m.renderBlock(item.block), m.renderWidth()), "\n")...)
 	}
 	if len(rows) == 0 {
 		return ""
 	}
-
 	visible := m.visibleHeight()
 	start := 0
 	end := len(rows)
@@ -526,116 +598,135 @@ func (m OutputModel) renderIndexedSelection(selection []indexedTranscriptLine, a
 			start = len(rows) - visible
 		}
 	}
-
 	return strings.Join(rows[start:end], "\n")
 }
 
 func (m OutputModel) MarkPrinted() OutputModel {
-	m.printedCount = len(m.lines)
+	return m.MarkPrintedUntil(len(m.blocks))
+}
+
+func (m OutputModel) MarkPrintedUntil(count int) OutputModel {
+	if count < 0 {
+		count = 0
+	}
+	if count > len(m.blocks) {
+		count = len(m.blocks)
+	}
+	m.printedCount = count
 	return m
 }
 
 func (m OutputModel) AppendCommittedRuntimeEvent(event runtimeevents.Event) OutputModel {
 	switch e := event.(type) {
-	case runtimeevents.StepBegin:
-		return m.AppendLine(TranscriptLine{
-			Type:    LineTypeSystem,
-			Content: fmt.Sprintf("Step %d", e.Number),
+	case runtimeevents.TextPart:
+		if len(m.blocks) > 0 && m.blocks[len(m.blocks)-1].Kind == BlockKindAssistantNote {
+			m.blocks[len(m.blocks)-1].NoteText += e.Text
+			return m
+		}
+		return m.AppendBlock(TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: e.Text})
+	case runtimeevents.ToolCall:
+		spec := classifyToolCall(e)
+		if spec.NoteText != "" {
+			return m.AppendBlock(TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: spec.NoteText})
+		}
+		return m.AppendBlock(TranscriptBlock{
+			Kind: BlockKindActivityGroup,
+			Activity: ActivityGroupBlock{
+				GroupKind: spec.GroupKind,
+				Title:     spec.Title,
+				Items:     committedActivityItems(spec, e.ID),
+				Accent:    spec.Accent,
+			},
+		})
+	case runtimeevents.ToolResult:
+		title := summarizeActivityTitle(e.ToolName, e.Output, e.DisplayOutput)
+		previewText := normalizePreviewText(title, toolResultDisplayOutput(e.Output, e.DisplayOutput))
+		return m.AppendBlock(TranscriptBlock{
+			Kind: BlockKindActivityGroup,
+			Activity: ActivityGroupBlock{
+				GroupKind: firstNonEmpty(e.ToolName, "activity"),
+				Title:     firstNonEmpty(title, e.ToolName),
+				Preview: PreviewBody{
+					Text:        previewText,
+					Kind:        classifyPreviewKind(e.ToolName, previewText),
+					Collapsible: previewLineCount(previewText) > previewDefaultLimit(classifyPreviewKind(e.ToolName, previewText)),
+				},
+				Collapsible: previewLineCount(previewText) > previewDefaultLimit(classifyPreviewKind(e.ToolName, previewText)),
+			},
 		})
 	case runtimeevents.StepInterrupted:
-		return m.AppendLine(TranscriptLine{
-			Type:    LineTypeSystem,
-			Content: "Interrupted",
-		})
-	case runtimeevents.TextPart:
-		return m.appendCommittedAssistantText(e.Text)
-	case runtimeevents.ToolCall:
-		return m.AppendLine(TranscriptLine{
-			Type: LineTypeToolCall,
-			Content: formatToolCallLine(ToolCallInfo{
-				ID:     e.ID,
-				Name:   e.Name,
-				Status: ToolStatusRunning,
-				Args:   toolCallDisplaySummary(e.Name, e.Subtitle, e.Arguments),
-			}),
-		})
-	case runtimeevents.ToolCallPart:
-		return m.appendCommittedToolCallDelta(e.Delta)
-	case runtimeevents.ToolResult:
-		lineType := LineTypeToolResult
-		if e.IsError {
-			lineType = LineTypeError
-		}
-		return m.AppendLine(TranscriptLine{
-			Type:    lineType,
-			Content: strings.TrimSpace(e.Output),
-		})
+		return m.AppendBlock(TranscriptBlock{Kind: BlockKindSystemNotice, Text: "Interrupted"})
 	default:
 		return m
 	}
 }
 
-func (m OutputModel) appendCommittedAssistantText(delta string) OutputModel {
-	if delta == "" {
-		return m
+func committedActivityItems(spec activityGroupSpec, toolCallID string) []ActivityItem {
+	if spec.ItemVerb == "" && spec.ItemText == "" {
+		return nil
 	}
-	if len(m.lines) > 0 && m.lines[len(m.lines)-1].Type == LineTypeAssistant {
-		m.lines[len(m.lines)-1].Content += delta
-		return m
-	}
-	return m.AppendLine(TranscriptLine{
-		Type:    LineTypeAssistant,
-		Content: delta,
-	})
+	return []ActivityItem{{
+		ToolCallID: toolCallID,
+		Verb:       spec.ItemVerb,
+		Text:       spec.ItemText,
+		Status:     ActivityItemCompleted,
+	}}
 }
 
-func (m OutputModel) appendCommittedToolCallDelta(delta string) OutputModel {
-	if delta == "" {
-		return m
-	}
-	for i := len(m.lines) - 1; i >= 0; i-- {
-		if m.lines[i].Type == LineTypeToolCall {
-			m.lines[i].Content += delta
-			return m
-		}
-	}
-	return m
-}
-
-func (m OutputModel) renderWidth() int {
-	if m.width <= 1 {
-		return 1
-	}
-
-	return m.width
-}
-
-// ToggleExpand 切换最后一个 ToolResult 行的折叠状态。
-// 返回切换后的模型和是否找到了可切换的行。
 func (m OutputModel) ToggleExpand() (OutputModel, bool) {
-	allLines := m.allLines()
-	lastToolResultIdx := -1
-	for i := len(allLines) - 1; i >= 0; i-- {
-		if allLines[i].Type == LineTypeToolResult {
-			lastToolResultIdx = i
-			break
+	allBlocks := m.allBlocks()
+	for i := len(allBlocks) - 1; i >= 0; i-- {
+		block := allBlocks[i]
+		if !block.IsCollapsible() {
+			continue
 		}
+		m.expanded[block.ID] = !m.expanded[block.ID]
+		return m, true
 	}
-
-	if lastToolResultIdx == -1 {
-		return m, false
-	}
-
-	m.expanded[lastToolResultIdx] = !m.expanded[lastToolResultIdx]
-	return m, true
+	return m, false
 }
 
-// HasExpandedResults returns true if any tool result is currently expanded.
 func (m OutputModel) HasExpandedResults() bool {
-	for _, v := range m.expanded {
-		if v {
+	for _, expanded := range m.expanded {
+		if expanded {
 			return true
 		}
 	}
 	return false
+}
+
+func cloneTranscriptBlocks(blocks []TranscriptBlock) []TranscriptBlock {
+	cloned := make([]TranscriptBlock, len(blocks))
+	copy(cloned, blocks)
+	for i := range cloned {
+		if len(cloned[i].Activity.Items) > 0 {
+			items := make([]ActivityItem, len(cloned[i].Activity.Items))
+			copy(items, cloned[i].Activity.Items)
+			cloned[i].Activity.Items = items
+		}
+	}
+	return cloned
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (m OutputModel) renderWidth() int {
+	if m.width <= 1 {
+		return defaultRenderWidth
+	}
+	return m.width
+}
+
+// wrapString wraps rendered terminal content without splitting ANSI escape
+// sequences. Use wcwidth semantics so CJK text keeps the correct display width.
+func wrapString(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	return ansi.WrapWc(text, width, "")
 }

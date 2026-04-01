@@ -203,8 +203,8 @@ func (m Model) handleResumeSwitchResult(msg ResumeSwitchMsg) (tea.Model, tea.Cmd
 	m.deps.StartupInfo.ConversationDB = msg.Session.HistoryFile
 
 	m.output = m.output.Clear()
-	for _, line := range transcriptLineModelsFromRecords(msg.Records) {
-		m.output = m.output.AppendLine(line)
+	for _, block := range transcriptLineModelsFromRecords(msg.Records) {
+		m.output = m.output.AppendBlock(block)
 	}
 
 	m.output = m.output.AppendLine(TranscriptLine{

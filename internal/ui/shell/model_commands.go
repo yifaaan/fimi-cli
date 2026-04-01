@@ -192,15 +192,6 @@ func (m Model) startShellAction(spec shellActionSpec) (tea.Model, tea.Cmd) {
 	m.runtime = m.runtime.Reset()
 	m = m.prepareRuntimeExecution()
 
-	m.output = m.output.AppendLine(TranscriptLine{
-		Type:    LineTypeSystem,
-		Content: spec.StatusText,
-	})
-	m.output = m.output.AppendLine(TranscriptLine{
-		Type:    LineTypeUser,
-		Content: spec.CommandText,
-	})
-
 	if m.history != nil {
 		_ = m.history.Append(spec.CommandText)
 	}
@@ -210,6 +201,20 @@ func (m Model) startShellAction(spec shellActionSpec) (tea.Model, tea.Cmd) {
 	m.resetFileCompletion()
 	m.mode = ModeThinking
 	m.activeShellActionCommand = spec.CommandText
+	m.runtimeStartedAt = time.Now()
+
+	// 将 system notice 和 user command 添加到 pending blocks
+	m.output = m.output.SetPending([]TranscriptBlock{
+		{
+			Kind: BlockKindSystemNotice,
+			Text: spec.StatusText,
+		},
+		{
+			Kind:     BlockKindUserPrompt,
+			UserText: spec.CommandText,
+		},
+	})
+
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
 		m.wireReceiveLoop(),
@@ -262,6 +267,7 @@ func (m Model) handleInitCommand() (tea.Model, tea.Cmd) {
 	m.mode = ModeThinking
 	m.activeShellActionCommand = spec.CommandText
 	m.initTempFile = tmpPath
+	m.runtimeStartedAt = time.Now()
 	return m, tea.Batch(
 		m.runtime.SpinnerCmd(),
 		m.wireReceiveLoop(),
@@ -340,13 +346,14 @@ func (m Model) renderLiveStatus() string {
 }
 
 func (m Model) renderLiveStatusText() string {
+	if (m.mode != ModeThinking && m.mode != ModeStreaming) || m.runtimeStartedAt.IsZero() {
+		return ""
+	}
+	elapsed := formatWorkingElapsed(time.Since(m.runtimeStartedAt))
 	if retry := m.runtime.Retry; retry != nil {
-		return formatRetryLiveStatusText(*retry)
+		return "Working (" + elapsed + ") · " + formatRetryLiveStatusText(*retry)
 	}
-	if m.runtime.CurrentTool != nil && m.runtime.CurrentTool.Status == ToolStatusRunning {
-		return "Running " + formatToolCallLine(*m.runtime.CurrentTool) + "..."
-	}
-	return "Running..."
+	return "Working (" + elapsed + ")"
 }
 
 func formatRetryLiveStatusText(retry runtimeevents.RetryStatus) string {
@@ -398,4 +405,22 @@ func truncateTaskCommand(command string) string {
 	}
 
 	return string(runes[:37]) + "..."
+}
+
+func formatWorkingElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	seconds := int(d.Round(time.Second).Seconds())
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	remainingSeconds := seconds % 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm %02ds", minutes, remainingSeconds)
+	}
+	hours := minutes / 60
+	remainingMinutes := minutes % 60
+	return fmt.Sprintf("%dh %02dm %02ds", hours, remainingMinutes, remainingSeconds)
 }

@@ -1,8 +1,6 @@
 package shell
 
 import (
-	"fmt"
-
 	"fimi-cli/internal/wire"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,12 +14,14 @@ func (m Model) handleApprovalKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.approvalSelection < 0 {
 			m.approvalSelection = 2
 		}
+		m.syncApprovalSelection()
 		return m, nil
 	case "down", "ctrl+n":
 		m.approvalSelection++
 		if m.approvalSelection > 2 {
 			m.approvalSelection = 0
 		}
+		m.syncApprovalSelection()
 		return m, nil
 	case "enter":
 		return m.resolveFirstPending(approvalResponseForSelection(m.approvalSelection))
@@ -41,31 +41,31 @@ func approvalResponseForSelection(selection int) wire.ApprovalResponse {
 	}
 }
 
+func (m *Model) syncApprovalSelection() {
+	if req := m.currentApprovalRequest(); req != nil {
+		m.runtime = m.runtime.UpdateApprovalSelection(req.ID, m.approvalSelection)
+		m.output = m.output.SetPending(m.mergeInitialPendingBlocks(m.runtime.ToBlocks()))
+	}
+}
+
 // resolveFirstPending resolves the first pending approval request.
 func (m Model) resolveFirstPending(resp wire.ApprovalResponse) (tea.Model, tea.Cmd) {
-	for id := range m.pendingApprovals {
-		return m.resolveApproval(id, resp)
+	if req := m.currentApprovalRequest(); req != nil {
+		return m.resolveApproval(req.ID, resp)
 	}
 	m.mode = ModeThinking
 	return m, m.wireReceiveLoop()
 }
 
-// renderApprovalView renders the full-screen approval prompt.
+// renderApprovalView returns the main transcript-first layout.
 func (m Model) renderApprovalView() string {
-	req := m.currentApprovalRequest()
-	if req == nil {
-		return ""
-	}
-
-	trailingSections := m.approvalViewTrailingSections(req)
-
+	leadingSections, trailingSections := m.mainViewLayoutSections()
 	var sections []string
-	outputView := m.renderOutputForLayout(nil, trailingSections)
-	if outputView != "" {
+	sections = append(sections, leadingSections...)
+	if outputView := m.renderOutputForLayout(leadingSections, trailingSections); outputView != "" {
 		sections = append(sections, outputView)
 	}
 	sections = append(sections, trailingSections...)
-
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
@@ -76,75 +76,28 @@ func (m Model) currentApprovalRequest() *wire.ApprovalRequest {
 	return nil
 }
 
-func (m Model) approvalViewTrailingSections(req *wire.ApprovalRequest) []string {
-	var trailingSections []string
-
-	panelWidth := min(m.width-4, 60)
-	if panelWidth < 30 {
-		panelWidth = 30
-	}
-
-	headerStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FF6B6B")).
-		Bold(true)
-
-	actionLabel := fmt.Sprintf("  %s requires approval", req.Action)
-	trailingSections = append(trailingSections, headerStyle.Render(actionLabel))
-
-	descStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#AAAAAA"))
-	trailingSections = append(trailingSections, descStyle.Render("  "+req.Description))
-	trailingSections = append(trailingSections, "")
-
-	options := []struct {
-		label string
-		icon  string
-	}{
-		{"Approve", "✓"},
-		{"Approve for session", "✓"},
-		{"Reject", "✗"},
-	}
-
-	for i, opt := range options {
-		if i == m.approvalSelection {
-			selected := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FFFFFF")).
-				Background(lipgloss.Color("#4A90D9")).
-				Bold(true).
-				Padding(0, 1).
-				Width(panelWidth)
-			trailingSections = append(trailingSections, selected.Render(fmt.Sprintf(" > %s %s", opt.icon, opt.label)))
-			continue
-		}
-
-		normal := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888888")).
-			Padding(0, 1).
-			Width(panelWidth)
-		trailingSections = append(trailingSections, normal.Render(fmt.Sprintf("   %s %s", opt.icon, opt.label)))
-	}
-
-	trailingSections = append(trailingSections, "")
-
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#555555"))
-	trailingSections = append(trailingSections, helpStyle.Render("  ↑/↓ select · Enter confirm"))
-
-	trailingSections = append(trailingSections, m.input.View())
-
-	if statusBar := m.renderStatusBar(); statusBar != "" {
-		trailingSections = append(trailingSections, statusBar)
-	}
-
-	return trailingSections
-}
-
 // resolveApproval completes an approval request.
 func (m Model) resolveApproval(id string, resp wire.ApprovalResponse) (Model, tea.Cmd) {
 	if req, ok := m.pendingApprovals[id]; ok {
 		req.Resolve(resp)
 		delete(m.pendingApprovals, id)
 	}
+	m.runtime = m.runtime.ResolveApproval(id, resp)
+	m.output = m.output.SetPending(m.mergeInitialPendingBlocks(m.runtime.ToBlocks()))
+
+	if next := m.currentApprovalRequest(); next != nil {
+		m.approvalSelection = 0
+		m.mode = ModeApprovalPrompt
+		m.runtime = m.runtime.UpdateApprovalSelection(next.ID, 0)
+		m.output = m.output.SetPending(m.mergeInitialPendingBlocks(m.runtime.ToBlocks()))
+		return m, nil
+	}
+
 	m.mode = ModeThinking
 	return m, m.wireReceiveLoop()
+}
+
+func (m Model) approvalViewTrailingSections(_ *wire.ApprovalRequest) []string {
+	_, trailingSections := m.mainViewLayoutSections()
+	return trailingSections
 }

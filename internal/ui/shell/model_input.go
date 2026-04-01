@@ -215,6 +215,8 @@ func (m InputModel) View() string {
 	before := m.value[:m.cursorPos]
 	after := m.value[m.cursorPos:]
 
+	cursor = "|"
+
 	var inputLine string
 	if m.value == "" {
 		inputLine = lipgloss.JoinHorizontal(lipgloss.Top, prompt, inputValue, cursor)

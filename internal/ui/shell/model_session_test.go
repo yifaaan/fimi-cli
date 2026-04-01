@@ -22,14 +22,10 @@ func TestRenderSessionSelectViewUsesPreviewText(t *testing.T) {
 	}
 
 	view := model.renderSessionSelectView()
-	if !strings.Contains(view, "12345678") {
-		t.Fatalf("renderSessionSelectView() = %q, want short session ID", view)
-	}
-	if !strings.Contains(view, "fix parser panic") {
-		t.Fatalf("renderSessionSelectView() = %q, want preview text", view)
-	}
-	if !strings.Contains(view, "2.0 kB") {
-		t.Fatalf("renderSessionSelectView() = %q, want formatted file size", view)
+	for _, want := range []string{"12345678", "fix parser panic", "2.0 kB"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("renderSessionSelectView() missing %q in %q", want, view)
+		}
 	}
 }
 
@@ -50,10 +46,10 @@ func TestHandleSessionDeleteResultRemovesLastSession(t *testing.T) {
 	if gotModel.sessionList != nil {
 		t.Fatalf("sessionList = %#v, want nil", gotModel.sessionList)
 	}
-	if len(gotModel.output.lines) != 1 {
-		t.Fatalf("output lines = %d, want 1", len(gotModel.output.lines))
+	if len(gotModel.output.blocks) != 1 {
+		t.Fatalf("output blocks = %d, want 1", len(gotModel.output.blocks))
 	}
-	if gotModel.output.lines[0].Content != "Session deleted. No more sessions available." {
-		t.Fatalf("output line = %q, want deletion notice", gotModel.output.lines[0].Content)
+	if gotModel.output.blocks[0].Kind != BlockKindSystemNotice || gotModel.output.blocks[0].Text != "Session deleted. No more sessions available." {
+		t.Fatalf("output block = %#v, want deletion notice", gotModel.output.blocks[0])
 	}
 }

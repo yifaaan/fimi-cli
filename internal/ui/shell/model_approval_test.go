@@ -30,77 +30,123 @@ func TestApprovalResponseForSelection(t *testing.T) {
 	}
 }
 
-func TestHandleApprovalKeyPressWrapsSelection(t *testing.T) {
+func TestApprovalRequestRendersInlineTranscriptBlock(t *testing.T) {
 	model := NewModel(Dependencies{}, nil)
-	model.mode = ModeApprovalPrompt
+	model.width = 80
+	model.height = 20
+	model.input.width = 80
+	model.output.width = 80
 
-	updatedModel, cmd := model.handleApprovalKeyPress(tea.KeyMsg{Type: tea.KeyUp})
+	updatedModel, cmd := model.Update(approvalRequestMsg{Request: &wire.ApprovalRequest{
+		ID:          "req-1",
+		Action:      "bash",
+		Description: "run go test ./internal/ui/shell",
+	}})
 	if cmd != nil {
-		t.Fatalf("handleApprovalKeyPress(up) cmd = %#v, want nil", cmd)
+		t.Fatalf("Update(approvalRequestMsg) cmd = %#v, want nil", cmd)
 	}
+
 	updated := updatedModel.(Model)
-	if updated.approvalSelection != 2 {
-		t.Fatalf("approvalSelection after up = %d, want 2", updated.approvalSelection)
+	if updated.mode != ModeApprovalPrompt {
+		t.Fatalf("mode = %v, want %v", updated.mode, ModeApprovalPrompt)
+	}
+	if len(updated.output.pending) != 1 {
+		t.Fatalf("pending blocks = %d, want 1", len(updated.output.pending))
+	}
+	block := updated.output.pending[0]
+	if block.Kind != BlockKindApproval {
+		t.Fatalf("pending block = %#v, want approval block", block)
+	}
+	if block.Approval.Selected != 0 {
+		t.Fatalf("approval selection = %d, want 0", block.Approval.Selected)
 	}
 
-	updatedModel, cmd = updated.handleApprovalKeyPress(tea.KeyMsg{Type: tea.KeyDown})
-	if cmd != nil {
-		t.Fatalf("handleApprovalKeyPress(down) cmd = %#v, want nil", cmd)
-	}
-	updated = updatedModel.(Model)
-	if updated.approvalSelection != 0 {
-		t.Fatalf("approvalSelection after down = %d, want 0", updated.approvalSelection)
+	view := updated.View()
+	for _, want := range []string{
+		"Approval required",
+		"bash",
+		"run go test ./internal/ui/shell",
+		"Approve for session",
+		"fimi>",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q in:\n%s", want, view)
+		}
 	}
 }
 
-func TestHandleKeyPressDelegatesApprovalMode(t *testing.T) {
+func TestApprovalRequestKeepsSubmittedUserPromptPending(t *testing.T) {
 	model := NewModel(Dependencies{}, nil)
-	model.mode = ModeApprovalPrompt
+	submittedModel, _ := model.handleSubmit("what is your name?")
+	submitted := submittedModel.(Model)
 
-	updatedModel, cmd := model.handleKeyPress(tea.KeyMsg{Type: tea.KeyDown})
+	updatedModel, cmd := submitted.Update(approvalRequestMsg{Request: &wire.ApprovalRequest{
+		ID:          "req-1",
+		Action:      "bash",
+		Description: "run go test ./internal/ui/shell",
+	}})
 	if cmd != nil {
-		t.Fatalf("handleKeyPress(down) cmd = %#v, want nil", cmd)
+		t.Fatalf("Update(approvalRequestMsg) cmd = %#v, want nil", cmd)
+	}
+
+	updated := updatedModel.(Model)
+	if len(updated.output.pending) != 2 {
+		t.Fatalf("pending blocks = %d, want 2", len(updated.output.pending))
+	}
+	if updated.output.pending[0].Kind != BlockKindUserPrompt || updated.output.pending[0].UserText != "what is your name?" {
+		t.Fatalf("first pending block = %#v, want submitted user prompt", updated.output.pending[0])
+	}
+	if updated.output.pending[1].Kind != BlockKindApproval {
+		t.Fatalf("second pending block = %#v, want approval block", updated.output.pending[1])
+	}
+}
+
+func TestHandleApprovalKeyPressUpdatesInlineSelectionAndResolvedState(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.width = 80
+	model.height = 20
+	model.input.width = 80
+	model.output.width = 80
+	model.mode = ModeApprovalPrompt
+	model.pendingApprovals["req-1"] = &wire.ApprovalRequest{
+		ID:          "req-1",
+		Action:      "write_file",
+		Description: "update PLAN.md",
+	}
+	model.runtime = model.runtime.ApplyApprovalRequest(model.pendingApprovals["req-1"], 0)
+	model.output = model.output.SetPending(model.runtime.ToBlocks())
+
+	updatedModel, cmd := model.handleApprovalKeyPress(tea.KeyMsg{Type: tea.KeyDown})
+	if cmd != nil {
+		t.Fatalf("handleApprovalKeyPress(down) cmd = %#v, want nil", cmd)
 	}
 	updated := updatedModel.(Model)
 	if updated.approvalSelection != 1 {
 		t.Fatalf("approvalSelection = %d, want 1", updated.approvalSelection)
 	}
-}
+	if updated.output.pending[0].Approval.Selected != 1 {
+		t.Fatalf("pending approval selection = %d, want 1", updated.output.pending[0].Approval.Selected)
+	}
 
-func TestResolveFirstPendingWithoutRequestsResumesThinking(t *testing.T) {
-	model := NewModel(Dependencies{}, nil)
-	model.mode = ModeApprovalPrompt
-
-	updatedModel, cmd := model.resolveFirstPending(wire.ApprovalApprove)
+	resolved, cmd := updated.resolveApproval("req-1", wire.ApprovalApproveForSession)
 	if cmd == nil {
-		t.Fatal("resolveFirstPending() cmd = nil, want wire receive loop")
+		t.Fatal("resolveApproval() cmd = nil, want wire receive loop")
 	}
-	updated := updatedModel.(Model)
-	if updated.mode != ModeThinking {
-		t.Fatalf("mode = %v, want %v", updated.mode, ModeThinking)
+	if resolved.mode != ModeThinking {
+		t.Fatalf("mode = %v, want %v", resolved.mode, ModeThinking)
 	}
-}
-
-func TestRenderApprovalViewShowsRequestDetails(t *testing.T) {
-	model := NewModel(Dependencies{}, nil)
-	model.mode = ModeApprovalPrompt
-	model.width = 80
-	model.height = 20
-	model.pendingApprovals["req-1"] = &wire.ApprovalRequest{
-		ID:          "req-1",
-		Action:      "bash_execute",
-		Description: "run go test ./...",
+	if len(resolved.output.pending) != 1 {
+		t.Fatalf("pending blocks after resolve = %d, want 1", len(resolved.output.pending))
 	}
-
-	view := model.renderApprovalView()
-	for _, want := range []string{
-		"bash_execute requires approval",
-		"run go test ./...",
-		"Approve for session",
-		"Reject",
-	} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("renderApprovalView() missing %q in %q", want, view)
-		}
+	block := resolved.output.pending[0]
+	if block.Kind != BlockKindApproval || block.Approval.Status != ApprovalStatusApprovedForSession {
+		t.Fatalf("resolved approval block = %#v, want approved-for-session status", block)
+	}
+	view := resolved.View()
+	if !strings.Contains(view, "Approved for session") {
+		t.Fatalf("resolved View() = %q, want resolved approval status", view)
+	}
+	if strings.Contains(view, "> Approve for session") {
+		t.Fatalf("resolved View() = %q, want options hidden after resolution", view)
 	}
 }

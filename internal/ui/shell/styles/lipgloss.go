@@ -16,10 +16,18 @@ var (
 			Background(ColorInputBg).
 			Padding(0, 1)
 
+	UserBubbleStyle = lipgloss.NewStyle().
+			Foreground(ColorWhite).
+			Background(ColorInputBg).
+			Padding(1, 2)
+
 	// 助手消息样式
 	AssistantStyle = lipgloss.NewStyle().
 			Foreground(ColorAssistant).
 			Bold(true)
+
+	AssistantBulletStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite)
 
 	// 系统消息样式
 	SystemStyle = lipgloss.NewStyle().
@@ -35,6 +43,22 @@ var (
 	ToolNameStyle = lipgloss.NewStyle().
 			Foreground(ColorTool).
 			Bold(true)
+
+	ActivityTitleStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite).
+				Bold(true)
+
+	ActivityDetailStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
+
+	ActivityPreviewStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite)
+
+	TranscriptDividerStyle = lipgloss.NewStyle().
+				Foreground(ColorBorder)
+
+	ElapsedStyle = lipgloss.NewStyle().
+			Foreground(ColorMuted)
 
 	// 步骤指示器样式
 	StepStyle = lipgloss.NewStyle().
@@ -85,6 +109,36 @@ var (
 	ToolOutputStyle = lipgloss.NewStyle().
 			Foreground(ColorWhite).
 			Padding(0, 1)
+
+	// 代码编辑 diff 样式
+	ToolEditSummaryStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite).
+				Bold(true)
+
+	ToolDiffContextStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite)
+
+	ToolDiffAddedStyle = lipgloss.NewStyle().
+				Foreground(ColorSuccess)
+
+	ToolDiffRemovedStyle = lipgloss.NewStyle().
+				Foreground(ColorError)
+
+	ToolDiffHunkStyle = lipgloss.NewStyle().
+				Foreground(ColorInfo).
+				Bold(true)
+
+	ApprovalTitleStyle = lipgloss.NewStyle().
+				Foreground(ColorWarning).
+				Bold(true)
+
+	ApprovalSelectedStyle = lipgloss.NewStyle().
+				Foreground(ColorBlack).
+				Background(ColorInfo).
+				Bold(true)
+
+	ApprovalOptionStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
 
 	// 状态栏样式
 	StatusBarStyle = lipgloss.NewStyle().
