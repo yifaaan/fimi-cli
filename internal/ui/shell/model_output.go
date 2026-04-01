@@ -333,7 +333,7 @@ func (m OutputModel) renderPreviewBody(blockID string, title string, preview Pre
 	}
 	expanded := m.expanded[blockID]
 	if preview.Kind == PreviewKindDiff {
-		if rendered, ok := renderEditDiffPreviewBody(title, preview.Text, expanded); ok {
+		if rendered, ok := renderEditDiffPreviewBodyWithWidth(title, preview.Text, expanded, m.activityPreviewWidth()); ok {
 			return rendered
 		}
 	}
@@ -767,6 +767,14 @@ func (m OutputModel) panelWidth() int {
 	width := m.renderWidth() - 2
 	if width < 20 {
 		return 20
+	}
+	return width
+}
+
+func (m OutputModel) activityPreviewWidth() int {
+	width := m.panelWidth() - styles.ActivityCardStyle.GetHorizontalFrameSize()
+	if width < 1 {
+		return 1
 	}
 	return width
 }

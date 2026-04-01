@@ -2,6 +2,7 @@ package shell
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -87,13 +88,15 @@ func TestOutputModelRendersTranscriptBlocks(t *testing.T) {
 		"Worked for 1m 11s",
 		"Ran pwd && rg --files",
 		"Edited PLAN.md (+1 -1)",
-		"@@ -1,2 +1,2 @@",
-		"-   1 old",
-		"+   1 new",
+		formatDiffNumberedLine("-", 1, "old", 1),
+		formatDiffNumberedLine("+", 1, "new", 1),
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("InteractiveView() missing %q in:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "@@ -1,2 +1,2 @@") {
+		t.Fatalf("InteractiveView() unexpectedly contains raw hunk header:\n%s", view)
 	}
 	if strings.Contains(view, "Step 1") {
 		t.Fatalf("InteractiveView() unexpectedly contains legacy step marker:\n%s", view)
@@ -310,7 +313,7 @@ func TestOutputModelToggleExpandTargetsLatestCollapsiblePreview(t *testing.T) {
 	}
 }
 
-func TestRenderEditDiffPreviewBodyKeepsAllChangesAndCollapsesContext(t *testing.T) {
+func TestRenderEditDiffPreviewBodyKeepsRealHunkContext(t *testing.T) {
 	summary := "Edited main.go (+2 -1)"
 	content := strings.Join([]string{
 		"@@ -1,13 +1,14 @@",
@@ -335,18 +338,21 @@ func TestRenderEditDiffPreviewBodyKeepsAllChangesAndCollapsesContext(t *testing.
 		t.Fatal("renderEditDiffPreviewBody() = false, want diff preview rendered")
 	}
 	for _, want := range []string{
-		"@@ -1,13 +1,14 @@",
-		"-   5 line 5",
-		"+   5 new line 5",
-		"+  11 new line 11",
-		"...",
+		formatDiffNumberedLine("-", 5, "line 5", 2),
+		formatDiffNumberedLine("+", 5, "new line 5", 2),
+		formatDiffNumberedLine("+", 11, "new line 11", 2),
+		formatDiffNumberedLine(" ", 1, "line 1", 2),
+		formatDiffNumberedLine(" ", 13, "line 13", 2),
 	} {
 		if !strings.Contains(collapsed, want) {
 			t.Fatalf("collapsed diff missing %q in:\n%s", want, collapsed)
 		}
 	}
-	if strings.Contains(collapsed, formatDiffNumberedLine(" ", 1, "line 1")) {
-		t.Fatalf("collapsed diff = %q, want distant unchanged context collapsed", collapsed)
+	if strings.Contains(collapsed, "@@ -1,13 +1,14 @@") {
+		t.Fatalf("collapsed diff unexpectedly contains raw hunk header:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "...") {
+		t.Fatalf("collapsed diff unexpectedly contains synthetic omission marker:\n%s", collapsed)
 	}
 
 	expanded, ok := renderEditDiffPreviewBody(summary, content, true)
@@ -357,6 +363,114 @@ func TestRenderEditDiffPreviewBodyKeepsAllChangesAndCollapsesContext(t *testing.
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded diff missing %q in:\n%s", want, expanded)
 		}
+	}
+}
+
+func TestRenderEditDiffPreviewBodyCollapsedTruncatesTailLines(t *testing.T) {
+	summary := "Edited main.go (+16 -0)"
+	body := []string{"@@ -1,0 +1,16 @@"}
+	for i := 1; i <= 16; i++ {
+		body = append(body, fmt.Sprintf("+line %d", i))
+	}
+	content := strings.Join(body, "\n")
+
+	collapsed, ok := renderEditDiffPreviewBody(summary, content, false)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBody() = false, want diff preview rendered")
+	}
+
+	for _, want := range []string{
+		formatDiffNumberedLine("+", 1, "line 1", 2),
+		formatDiffNumberedLine("+", 14, "line 14", 2),
+		"+2 diff lines",
+	} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("collapsed diff missing %q in:\n%s", want, collapsed)
+		}
+	}
+	for _, unwanted := range []string{
+		formatDiffNumberedLine("+", 15, "line 15", 2),
+		formatDiffNumberedLine("+", 16, "line 16", 2),
+		"...",
+	} {
+		if strings.Contains(collapsed, unwanted) {
+			t.Fatalf("collapsed diff unexpectedly contains %q in:\n%s", unwanted, collapsed)
+		}
+	}
+}
+
+func TestRenderEditDiffPreviewBodyUsesCodexStyleLineNumbers(t *testing.T) {
+	summary := "Edited main.go (+1 -0)"
+	content := strings.Join([]string{
+		"@@ -1,3 +1,4 @@",
+		" line 1",
+		"+inserted line 2",
+		" line 2",
+		" line 3",
+	}, "\n")
+
+	rendered, ok := renderEditDiffPreviewBody(summary, content, true)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBody() = false, want diff preview rendered")
+	}
+
+	for _, want := range []string{
+		formatDiffNumberedLine(" ", 1, "line 1", 1),
+		formatDiffNumberedLine("+", 2, "inserted line 2", 1),
+		formatDiffNumberedLine(" ", 3, "line 2", 1),
+		formatDiffNumberedLine(" ", 4, "line 3", 1),
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered diff missing %q in:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderEditDiffPreviewBodyUsesSpacerBetweenHunks(t *testing.T) {
+	summary := "Edited main.go (+2 -2)"
+	content := strings.Join([]string{
+		"@@ -1,2 +1,2 @@",
+		"-old line 1",
+		"+new line 1",
+		"@@ -10,2 +10,2 @@",
+		"-old line 10",
+		"+new line 10",
+	}, "\n")
+
+	rendered, ok := renderEditDiffPreviewBody(summary, content, true)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBody() = false, want diff preview rendered")
+	}
+
+	for _, unwanted := range []string{"@@ -1,2 +1,2 @@", "@@ -10,2 +10,2 @@"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Fatalf("rendered diff unexpectedly contains raw hunk header %q in:\n%s", unwanted, rendered)
+		}
+	}
+	if !strings.Contains(rendered, formatDiffSpacerLine(2, "⋮")) {
+		t.Fatalf("rendered diff missing Codex-style hunk spacer in:\n%s", rendered)
+	}
+}
+
+func TestRenderEditDiffPreviewBodyWrapsLongLinesWithAlignedGutter(t *testing.T) {
+	summary := "Edited main.go (+1 -0)"
+	content := strings.Join([]string{
+		"@@ -8,0 +8,1 @@",
+		"+abcdefghijkl",
+	}, "\n")
+
+	rendered, ok := renderEditDiffPreviewBodyWithWidth(summary, content, true, 12)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBodyWithWidth() = false, want diff preview rendered")
+	}
+
+	want := strings.Join([]string{
+		formatDiffNumberedLine("+", 8, "abcd", 1),
+		"        efgh",
+		"        ijkl",
+	}, "\n")
+	if !strings.Contains(rendered, want) {
+		t.Fatalf("rendered diff missing wrapped Codex-style gutter alignment in:\n%s", rendered)
 	}
 }
 

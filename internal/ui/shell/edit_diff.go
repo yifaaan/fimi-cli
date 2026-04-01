@@ -7,10 +7,8 @@ import (
 	"strings"
 
 	"fimi-cli/internal/ui/shell/styles"
-)
 
-const (
-	editDiffCollapsedContextLines = 1
+	"github.com/charmbracelet/x/ansi"
 )
 
 var editDiffHunkHeaderRE = regexp.MustCompile(`@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@`)
@@ -22,7 +20,6 @@ const (
 	editDiffLineAdd
 	editDiffLineRemove
 	editDiffLineHunk
-	editDiffLineOmitted
 )
 
 type editDiffLine struct {
@@ -118,6 +115,10 @@ func parseEditDiffHunkHeader(raw string) (oldLine int, newLine int) {
 }
 
 func renderEditDiffPreviewBody(summary string, content string, expanded bool) (string, bool) {
+	return renderEditDiffPreviewBodyWithWidth(summary, content, expanded, 0)
+}
+
+func renderEditDiffPreviewBodyWithWidth(summary string, content string, expanded bool, width int) (string, bool) {
 	summary = strings.TrimSpace(summary)
 	content = strings.TrimSpace(content)
 	if summary == "" || content == "" {
@@ -134,15 +135,24 @@ func renderEditDiffPreviewBody(summary string, content string, expanded bool) (s
 		actionHint = previewToggleHint(true)
 	}
 
-	visible, hidden := collapseEditDiffContext(preview.Lines, expanded)
+	visible, hidden := truncateEditDiffLines(preview.Lines, expanded)
 	lines := make([]string, 0, len(visible)+1)
+	lineNumberWidth := editDiffLineNumberWidth(preview.Lines)
+	seenHunk := false
 
 	for _, line := range visible {
-		lines = append(lines, renderEditDiffLine(line))
+		rendered, ok := renderEditDiffLine(line, lineNumberWidth, seenHunk, width)
+		if line.Kind == editDiffLineHunk {
+			seenHunk = true
+		}
+		if !ok {
+			continue
+		}
+		lines = append(lines, rendered)
 	}
 
 	if hidden > 0 {
-		lines = append(lines, renderPreviewFooter("     ", PreviewKindDiff, hidden, "unchanged lines", actionHint))
+		lines = append(lines, renderPreviewFooter("     ", PreviewKindDiff, hidden, "diff lines", actionHint))
 	} else if expanded {
 		lines = append(lines, renderPreviewFooter("     ", PreviewKindDiff, 0, "", actionHint))
 	}
@@ -150,22 +160,23 @@ func renderEditDiffPreviewBody(summary string, content string, expanded bool) (s
 	return strings.Join(lines, "\n"), true
 }
 
-func renderEditDiffLine(line editDiffLine) string {
+func renderEditDiffLine(line editDiffLine, lineNumberWidth int, seenHunk bool, width int) (string, bool) {
 	switch line.Kind {
 	case editDiffLineHunk:
-		return styles.ToolDiffHunkStyle.Render("     " + line.Raw)
-	case editDiffLineOmitted:
-		return styles.HelpStyle.Render("     ...")
+		if !seenHunk {
+			return "", false
+		}
+		return styles.ToolDiffHunkStyle.Render(formatDiffSpacerLine(lineNumberWidth, "⋮")), true
 	case editDiffLineAdd:
-		return styles.ToolDiffAddedStyle.Render(formatDiffNumberedLine("+", line.NewLine, line.Text))
+		return styles.ToolDiffAddedStyle.Render(renderWrappedDiffNumberedLine("+", line.NewLine, line.Text, lineNumberWidth, width)), true
 	case editDiffLineRemove:
-		return styles.ToolDiffRemovedStyle.Render(formatDiffNumberedLine("-", line.OldLine, line.Text))
+		return styles.ToolDiffRemovedStyle.Render(renderWrappedDiffNumberedLine("-", line.OldLine, line.Text, lineNumberWidth, width)), true
 	default:
 		lineNo := line.NewLine
 		if lineNo <= 0 {
 			lineNo = line.OldLine
 		}
-		return styles.ToolDiffContextStyle.Render(formatDiffNumberedLine(" ", lineNo, line.Text))
+		return styles.ToolDiffContextStyle.Render(renderWrappedDiffNumberedLine(" ", lineNo, line.Text, lineNumberWidth, width)), true
 	}
 }
 
@@ -176,84 +187,141 @@ func previewToggleHint(expanded bool) string {
 	return "Ctrl+O expand"
 }
 
-func formatDiffNumberedLine(prefix string, lineNo int, text string) string {
-	if lineNo > 0 {
-		return fmt.Sprintf("     %s%4d %s", prefix, lineNo, text)
+func formatDiffNumberedLine(prefix string, lineNo int, text string, lineNumberWidth int) string {
+	if lineNumberWidth < 1 {
+		lineNumberWidth = 1
 	}
-
-	return fmt.Sprintf("     %s     %s", prefix, text)
+	return fmt.Sprintf("     %*s %s%s", lineNumberWidth, formatDiffLineNo(lineNo), prefix, text)
 }
 
-func collapseEditDiffContext(lines []editDiffLine, expanded bool) ([]editDiffLine, int) {
+func formatDiffSpacerLine(lineNumberWidth int, marker string) string {
+	if lineNumberWidth < 1 {
+		lineNumberWidth = 1
+	}
+	return fmt.Sprintf("     %*s %s", lineNumberWidth, "", marker)
+}
+
+func renderWrappedDiffNumberedLine(prefix string, lineNo int, text string, lineNumberWidth int, width int) string {
+	firstPrefix := formatDiffLinePrefix(prefix, lineNo, lineNumberWidth)
+	if width <= 0 {
+		return firstPrefix + text
+	}
+
+	contentWidth := width - ansi.StringWidthWc(firstPrefix)
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	wrapped := ansi.HardwrapWc(text, contentWidth, true)
+	segments := []string{""}
+	if wrapped != "" {
+		segments = strings.Split(wrapped, "\n")
+	}
+
+	continuationPrefix := strings.Repeat(" ", ansi.StringWidthWc(firstPrefix))
+	lines := make([]string, 0, len(segments))
+	for idx, segment := range segments {
+		if idx == 0 {
+			lines = append(lines, firstPrefix+segment)
+			continue
+		}
+		lines = append(lines, continuationPrefix+segment)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatDiffLinePrefix(prefix string, lineNo int, lineNumberWidth int) string {
+	if lineNumberWidth < 1 {
+		lineNumberWidth = 1
+	}
+	return fmt.Sprintf("     %*s %s", lineNumberWidth, formatDiffLineNo(lineNo), prefix)
+}
+
+func formatDiffLineNo(lineNo int) string {
+	if lineNo <= 0 {
+		return ""
+	}
+
+	return strconv.Itoa(lineNo)
+}
+
+func editDiffLineNumberWidth(lines []editDiffLine) int {
+	maxLineNo := 0
+	for _, line := range lines {
+		switch line.Kind {
+		case editDiffLineAdd:
+			if line.NewLine > maxLineNo {
+				maxLineNo = line.NewLine
+			}
+		case editDiffLineRemove:
+			if line.OldLine > maxLineNo {
+				maxLineNo = line.OldLine
+			}
+		case editDiffLineContext:
+			if line.NewLine > maxLineNo {
+				maxLineNo = line.NewLine
+			}
+			if line.NewLine <= 0 && line.OldLine > maxLineNo {
+				maxLineNo = line.OldLine
+			}
+		}
+	}
+
+	if maxLineNo <= 0 {
+		return 1
+	}
+
+	return len(strconv.Itoa(maxLineNo))
+}
+
+func truncateEditDiffLines(lines []editDiffLine, expanded bool) ([]editDiffLine, int) {
+	totalVisible := countVisibleEditDiffLines(lines)
+	limit := diffPreviewLineLimit
 	if expanded {
+		limit = expandedPreviewLineLimit
+	}
+	if totalVisible <= limit {
 		return append([]editDiffLine(nil), lines...), 0
 	}
 
-	collapsed := make([]editDiffLine, 0, len(lines))
-	hidden := 0
-
-	for i := 0; i < len(lines); {
-		if lines[i].Kind != editDiffLineContext {
-			collapsed = append(collapsed, lines[i])
-			i++
+	truncated := make([]editDiffLine, 0, len(lines))
+	visibleCount := 0
+	seenHunk := false
+	for _, line := range lines {
+		lineVisible := editDiffRenderedLineCount(line, seenHunk)
+		if line.Kind == editDiffLineHunk {
+			seenHunk = true
+		}
+		if lineVisible == 0 {
+			truncated = append(truncated, line)
 			continue
 		}
-
-		j := i
-		for j < len(lines) && lines[j].Kind == editDiffLineContext {
-			j++
+		if visibleCount+lineVisible > limit {
+			break
 		}
-
-		run := lines[i:j]
-		kept, omitted := collapseEditDiffContextRun(lines, i, j)
-		collapsed = append(collapsed, kept...)
-		hidden += omitted
-		i = j
-		_ = run
+		truncated = append(truncated, line)
+		visibleCount += lineVisible
 	}
 
-	return collapsed, hidden
+	return truncated, totalVisible - visibleCount
 }
 
-func collapseEditDiffContextRun(lines []editDiffLine, start int, end int) ([]editDiffLine, int) {
-	run := lines[start:end]
-	if len(run) <= editDiffCollapsedContextLines*2 {
-		return append([]editDiffLine(nil), run...), 0
+func countVisibleEditDiffLines(lines []editDiffLine) int {
+	total := 0
+	seenHunk := false
+	for _, line := range lines {
+		total += editDiffRenderedLineCount(line, seenHunk)
+		if line.Kind == editDiffLineHunk {
+			seenHunk = true
+		}
 	}
+	return total
+}
 
-	prevKind := editDiffLineKind(-1)
-	if start > 0 {
-		prevKind = lines[start-1].Kind
+func editDiffRenderedLineCount(line editDiffLine, seenHunk bool) int {
+	if line.Kind == editDiffLineHunk && !seenHunk {
+		return 0
 	}
-	nextKind := editDiffLineKind(-1)
-	if end < len(lines) {
-		nextKind = lines[end].Kind
-	}
-
-	keepHead := editDiffCollapsedContextLines
-	keepTail := editDiffCollapsedContextLines
-
-	if prevKind == editDiffLineHunk || prevKind == -1 {
-		keepHead = 0
-	}
-	if nextKind == editDiffLineHunk || nextKind == -1 {
-		keepTail = 0
-	}
-	if keepHead == 0 && keepTail == 0 {
-		keepTail = editDiffCollapsedContextLines
-	}
-
-	if len(run) <= keepHead+keepTail {
-		return append([]editDiffLine(nil), run...), 0
-	}
-
-	collapsed := make([]editDiffLine, 0, keepHead+keepTail+1)
-	if keepHead > 0 {
-		collapsed = append(collapsed, run[:keepHead]...)
-	}
-	collapsed = append(collapsed, editDiffLine{Kind: editDiffLineOmitted})
-	if keepTail > 0 {
-		collapsed = append(collapsed, run[len(run)-keepTail:]...)
-	}
-	return collapsed, len(run) - keepHead - keepTail
+	return 1
 }
