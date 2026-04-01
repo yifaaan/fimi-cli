@@ -124,7 +124,7 @@ func ToolParametersSchema(name string) map[string]any {
 	case ToolPatchFile:
 		return objectSchema(requiredProperties(
 			schemaProperty("path", "string", "Workspace-relative file path to patch."),
-			schemaProperty("diff", "string", "Unified diff patch content."),
+			schemaProperty("diff", "string", "Patch content. Prefer unified diff, but apply_patch-style @@ hunks are also accepted."),
 		))
 	case ToolFetchURL:
 		return objectSchema(requiredProperties(

@@ -265,6 +265,27 @@ func TestContextSnapshotAndCountSkipMetadata(t *testing.T) {
 	}
 }
 
+func TestNewToolResultRecordWithDisplayPersistsDisplayContent(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	ctx := New(historyFile)
+
+	record := NewToolResultRecordWithDisplay("call-1", "raw output", "display preview")
+	if err := ctx.Append(record); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	records, err := ctx.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(ReadAll()) = %d, want 1", len(records))
+	}
+	if records[0].DisplayContent != "display preview" {
+		t.Fatalf("DisplayContent = %q, want %q", records[0].DisplayContent, "display preview")
+	}
+}
+
 func TestContextRewriteTextRecordsOverwritesExistingHistory(t *testing.T) {
 	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
 	ctx := New(historyFile)

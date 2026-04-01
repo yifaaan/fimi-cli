@@ -99,10 +99,11 @@ func (ToolCallPart) Kind() Kind {
 
 // ToolResult 表示一个工具调用完成后的结果事件。
 type ToolResult struct {
-	ToolCallID string
-	ToolName   string
-	Output     string
-	IsError    bool
+	ToolCallID    string
+	ToolName      string
+	Output        string
+	DisplayOutput string
+	IsError       bool
 }
 
 // Kind 返回事件种类。

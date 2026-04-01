@@ -26,10 +26,11 @@ const (
 // ToolCallID 只在 role=tool 时有意义，用于关联工具调用结果。
 // ToolCallsJSON 只在 role=assistant 时有意义，存储序列化后的工具调用列表。
 type TextRecord struct {
-	Role          string `json:"role"`
-	Content       string `json:"content"`
-	ToolCallID    string `json:"tool_call_id,omitempty"`
-	ToolCallsJSON string `json:"tool_calls,omitempty"`
+	Role           string `json:"role"`
+	Content        string `json:"content"`
+	DisplayContent string `json:"display_content,omitempty"`
+	ToolCallID     string `json:"tool_call_id,omitempty"`
+	ToolCallsJSON  string `json:"tool_calls,omitempty"`
 }
 
 // UsageRecord 记录 token 使用量。
@@ -107,10 +108,18 @@ func NewAssistantTextRecord(content string) TextRecord {
 // NewToolResultRecord 为工具调用结果创建记录。
 // toolCallID 用于关联回之前的工具调用。
 func NewToolResultRecord(toolCallID, content string) TextRecord {
+	return NewToolResultRecordWithDisplay(toolCallID, content, "")
+}
+
+// NewToolResultRecordWithDisplay creates a tool result record with an optional
+// UI-oriented display payload. Models only consume Content; shell replay prefers
+// DisplayContent when present.
+func NewToolResultRecordWithDisplay(toolCallID, content, display string) TextRecord {
 	return TextRecord{
-		Role:       RoleTool,
-		ToolCallID: toolCallID,
-		Content:    content,
+		Role:           RoleTool,
+		ToolCallID:     toolCallID,
+		Content:        content,
+		DisplayContent: display,
 	}
 }
 

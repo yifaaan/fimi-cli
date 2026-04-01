@@ -196,8 +196,9 @@ func newSetTodoListHandler() HandlerFunc {
 		}
 
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: builder.String(),
+			Call:          call,
+			Output:        builder.String(),
+			DisplayOutput: strings.TrimSpace(builder.String()),
 		}, nil
 	}
 }
@@ -264,8 +265,9 @@ func handleBashTaskQuery(call runtime.ToolCall, args bashArguments, bgMgr *Backg
 	}
 
 	return runtime.ToolExecution{
-		Call:   call,
-		Output: strings.Join(outputParts, "\n"),
+		Call:          call,
+		Output:        strings.Join(outputParts, "\n"),
+		DisplayOutput: buildInlinePreview("", strings.Join(outputParts, "\n")),
 	}, nil
 }
 
@@ -284,8 +286,9 @@ func handleBashBackground(call runtime.ToolCall, args bashArguments, workDir str
 	}
 
 	return runtime.ToolExecution{
-		Call:   call,
-		Output: fmt.Sprintf("Background task started: %s (use task_id=\"%s\" to check status)", taskID, taskID),
+		Call:          call,
+		Output:        fmt.Sprintf("Background task started: %s (use task_id=\"%s\" to check status)", taskID, taskID),
+		DisplayOutput: buildInlinePreview("Ran "+args.Command, fmt.Sprintf("Background task started: %s (use task_id=\"%s\" to check status)", taskID, taskID)),
 	}, nil
 }
 
@@ -347,11 +350,12 @@ func handleBashForeground(ctx context.Context, call runtime.ToolCall, args bashA
 	}
 
 	return runtime.ToolExecution{
-		Call:     call,
-		Output:   strings.Join(outputParts, "\n"),
-		Stdout:   shapedStdout.Output,
-		Stderr:   shapedStderr.Output,
-		ExitCode: exitCodeFromError(err),
+		Call:          call,
+		Output:        strings.Join(outputParts, "\n"),
+		DisplayOutput: buildSectionedPreview("Ran "+args.Command, previewSection{Label: "STDOUT", Content: rawStdout}, previewSection{Label: "STDERR", Content: rawStderr}),
+		Stdout:        shapedStdout.Output,
+		Stderr:        shapedStderr.Output,
+		ExitCode:      exitCodeFromError(err),
 	}, nil
 }
 
@@ -389,11 +393,12 @@ func newBashHandlerWithTimeout(workDir string, shaper OutputShaper, timeout time
 		shapedStderr := shaper.Shape(stderr.String())
 
 		return runtime.ToolExecution{
-			Call:     call,
-			Output:   shapedStdout.Output,
-			Stdout:   shapedStdout.Output,
-			Stderr:   shapedStderr.Output,
-			ExitCode: exitCodeFromError(err),
+			Call:          call,
+			Output:        shapedStdout.Output,
+			DisplayOutput: buildSectionedPreview("Ran "+args.Command, previewSection{Label: "STDOUT", Content: stdout.String()}, previewSection{Label: "STDERR", Content: stderr.String()}),
+			Stdout:        shapedStdout.Output,
+			Stderr:        shapedStderr.Output,
+			ExitCode:      exitCodeFromError(err),
 		}, nil
 	}
 }

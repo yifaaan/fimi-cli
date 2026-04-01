@@ -49,8 +49,9 @@ func newWriteFileHandler(workDir string) HandlerFunc {
 		}
 
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: fmt.Sprintf("wrote %d bytes to %s", len([]byte(args.Content)), targetRel),
+			Call:          call,
+			Output:        fmt.Sprintf("wrote %d bytes to %s", len([]byte(args.Content)), targetRel),
+			DisplayOutput: buildInlinePreview("Edited "+targetRel, args.Content),
 		}, nil
 	}
 }
@@ -117,8 +118,9 @@ func newReplaceFileHandler(workDir string) HandlerFunc {
 		}
 
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: outputMsg,
+			Call:          call,
+			Output:        outputMsg,
+			DisplayOutput: buildReplaceDisplayOutput(targetRel, args.Old, args.New),
 		}, nil
 	}
 }

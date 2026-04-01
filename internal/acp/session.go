@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	sessionpkg "fimi-cli/internal/session"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	sessionpkg "fimi-cli/internal/session"
 )
 
 // Session 封装一个 ACP 客户端的 session 状态。
@@ -135,7 +135,10 @@ func (s *Session) sendToolCallProgress(tr runtimeevents.ToolResult) error {
 	}
 
 	// 截断过长的工具输出
-	output := tr.Output
+	output := tr.DisplayOutput
+	if output == "" {
+		output = tr.Output
+	}
 	const maxOutputLen = 10000
 	if len(output) > maxOutputLen {
 		output = output[:maxOutputLen] + "\n... (truncated)"

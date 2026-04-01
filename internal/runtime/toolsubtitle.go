@@ -22,6 +22,10 @@ func ToolCallSubtitle(call ToolCall) string {
 		return globToolSubtitle(call.Arguments)
 	case "grep":
 		return grepToolSubtitle(call.Arguments)
+	case "search_web":
+		return searchWebToolSubtitle(call.Arguments)
+	case "fetch_url":
+		return fetchURLToolSubtitle(call.Arguments)
 	case "write_file":
 		return writeFileToolSubtitle(call.Arguments)
 	case "replace_file":
@@ -130,6 +134,34 @@ func writeFileToolSubtitle(raw string) string {
 	}
 
 	return "Wrote file"
+}
+
+func searchWebToolSubtitle(raw string) string {
+	var args struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return ""
+	}
+	if query := strings.TrimSpace(args.Query); query != "" {
+		return "Search " + query
+	}
+
+	return "Search web"
+}
+
+func fetchURLToolSubtitle(raw string) string {
+	var args struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return ""
+	}
+	if url := strings.TrimSpace(args.URL); url != "" {
+		return "Read " + url
+	}
+
+	return "Read URL"
 }
 
 func replaceFileToolSubtitle(raw string) string {

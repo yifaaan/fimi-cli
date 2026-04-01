@@ -14,5 +14,6 @@ agent:
      - grep
      - write_file
      - replace_file
+     - patch_file
      - search_web
      - fetch_url

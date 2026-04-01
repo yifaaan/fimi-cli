@@ -117,11 +117,12 @@ type ToolCall struct {
 // ToolExecution 表示 runtime 已经把某个工具调用交给执行器消费。
 // Output 先保留给通用文本工具使用；命令类工具再补充 stdout/stderr/exit_code。
 type ToolExecution struct {
-	Call     ToolCall
-	Output   string
-	Stdout   string
-	Stderr   string
-	ExitCode int
+	Call          ToolCall
+	Output        string
+	DisplayOutput string
+	Stdout        string
+	Stderr        string
+	ExitCode      int
 }
 
 // ToolExecutionError 表示某个 tool call 在 runtime 推进阶段执行失败。
@@ -189,7 +190,7 @@ func (s StepResult) BuildToolStepRecords() []contextstore.TextRecord {
 
 	// 构造每个 tool result 记录
 	for _, exec := range s.ToolExecutions {
-		records = append(records, contextstore.NewToolResultRecord(exec.Call.ID, exec.Output))
+		records = append(records, contextstore.NewToolResultRecordWithDisplay(exec.Call.ID, exec.Output, exec.DisplayOutput))
 	}
 
 	// 如果有工具执行失败，也要写入失败的 tool result
@@ -760,10 +761,11 @@ func (r Runner) emitStepEvents(
 
 	for _, exec := range stepResult.ToolExecutions {
 		if err := r.emitEvent(ctx, runtimeevents.ToolResult{
-			ToolCallID: exec.Call.ID,
-			ToolName:   exec.Call.Name,
-			Output:     exec.Output,
-			IsError:    false,
+			ToolCallID:    exec.Call.ID,
+			ToolName:      exec.Call.Name,
+			Output:        exec.Output,
+			DisplayOutput: firstNonEmptyDisplay(exec.DisplayOutput, exec.Output),
+			IsError:       false,
 		}); err != nil {
 			return err
 		}
@@ -787,6 +789,16 @@ func (r Runner) emitStepEvents(
 	}
 
 	return nil
+}
+
+func firstNonEmptyDisplay(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+
+	return ""
 }
 
 func (r Runner) emitRetryStatusUpdate(

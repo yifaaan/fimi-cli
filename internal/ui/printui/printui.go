@@ -144,7 +144,10 @@ func formatToolResult(event runtimeevents.ToolResult) string {
 		prefix = "[tool error]"
 	}
 
-	output := strings.TrimSpace(event.Output)
+	output := strings.TrimSpace(event.DisplayOutput)
+	if output == "" {
+		output = strings.TrimSpace(event.Output)
+	}
 	if output == "" {
 		return fmt.Sprintf("%s %s", prefix, event.ToolName)
 	}

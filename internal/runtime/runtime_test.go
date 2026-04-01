@@ -1441,6 +1441,16 @@ func TestToolCallSubtitleFormatsCommonTools(t *testing.T) {
 			want: "Read internal/app/app.go",
 		},
 		{
+			name: "search_web",
+			call: ToolCall{Name: "search_web", Arguments: `{"query":"bubble tea transcript patterns"}`},
+			want: "Search bubble tea transcript patterns",
+		},
+		{
+			name: "fetch_url",
+			call: ToolCall{Name: "fetch_url", Arguments: `{"url":"https://example.com/spec"}`},
+			want: "Read https://example.com/spec",
+		},
+		{
 			name: "think",
 			call: ToolCall{Name: "think", Arguments: `{"thought":"compare parser branch behavior"}`},
 			want: "Thought: compare parser branch behavior",

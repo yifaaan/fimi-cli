@@ -33,8 +33,8 @@ const (
 	ToolGrep        = "grep"
 	ToolWriteFile   = "write_file"
 	ToolReplaceFile = "replace_file"
-	ToolPatchFile = "patch_file"
-	ToolSendDMail = "send_dmail"
+	ToolPatchFile   = "patch_file"
+	ToolSendDMail   = "send_dmail"
 )
 
 const sendDMailDescription = `Send a D-Mail (message to a past checkpoint).
@@ -148,7 +148,7 @@ func BuiltinRegistry() Registry {
 		Definition{
 			Name:        ToolPatchFile,
 			Kind:        KindFile,
-			Description: "Apply a unified diff patch to an existing workspace file.",
+			Description: "Apply a patch to an existing workspace file. Accepts unified diff hunks and apply_patch-style @@ hunks.",
 		},
 		Definition{
 			Name:        ToolSendDMail,

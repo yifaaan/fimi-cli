@@ -47,8 +47,9 @@ func newReadFileHandler(workDir string, shaper OutputShaper) HandlerFunc {
 
 		shaped := shaper.Shape(string(data))
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: appendShapeMessage(shaped.Output, shaped.Message),
+			Call:          call,
+			Output:        appendShapeMessage(shaped.Output, shaped.Message),
+			DisplayOutput: buildInlinePreview("", string(data)),
 		}, nil
 	}
 }
@@ -77,8 +78,9 @@ func newGlobHandler(workDir string, shaper OutputShaper) HandlerFunc {
 
 		shaped := shaper.Shape(strings.Join(matches, "\n"))
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: appendShapeMessage(shaped.Output, shaped.Message),
+			Call:          call,
+			Output:        appendShapeMessage(shaped.Output, shaped.Message),
+			DisplayOutput: buildInlinePreview("", strings.Join(matches, "\n")),
 		}, nil
 	}
 }
@@ -111,8 +113,9 @@ func newGrepHandler(workDir string, shaper OutputShaper) HandlerFunc {
 
 		shaped := shaper.Shape(strings.Join(matches, "\n"))
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: appendShapeMessage(shaped.Output, shaped.Message),
+			Call:          call,
+			Output:        appendShapeMessage(shaped.Output, shaped.Message),
+			DisplayOutput: buildInlinePreview("", strings.Join(matches, "\n")),
 		}, nil
 	}
 }
@@ -134,8 +137,9 @@ func newSearchWebHandler(searcher WebSearcher, shaper OutputShaper) HandlerFunc 
 
 		shaped := shaper.Shape(formatWebSearchResults(results, args.IncludeContent))
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: appendShapeMessage(shaped.Output, shaped.Message),
+			Call:          call,
+			Output:        appendShapeMessage(shaped.Output, shaped.Message),
+			DisplayOutput: buildInlinePreview("", formatWebSearchPreview(results, args.IncludeContent)),
 		}, nil
 	}
 }
@@ -161,8 +165,9 @@ func newFetchURLHandler(fetcher URLFetcher, shaper OutputShaper) HandlerFunc {
 
 		shaped := shaper.Shape(content)
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: appendShapeMessage(shaped.Output, shaped.Message),
+			Call:          call,
+			Output:        appendShapeMessage(shaped.Output, shaped.Message),
+			DisplayOutput: buildInlinePreview("", content),
 		}, nil
 	}
 }
@@ -215,6 +220,34 @@ func formatWebSearchResults(results []WebSearchResult, includeContent bool) stri
 	}
 
 	return builder.String()
+}
+
+func formatWebSearchPreview(results []WebSearchResult, includeContent bool) string {
+	if len(results) == 0 {
+		return "No web results found."
+	}
+
+	var lines []string
+	for i, result := range results {
+		title := strings.TrimSpace(result.Title)
+		if title == "" {
+			title = strings.TrimSpace(result.URL)
+		}
+		if title == "" {
+			title = "Untitled result"
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, title))
+		if snippet := strings.TrimSpace(result.Snippet); snippet != "" {
+			lines = append(lines, snippet)
+		}
+		if includeContent {
+			if content := strings.TrimSpace(result.Content); content != "" {
+				lines = append(lines, content)
+			}
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func decodeSearchWebArguments(raw string) (searchWebArguments, error) {

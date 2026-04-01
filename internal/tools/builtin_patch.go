@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fimi-cli/internal/approval"
 	"fimi-cli/internal/runtime"
 )
 
@@ -18,6 +19,15 @@ func newPatchFileHandler(workDir string) HandlerFunc {
 		args, err := decodePatchFileArguments(call.Arguments)
 		if err != nil {
 			return runtime.ToolExecution{}, err
+		}
+
+		if a := approval.FromContext(ctx); a != nil {
+			if err := a.Request(ctx, "patch_file", args.Path); err != nil {
+				return runtime.ToolExecution{
+					Call:   call,
+					Output: "Tool execution rejected by user",
+				}, nil
+			}
 		}
 
 		rootAbs, err := resolveWorkspaceRoot(workDir)
@@ -55,9 +65,13 @@ func newPatchFileHandler(workDir string) HandlerFunc {
 			return runtime.ToolExecution{}, fmt.Errorf("write patched file %q: %w", targetAbs, err)
 		}
 
+		addedLines, removedLines := patchDiffStats(args.Diff)
+		summary := buildPatchSummary(targetRel, addedLines, removedLines, hunksApplied)
+
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: fmt.Sprintf("applied %d hunk(s) to %s", hunksApplied, targetRel),
+			Call:          call,
+			Output:        summary,
+			DisplayOutput: buildPatchDisplayOutput(summary, args.Diff),
 		}, nil
 	}
 }
@@ -89,8 +103,8 @@ func applyUnifiedDiff(original string, diff string) (string, int, error) {
 	}
 
 	lines := splitLinesKeepEnds(original)
-	for i := len(hunks) - 1; i >= 0; i-- {
-		lines, err = applyHunk(lines, hunks[i])
+	for i, hunk := range hunks {
+		lines, err = applyHunk(lines, hunk)
 		if err != nil {
 			return "", 0, fmt.Errorf("apply hunk %d: %w", i+1, err)
 		}
@@ -100,24 +114,22 @@ func applyUnifiedDiff(original string, diff string) (string, int, error) {
 }
 
 type unifiedHunk struct {
-	oldStart int
-	oldCount int
-	newStart int
-	newCount int
-	lines    []string
+	oldStart       int
+	oldCount       int
+	newStart       int
+	newCount       int
+	hasLineNumbers bool
+	lines          []string
 }
 
 func parseUnifiedDiff(diff string) ([]unifiedHunk, error) {
-	diffLines := strings.Split(diff, "\n")
+	diffLines := strings.Split(strings.ReplaceAll(diff, "\r\n", "\n"), "\n")
 
 	var hunks []unifiedHunk
 	var currentHunk *unifiedHunk
 	inHunk := false
 
 	for _, line := range diffLines {
-		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
-			continue
-		}
 		if strings.HasPrefix(line, "@@") {
 			if currentHunk != nil {
 				hunks = append(hunks, *currentHunk)
@@ -131,13 +143,21 @@ func parseUnifiedDiff(diff string) ([]unifiedHunk, error) {
 			inHunk = true
 			continue
 		}
-		if !inHunk || currentHunk == nil || len(line) == 0 {
-			continue
+
+		if inHunk && currentHunk != nil {
+			if len(line) == 0 || line == `\ No newline at end of file` {
+				continue
+			}
+
+			prefix := line[0]
+			if prefix == ' ' || prefix == '-' || prefix == '+' {
+				currentHunk.lines = append(currentHunk.lines, line)
+				continue
+			}
 		}
 
-		prefix := line[0]
-		if prefix == ' ' || prefix == '-' || prefix == '+' {
-			currentHunk.lines = append(currentHunk.lines, line)
+		if isPatchMetadataLine(line) {
+			continue
 		}
 	}
 
@@ -149,37 +169,44 @@ func parseUnifiedDiff(diff string) ([]unifiedHunk, error) {
 }
 
 func parseHunkHeader(line string) (unifiedHunk, error) {
-	re := regexp.MustCompile(`@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@`)
+	re := regexp.MustCompile(`^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(?:.*)?$`)
 	matches := re.FindStringSubmatch(line)
-	if matches == nil {
-		return unifiedHunk{}, errors.New("invalid hunk header format")
+	if matches != nil {
+		oldStart, _ := strconv.Atoi(matches[1])
+		oldCount := 1
+		if matches[2] != "" {
+			oldCount, _ = strconv.Atoi(matches[2])
+		}
+
+		newStart, _ := strconv.Atoi(matches[3])
+		newCount := 1
+		if matches[4] != "" {
+			newCount, _ = strconv.Atoi(matches[4])
+		}
+
+		return unifiedHunk{
+			oldStart:       oldStart,
+			oldCount:       oldCount,
+			newStart:       newStart,
+			newCount:       newCount,
+			hasLineNumbers: true,
+			lines:          make([]string, 0),
+		}, nil
 	}
 
-	oldStart, _ := strconv.Atoi(matches[1])
-	oldCount := 1
-	if matches[2] != "" {
-		oldCount, _ = strconv.Atoi(matches[2])
+	if strings.HasPrefix(strings.TrimSpace(line), "@@") {
+		return unifiedHunk{
+			lines: make([]string, 0),
+		}, nil
 	}
 
-	newStart, _ := strconv.Atoi(matches[3])
-	newCount := 1
-	if matches[4] != "" {
-		newCount, _ = strconv.Atoi(matches[4])
-	}
-
-	return unifiedHunk{
-		oldStart: oldStart,
-		oldCount: oldCount,
-		newStart: newStart,
-		newCount: newCount,
-		lines:    make([]string, 0),
-	}, nil
+	return unifiedHunk{}, errors.New("invalid hunk header format")
 }
 
 func applyHunk(lines []string, hunk unifiedHunk) ([]string, error) {
-	startIdx := hunk.oldStart - 1
-	if startIdx < 0 || startIdx > len(lines) {
-		return nil, fmt.Errorf("invalid old start line %d (file has %d lines)", hunk.oldStart, len(lines))
+	startIdx, err := locateHunkStart(lines, hunk)
+	if err != nil {
+		return nil, err
 	}
 
 	contextIdx := startIdx
@@ -224,4 +251,183 @@ func applyHunk(lines []string, hunk unifiedHunk) ([]string, error) {
 
 	result = append(result, lines[startIdx:]...)
 	return result, nil
+}
+
+func locateHunkStart(lines []string, hunk unifiedHunk) (int, error) {
+	oldLines := oldHunkLines(hunk)
+	if len(oldLines) == 0 {
+		if !hunk.hasLineNumbers {
+			return 0, errors.New("cannot locate hunk without context lines")
+		}
+
+		startIdx := hunk.oldStart - 1
+		if startIdx < 0 || startIdx > len(lines) {
+			return 0, fmt.Errorf("invalid old start line %d (file has %d lines)", hunk.oldStart, len(lines))
+		}
+
+		return startIdx, nil
+	}
+
+	matches := findMatchingLineRanges(lines, oldLines)
+	if len(matches) == 0 {
+		if hunk.hasLineNumbers {
+			return 0, fmt.Errorf("no matching context found near line %d", hunk.oldStart)
+		}
+		return 0, errors.New("no matching context found for hunk")
+	}
+
+	if hunk.hasLineNumbers {
+		preferred := hunk.oldStart - 1
+		best := matches[0]
+		bestDistance := absInt(best - preferred)
+		for _, idx := range matches {
+			if idx == preferred {
+				return idx, nil
+			}
+			if distance := absInt(idx - preferred); distance < bestDistance {
+				best = idx
+				bestDistance = distance
+			}
+		}
+		return best, nil
+	}
+
+	if len(matches) > 1 {
+		return 0, errors.New("hunk context is ambiguous; add more surrounding context")
+	}
+
+	return matches[0], nil
+}
+
+func oldHunkLines(hunk unifiedHunk) []string {
+	lines := make([]string, 0, len(hunk.lines))
+	for _, hunkLine := range hunk.lines {
+		if len(hunkLine) == 0 {
+			continue
+		}
+
+		switch hunkLine[0] {
+		case ' ', '-':
+			lines = append(lines, strings.TrimRight(hunkLine[1:], "\r\n"))
+		}
+	}
+
+	return lines
+}
+
+func findMatchingLineRanges(lines []string, target []string) []int {
+	if len(target) == 0 || len(lines) < len(target) {
+		return nil
+	}
+
+	matches := make([]int, 0, 1)
+	for start := 0; start+len(target) <= len(lines); start++ {
+		ok := true
+		for i := range target {
+			if strings.TrimRight(lines[start+i], "\r\n") != target[i] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			matches = append(matches, start)
+		}
+	}
+
+	return matches
+}
+
+func isPatchMetadataLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+
+	switch {
+	case strings.HasPrefix(trimmed, "```"),
+		strings.HasPrefix(trimmed, "*** Begin Patch"),
+		strings.HasPrefix(trimmed, "*** End Patch"),
+		strings.HasPrefix(trimmed, "*** Update File:"),
+		strings.HasPrefix(trimmed, "*** End of File"),
+		strings.HasPrefix(trimmed, "diff --git "),
+		strings.HasPrefix(trimmed, "index "),
+		strings.HasPrefix(trimmed, "--- "),
+		strings.HasPrefix(trimmed, "+++ "):
+		return true
+	default:
+		return false
+	}
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+
+	return v
+}
+
+func patchDiffStats(diff string) (added int, removed int) {
+	for _, line := range strings.Split(strings.ReplaceAll(diff, "\r\n", "\n"), "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			continue
+		case strings.HasPrefix(line, "+"):
+			added++
+		case strings.HasPrefix(line, "-"):
+			removed++
+		}
+	}
+
+	return added, removed
+}
+
+func buildPatchSummary(path string, added int, removed int, hunksApplied int) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "file"
+	}
+
+	if added == 0 && removed == 0 {
+		return fmt.Sprintf("Edited %s (%d hunk(s))", path, hunksApplied)
+	}
+
+	return fmt.Sprintf("Edited %s (+%d -%d)", path, added, removed)
+}
+
+func buildPatchDisplayOutput(summary string, diff string) string {
+	summary = strings.TrimSpace(summary)
+	lines := normalizedPatchLines(diff)
+	if len(lines) == 0 {
+		return summary
+	}
+
+	var b strings.Builder
+	b.WriteString(summary)
+	b.WriteByte('\n')
+	b.WriteString(strings.Join(lines, "\n"))
+	return b.String()
+}
+
+func normalizedPatchLines(diff string) []string {
+	rawLines := strings.Split(strings.ReplaceAll(diff, "\r\n", "\n"), "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		switch {
+		case strings.HasPrefix(line, "@@"),
+			strings.HasPrefix(line, " "),
+			strings.HasPrefix(line, "+"),
+			strings.HasPrefix(line, "-"):
+			if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+				continue
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	return lines
 }

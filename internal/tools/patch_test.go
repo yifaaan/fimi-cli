@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"fimi-cli/internal/runtime"
@@ -31,7 +32,7 @@ func TestPatchFile_SimplePatch(t *testing.T) {
 	handler := newPatchFileHandler(workDir)
 	call := runtime.ToolCall{
 		Name:      "patch_file",
-		Arguments: `{"path": "` + testFile + `", "diff": ` + jsonString(patch) + `}`,
+		Arguments: `{"path": ` + jsonString(testFile) + `, "diff": ` + jsonString(patch) + `}`,
 	}
 
 	result, err := handler(context.Background(), call, Definition{})
@@ -42,6 +43,22 @@ func TestPatchFile_SimplePatch(t *testing.T) {
 	// 验证输出
 	if result.Output == "" {
 		t.Error("expected output message")
+	}
+	if got, want := result.Output, "Edited test.txt (+1 -1)"; got != want {
+		t.Fatalf("result.Output = %q, want %q", got, want)
+	}
+	if result.DisplayOutput == "" {
+		t.Fatal("result.DisplayOutput = empty, want diff preview")
+	}
+	for _, fragment := range []string{
+		"Edited test.txt (+1 -1)",
+		"@@ -1,3 +1,3 @@",
+		"-Line 2",
+		"+Modified Line 2",
+	} {
+		if !strings.Contains(result.DisplayOutput, fragment) {
+			t.Fatalf("result.DisplayOutput = %q, want fragment %q", result.DisplayOutput, fragment)
+		}
 	}
 
 	// 验证文件内容
@@ -81,12 +98,15 @@ func TestPatchFile_MultipleHunks(t *testing.T) {
 	handler := newPatchFileHandler(workDir)
 	call := runtime.ToolCall{
 		Name:      "patch_file",
-		Arguments: `{"path": "` + testFile + `", "diff": ` + jsonString(patch) + `}`,
+		Arguments: `{"path": ` + jsonString(testFile) + `, "diff": ` + jsonString(patch) + `}`,
 	}
 
 	result, err := handler(context.Background(), call, Definition{})
 	if err != nil {
 		t.Fatalf("patch_file failed: %v", err)
+	}
+	if got, want := result.Output, "Edited test.txt (+2 -2)"; got != want {
+		t.Fatalf("result.Output = %q, want %q", got, want)
 	}
 
 	// 验证文件内容
@@ -121,7 +141,7 @@ func TestPatchFile_AddingLines(t *testing.T) {
 	handler := newPatchFileHandler(workDir)
 	call := runtime.ToolCall{
 		Name:      "patch_file",
-		Arguments: `{"path": "` + testFile + `", "diff": ` + jsonString(patch) + `}`,
+		Arguments: `{"path": ` + jsonString(testFile) + `, "diff": ` + jsonString(patch) + `}`,
 	}
 
 	_, err = handler(context.Background(), call, Definition{})
@@ -160,7 +180,7 @@ func TestPatchFile_RemovingLines(t *testing.T) {
 	handler := newPatchFileHandler(workDir)
 	call := runtime.ToolCall{
 		Name:      "patch_file",
-		Arguments: `{"path": "` + testFile + `", "diff": ` + jsonString(patch) + `}`,
+		Arguments: `{"path": ` + jsonString(testFile) + `, "diff": ` + jsonString(patch) + `}`,
 	}
 
 	_, err = handler(context.Background(), call, Definition{})
@@ -176,6 +196,86 @@ func TestPatchFile_RemovingLines(t *testing.T) {
 	expected := "First line\nLast line\n"
 	if string(data) != expected {
 		t.Errorf("expected %q, got %q", expected, string(data))
+	}
+}
+
+func TestPatchFile_ApplyPatchStyleUpdateFile(t *testing.T) {
+	workDir := t.TempDir()
+	testFile := filepath.Join(workDir, "a.cpp")
+	content := "#include <iostream>\n\nusing namesapce std;\n\nint main() {\n    return 0;\n}\n"
+	err := os.WriteFile(testFile, []byte(content), 0o644)
+	if err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	patch := `*** Begin Patch
+*** Update File: a.cpp
+@@
+-using namesapce std;
++using namespace std;
++
++void print_value(int value) {
++    std::cout << value << std::endl;
++}
++
++int max_value(int a, int b) {
++    return a > b ? a : b;
++}
+*** End Patch
+`
+
+	handler := newPatchFileHandler(workDir)
+	call := runtime.ToolCall{
+		Name:      "patch_file",
+		Arguments: `{"path": ` + jsonString("a.cpp") + `, "diff": ` + jsonString(patch) + `}`,
+	}
+
+	result, err := handler(context.Background(), call, Definition{})
+	if err != nil {
+		t.Fatalf("patch_file failed: %v", err)
+	}
+	if got, want := result.Output, "Edited a.cpp (+9 -1)"; got != want {
+		t.Fatalf("result.Output = %q, want %q", got, want)
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+
+	got := string(data)
+	for _, fragment := range []string{
+		"using namespace std;",
+		"void print_value(int value) {",
+		"int max_value(int a, int b) {",
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Fatalf("patched file = %q, want fragment %q", got, fragment)
+		}
+	}
+}
+
+func TestApplyUnifiedDiff_ApplyPatchStyleWithoutLineNumbers(t *testing.T) {
+	original := "alpha\nbeta\ngamma\n"
+	patch := `*** Begin Patch
+*** Update File: test.txt
+@@
+ alpha
+-beta
++beta updated
+ gamma
+*** End Patch
+`
+
+	got, hunksApplied, err := applyUnifiedDiff(original, patch)
+	if err != nil {
+		t.Fatalf("applyUnifiedDiff() error = %v", err)
+	}
+	if hunksApplied != 1 {
+		t.Fatalf("hunksApplied = %d, want 1", hunksApplied)
+	}
+	if got != "alpha\nbeta updated\ngamma\n" {
+		t.Fatalf("patched content = %q, want %q", got, "alpha\nbeta updated\ngamma\n")
 	}
 }
 
@@ -237,7 +337,7 @@ func TestPatchFile_ErrorCases(t *testing.T) {
 
 			call := runtime.ToolCall{
 				Name:      "patch_file",
-				Arguments: `{"path": "` + tt.path + `", "diff": ` + jsonString(tt.diff) + `}`,
+				Arguments: `{"path": ` + jsonString(tt.path) + `, "diff": ` + jsonString(tt.diff) + `}`,
 			}
 
 			_, err := handler(context.Background(), call, Definition{})
