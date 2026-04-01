@@ -1,492 +1,883 @@
 # PLAN
 
-## Purpose
+# kimi-cli 实现参考（基于 `temp/` 快照）
 
-This file tracks the migration gap between the Python reference snapshot in `temp/`
-and the current Go rewrite.
+更新时间：2026-04-01
 
-Updated: 2026-04-01
+本文档记录 `temp/` 里的 Python 版 `kimi-cli` 关键实现，并同步标注它和当前 Go 版 `fimi-cli` 的真实差异。用途有两个：
+
+- 看 Python 参考实现到底是怎么工作的
+- 判断 Go 版接下来最值得补哪一块 parity
 
 ---
 
-## Reference Baseline In `temp/` (v0.35)
+## 1. 参考实现入口
 
-### Runtime Core
+Python 参考实现主要分布在这些目录：
 
-| File | Description |
-| --- | --- |
-| `soul/kimisoul.py` | Main runtime loop: `run() -> _agent_loop() -> _step()` with D-Mail rollback, Wire-based event dispatch, approval piping task |
-| `soul/wire.py` | Bidirectional channel (`Wire` class) between soul and UI via `asyncio.Queue[WireMessage]`. ContextVar `current_wire` for implicit access. Carries events, `ApprovalRequest`, and control-flow types (`StepBegin`, `StepInterrupted`, `StatusUpdate`, `ControlFlowEvent`, `Event`). **Note:** No separate `soul/event.py` — all event types live in `wire.py`. |
-| `soul/denwarenji.py` | D-Mail state machine (`DenwaRenji`): `_pending_dmail`, `_n_checkpoints`, `send_dmail()` / `fetch_pending_dmail()` |
-| `soul/message.py` | Message utilities, tool result conversion (`tool_result_to_messages`, `tool_ok_to_message_content`, `system()` helper for `<system>` tags) |
-| `soul/approval.py` | **NEW** Permission gating for tools. `Approval` class with `_yolo` mode, `_auto_approve_actions`, `request()` → `ApprovalRequest` via wire. Must be called from within tool context. |
-| `soul/toolset.py` | **NEW** `CustomToolset` wraps `SimpleToolset`, sets `current_tool_call` ContextVar during tool execution. Enables approval system. |
-| `acp/session.py` | ACP session with event-to-ACP projection layer |
-| `acp/server.py` | Multi-session ACP server with JSON-RPC: `initialize`, `new_session`, `load_session`, `resume_session`, `list_sessions`, `prompt`, `cancel`, `set_session_model`, `authenticate` |
-| `ui/__init__.py` | Run coordinator, cancellation boundary (`run_soul()`) |
+- `temp/src/kimi_cli/soul/`：runtime 核心，含 agent loop、wire、approval、context、D-Mail
+- `temp/src/kimi_cli/tools/`：内置工具和 MCP 适配
+- `temp/src/kimi_cli/ui/`：print、shell、acp 三套 UI
+- `temp/src/kimi_cli/config.py`：配置模型
+- `temp/src/kimi_cli/agent.py`：agent spec、system prompt、工具装载
 
-#### Runtime Loop Detail (`soul/kimisoul.py` v0.35)
+主调用链：
 
+```text
+CLI/App
+  -> Agent / AgentGlobals
+  -> KimiSoul.run()
+  -> _agent_loop()
+  -> _step()
+  -> kosong.step(...)
+  -> tool calls / wire events / approval requests
+  -> UI 消费 wire 并渲染
 ```
+
+---
+
+## 2. Runtime 核心
+
+### 2.1 `soul/kimisoul.py`
+
+核心类：`KimiSoul`
+
+职责：
+
+- 管理一次用户输入对应的 agent loop
+- 在 run 开始前和每个 step 前做 checkpoint
+- 调 LLM step
+- 等待工具结果并扩展 context
+- 处理 D-Mail 回滚
+- 通过 `Wire` 把实时事件发给 UI
+- 把 approval queue 转发到 wire
+
+关键流程：
+
+```text
 run(user_input, wire)
-  ├── set wire via ContextVar (current_wire.set(wire))
-  ├── checkpoint() + append user message
-  └── _agent_loop(wire)
-        └── while True:
-              ├── wire.send(StepBegin(step_no))
-              ├── spawn _pipe_approval_to_wire() task (concurrent with step)
-              ├── checkpoint() + denwa_renji.set_n_checkpoints()
-              ├── _step(wire) with tenacity retry
-              │     ├── kosong.step() callbacks use wire.send()
-              │     ├── wait for tool results
-              │     ├── asyncio.shield(_grow_context())
-              │     ├── check ToolRejectedError
-              │     ├── check denwa_renji.fetch_pending_dmail() -> BackToTheFuture
-              │     └── return not result.tool_calls
-              ├── cancel approval_task
-              ├── handle BackToTheFuture: revert + checkpoint + append message
-              └── continue or return
+  1. checkpoint()
+  2. append user message
+  3. current_wire.set(wire)
+  4. _agent_loop(wire)
+
+_agent_loop(wire)
+  while True:
+    - wire.send(StepBegin(step_no))
+    - spawn _pipe_approval_to_wire()
+    - checkpoint()
+    - denwa_renji.set_n_checkpoints(...)
+    - _step(wire)
+    - 若收到 BackToTheFuture:
+        revert_to(checkpoint)
+        checkpoint()
+        append injected future message
+        continue
+    - finished => return
 ```
 
-#### Wire System Detail (`soul/wire.py`)
+### 2.2 `_step()` 的行为
+
+`_step()` 是单步推理的核心：
+
+1. 用 tenacity 包装 `kosong.step()`
+2. 把文本流、tool call、tool result 都直接发到 wire
+3. 等待所有 tool results
+4. `asyncio.shield(_grow_context(...))`，尽量避免 context 写一半被取消
+5. 检查是否有工具被拒绝
+6. 检查是否有待处理 D-Mail
+7. 若无后续 tool call，则结束本次 run
+
+### 2.3 重试机制
+
+Python 参考实现已经有：
+
+- exponential backoff
+- jitter
+- 仅对连接类 / 超时 / 429 / 5xx 做重试
+
+对应代码在 `temp/src/kimi_cli/soul/kimisoul.py`。
+
+---
+
+## 3. Wire 与 Approval
+
+### 3.1 `soul/wire.py`
+
+Python 没有单独的 `event.py`；事件类型直接定义在 `wire.py`。
+
+核心对象：
 
 ```python
 class Wire:
     def __init__(self): self._queue = asyncio.Queue[WireMessage]()
-    def send(self, msg): self._queue.put_nowait(msg)
-    async def receive(self): return await self._queue.get()
-    def shutdown(self): self._queue.shutdown()
+    def send(self, msg): ...
+    async def receive(self): ...
+    def shutdown(self): ...
+```
 
+还有：
+
+```python
 current_wire = ContextVar[Wire | None]("current_wire", default=None)
-
-type WireMessage = Event | ApprovalRequest
-type Event = ControlFlowEvent | ContentPart | ToolCall | ToolCallPart | ToolResult
 ```
 
-#### Approval System Detail (`soul/approval.py`)
+`WireMessage = Event | ApprovalRequest`
+
+其中 `Event` 包括：
+
+- `StepBegin`
+- `StepInterrupted`
+- `StatusUpdate`
+- `ContentPart`
+- `ToolCall`
+- `ToolCallPart`
+- `ToolResult`
+
+也就是说，Python 的 wire 同时承载：
+
+- runtime 事件
+- tool call 增量
+- approval 请求
+
+### 3.2 `soul/approval.py`
+
+核心类：`Approval`
+
+能力：
+
+- `yolo`
+- session 级 auto-approve
+- `ApprovalRequest` 排队
+- UI resolve 后继续执行
+
+语义：
 
 ```python
-class Approval:
-    _yolo: bool = False
-    _auto_approve_actions: set[str]
-    _request_queue: asyncio.Queue[ApprovalRequest]
-    
-    async def request(self, action, description) -> bool:
-        if self._yolo or action in self._auto_approve_actions: return True
-        request = ApprovalRequest(tool_call_id, action, description)
-        await self._request_queue.put(request)
-        return await request.wait()  # blocks until UI resolves
-
-class ApprovalRequest:
-    def resolve(self, response: ApprovalResponse): self._future.set_result(response)
-    async def wait(self) -> bool: return await self._future
-
-class ApprovalResponse(Enum):
-    APPROVE = "approve"
-    APPROVE_FOR_SESSION = "approve_for_session"  # adds to auto_approve_actions
-    REJECT = "reject"
+await approval.request(action, description) -> bool
 ```
 
-### Python Tools (14 tools, excluding test tools)
-
-| Tool | File | Description |
-| --- | --- | --- |
-| `Bash` | `tools/bash/__init__.py` | Shell commands with 60s default/300s max timeout, line-by-line output streaming, `ToolResultBuilder` (50K chars, 2K/line), no approval gate in tool itself |
-| `ReadFile` | `tools/file/read.py` | Read file with offset/limit, 1000-line cap, 100KB cap, 2K-char-per-line truncation, `cat -n` format |
-| `WriteFile` | `tools/file/write.py` | Write/append to files within work directory (path sandboxing), parent must exist |
-| `Glob` | `tools/file/glob.py` | Glob matching (max 1000 results), rejects `**` prefix, path sandboxing |
-| `Grep` | `tools/file/grep.py` | ripgrep wrapper via `ripgrepy` with context/multiline/type filters, no path sandboxing |
-| `StrReplaceFile` | `tools/file/replace.py` | `replace_all` support, batch edits (list of Edit), path sandboxing |
-| `PatchFile` | `tools/file/patch.py` | Unified diff patches via `patch_ng`, path sandboxing |
-| `Think` | `tools/think/__init__.py` | Private reasoning note (no-op) |
-| `SetTodoList` | `tools/todo/__init__.py` | Todo list management (replace entire list), renders markdown bullets |
-| `Task` | `tools/task/__init__.py` | Foreground subagent with continuation prompt (< 200 chars -> re-run with continuation), fresh Context per subagent |
-| `SendDMail` | `tools/dmail/__init__.py` | Time-travel message: calls `denwa_renji.send_dmail()`, returns inverted success signal |
-| `SearchWeb` | `tools/web/search.py` | Web search via Moonshot API, 5-20 results, optional content crawling |
-| `FetchURL` | `tools/web/fetch.py` | URL fetch with trafilatura text extraction, `ToolResultBuilder` |
-| `MCPTool` | `tools/mcp.py` | MCP tool adapter via `fastmcp`: `TextContent`->`TextPart`, `ImageContent`->`ImageURLPart`, `AudioContent`->`AudioURLPart` |
-
-### Python UI
-
-| Component | File | Features |
-| --- | --- | --- |
-| Print UI | `ui/print/__init__.py` | `text` mode, `stream-json` mode, stdin input, sets `yolo=True` on approval |
-| Shell UI | `ui/shell/__init__.py` | Interactive REPL (prompt_toolkit + Rich), dual-mode (agent/shell), Wire-based event consumption, background tasks, toast notifications |
-| Live View | `ui/shell/liveview.py` | Rich.Live with 4fps refresh, `_ToolCallDisplay` with streaming args, key-argument subtitle extraction, status text |
-| Meta Commands | `ui/shell/metacmd.py` | Registry: `/help`, `/exit`, `/version`, `/release-notes`, `/feedback`, `/init`, `/clear`, `/compact`, `/setup`, `/reload` |
-| Prompt | `ui/shell/prompt.py` | `FileMentionCompleter` (fuzzy, 2-tier lazy index, 2s TTL cache, 11-category ignore list), `_render_bottom_toolbar` (time + mode + context usage), prompt history JSONL |
-| ACP Server | `ui/acp/__init__.py` | Multi-session JSON-RPC over stdio, `_ToolCallState` with streaming lexer, event projection, approval request handling |
-| Setup | `ui/shell/setup.py` | **NEW** First-run setup wizard: select platform → enter API key → select model → save config → reload |
-| Update | `ui/shell/update.py` | **NEW** Auto-update: fetch latest version from CDN, download tar.gz, extract to `~/.local/bin/kimi`, background check every 60s |
-
-### Python Config (v0.35)
-
-| Field | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `default_model` | `str` | `""` | Empty string on first run |
-| `models` | `dict[str, LLMModel]` | `{}` | Empty on first run |
-| `providers` | `dict[str, LLMProvider]` | `{}` | Empty on first run |
-| `loop_control` | `LoopControl` | `max_steps=100, max_retries=3` | |
-| `services.moonshot_search` | `MoonshotSearchConfig \| None` | `None` | Optional |
-
-**Key change from v0.32:** Config is empty on first run, requires `/setup` to populate.
-
-### Python Agent Spec
-
-| Field | Description |
-| --- | --- |
-| `extend` | Inheritance from base spec (`"default"` keyword supported) |
-| `name` | Agent name |
-| `system_prompt_path` | Path to system prompt template |
-| `system_prompt_args` | Template variables (includes `KIMI_NOW`, `KIMI_WORK_DIR`, etc.) |
-| `tools` | List of tool specs (`"package:ClassName"` format) |
-| `exclude_tools` | Tools to remove from inherited set |
-| `subagents` | Named subagent specs with `path` / `description` |
-
-### Python AgentGlobals (v0.35)
-
-```python
-class AgentGlobals(NamedTuple):
-    config: Config
-    llm: LLM | None  # Optional in v0.35
-    builtin_args: BuiltinSystemPromptArgs
-    denwa_renji: DenwaRenji
-    session: Session
-    approval: Approval  # NEW in v0.35
-```
+Python 版 approval 依赖 `soul/toolset.py` 里的 `current_tool_call`，保证请求里带上正确的 `tool_call_id`。
 
 ---
 
-## Current Go Snapshot
+## 4. Context / Checkpoint / D-Mail
+
+### 4.1 `soul/context.py`
+
+`Context` 负责：
+
+- JSONL 历史持久化
+- `_checkpoint` 记录
+- `_usage` 记录
+- `checkpoint()`
+- `revert_to(checkpoint_id)`
+
+checkpoint 行为：
+
+- 追加 `_checkpoint`
+- 可选再写一个用户侧可见的 `CHECKPOINT N`
+
+`revert_to()` 会：
+
+- 轮转原 history 文件
+- 重新写入新文件
+- 只保留目标 checkpoint 之前的内容
+
+### 4.2 `soul/denwarenji.py`
+
+`DenwaRenji` 很小，但很关键。
+
+内部状态：
+
+- `_pending_dmail`
+- `_n_checkpoints`
+
+接口：
+
+- `send_dmail(...)`
+- `set_n_checkpoints(...)`
+- `fetch_pending_dmail()`
+
+工作方式：
+
+- 工具先塞入一个待处理 D-Mail
+- runtime 在 step 后检查 pending D-Mail
+- 命中后抛 `BackToTheFuture`
+- 主循环负责回滚 checkpoint，并注入“来自未来”的 system 指令
+
+---
+
+## 5. Agent / Tool 装载
+
+### 5.1 `agent.py`
+
+`temp/src/kimi_cli/agent.py` 负责：
+
+- 解析 agent spec
+- 处理 `extend`
+- 读取 system prompt 模板
+- 注入 builtin args
+- 装载工具
+- 装载 MCP 工具
+
+关键数据结构：
+
+- `AgentSpec`
+- `SubagentSpec`
+- `Agent`
+- `AgentGlobals`
+- `BuiltinSystemPromptArgs`
+
+### 5.2 system prompt 内置变量
+
+Python 版内置变量包括：
+
+- `KIMI_NOW`
+- `KIMI_WORK_DIR`
+- `KIMI_WORK_DIR_LS`
+- `KIMI_AGENTS_MD`
+
+### 5.3 工具装载机制
+
+Python 工具不是写死注册表，而是按 agent spec 里的 `"package:ClassName"` 动态装载。
+
+这和当前 Go 的静态 registry + handler 装配是明显不同的设计。
+
+---
+
+## 6. Python 工具能力
+
+主要工具如下：
+
+| 工具 | 文件 | 说明 |
+| --- | --- | --- |
+| `Bash` | `tools/bash/__init__.py` | shell 命令，60s 默认超时，流式 stdout/stderr，审批 |
+| `ReadFile` | `tools/file/read.py` | 文件读取，offset/limit，1000 行和 100KB 级别上限 |
+| `WriteFile` | `tools/file/write.py` | 写/追加文件 |
+| `Glob` | `tools/file/glob.py` | glob 匹配，路径沙箱 |
+| `Grep` | `tools/file/grep.py` | ripgrep 包装，支持更多过滤参数 |
+| `StrReplaceFile` | `tools/file/replace.py` | replace / replace_all / batch edits |
+| `PatchFile` | `tools/file/patch.py` | unified diff patch |
+| `Think` | `tools/think/__init__.py` | 私有思考 |
+| `SetTodoList` | `tools/todo/__init__.py` | 替换整个 todo 列表 |
+| `Task` | `tools/task/__init__.py` | 子 agent 调度，短回复 continuation |
+| `SendDMail` | `tools/dmail/__init__.py` | 发送 D-Mail |
+| `SearchWeb` | `tools/web/search.py` | Moonshot Search API |
+| `FetchURL` | `tools/web/fetch.py` | `trafilatura` 文本抽取 |
+| `MCPTool` | `tools/mcp.py` | MCP 结果转 Text/Image/Audio content block |
+
+几个要点：
+
+- `Task` 会给 subagent 建独立 context，并把 approval request 转回主 wire
+- `SearchWeb` 依赖 `services.moonshot_search`
+- `FetchURL` 用 `trafilatura`
+- `MCPTool` 会保留 richer content，而不是简单转字符串
+
+---
+
+## 7. Python UI
+
+### 7.1 Print UI
+
+位置：`temp/src/kimi_cli/ui/print/__init__.py`
+
+支持：
+
+- `text`
+- `stream-json`
+- 从 stdin 读输入
+- print 模式直接把 approval 设成 `yolo`
+
+### 7.2 Shell UI
+
+位置：`temp/src/kimi_cli/ui/shell/`
+
+已实现特征：
+
+- REPL
+- wire 事件消费
+- live tool call 展示
+- prompt history
+- `@` 文件补全
+- `/help` `/version` `/release-notes` `/init` `/clear` `/compact` `/setup` `/reload`
+- raw shell mode / agent mode 双模式切换
+- 后台 update 检查
+
+### 7.3 Setup Wizard
+
+位置：`temp/src/kimi_cli/ui/shell/setup.py`
+
+流程不是静态提示，而是：
+
+1. 选平台
+2. 输 API key
+3. 请求 `GET /models`
+4. 从远端模型列表中选 model
+5. 保存 `provider` / `model` / `max_context_size`
+6. 如果平台支持，还会自动配置 `services.moonshot_search`
+
+### 7.4 Auto Update
+
+位置：`temp/src/kimi_cli/ui/shell/update.py`
+
+能力：
+
+- 启动后后台检查最新版本
+- 下载 tar.gz
+- 安装到 `~/.local/bin/kimi`
+- 通过 toast 提示升级
+
+### 7.5 ACP
+
+位置：`temp/src/kimi_cli/ui/acp/__init__.py`
+
+特点：
+
+- 多 session
+- 事件投影到 ACP 协议结构
+- `ToolCallPart` 流式拼接
+- 审批请求可透传
+- richer content block 映射更完整
+
+---
+
+## 8. Python 配置模型
+
+位置：`temp/src/kimi_cli/config.py`
+
+关键字段：
+
+- `default_model: ""`
+- `models: {}`
+- `providers: {}`
+- `loop_control.max_steps_per_run = 100`
+- `loop_control.max_retries_per_step = 3`
+- `services.moonshot_search`
+
+关键语义：
+
+- 首次运行默认配置是空的
+- 需要靠 `/setup` 完成初始化
+- provider 类型是 Kimi CLI 自己的语义：`kimi` / `openai_legacy` / `_chaos`
+
+---
+
+## 9. 与当前 Go 实现对照后的修正结论
+
+下面这部分是本次更新最重要的地方：它修正了旧文档里已经过时的判断。
+
+### 9.1 Go 已经补齐的 parity
+
+当前 Go 版已经做完，或者已经明显不再落后于 Python 的部分：
+
+- runtime 多 step loop
+- step retry 的 backoff + jitter
+- context 写入 shield 等价保护
+- D-Mail / rollback
+- wire + approval
+- shell approval panel
+- subagent continuation prompt
+- `/setup`
+- `/reload`
+- `/compact`
+- `/rewind`
+- `/resume`
+- `/task`
+- toast
+- prompt history
+- `@` file completer
+- ACP 多 session 基本框架
+
+旧版 `kimi.md` / `PLAN.md` 里把下面几项写成 “Go 还没有”，现在都不准确了：
+
+- exponential backoff + jitter
+- shield-like context protection
+- approval panel
+- prompt history
+- `@` completer
+- `/reload`
+
+### 9.2 当前真正还没对齐的点
+
+和 `temp/` 对照后，Go 现在最明显的缺口是：
+
+1. temp 风格的 provider / setup / config 流程
+2. ACP 事件/审批/content block 完整投影
+3. raw shell mode / agent-shell 双模式切换
+4. auto-update
+
+### 9.3 最大的用户侧差距：provider / setup / config 链路
+
+这是现在最值得优先做的一块。
+
+Python 参考实现里：
+
+- `/setup` 是平台导向的
+- 会真实请求 `/models`
+- 会落盘 `max_context_size`
+- 会在支持的平台下自动写入 `services.moonshot_search`
+- 默认配置是空的，强依赖 setup 完成初始化
+
+而当前 Go 版：
+
+- `config.Default()` 仍带占位默认模型和 placeholder 路径
+- `/setup` 只是本地静态向导，不会请求 provider 的模型列表
+- 不会写入 `ContextWindowTokens`
+- 没有 `services.moonshot_search`
+- `/setup` 甚至提供了 `anthropic` 选项，但 runtime 并不支持该 provider
+
+如果目标是继续对齐 `temp/` 的 kimi-cli，这里是当前最核心的缺口。
+
+### 9.4 ACP 仍是 partial parity
+
+当前 Go ACP 已经有：
+
+- `initialize`
+- `new_session`
+- `list_sessions`
+- `resume_session`
+- `load_session`
+- `prompt`
+- `cancel`
+- `set_session_model`
+- `set_session_mode`
+
+但和 Python 参考实现相比仍缺：
+
+- `ApprovalRequest` 在 ACP 路径上的处理
+- `ToolCallPart` 流式参数拼接
+- richer content block 映射
+- MCP 图片/音频内容的结构化透传
+
+### 9.5 一些明确的主动分歧
+
+这些不一定要改，但需要文档里明确：
+
+- `search_web`：Go 用 DuckDuckGo；Python 用 Moonshot Search
+- `fetch_url`：Go 用启发式抽取；Python 用 `trafilatura`
+- `bash`：Go 默认 120s，Python 默认 60s
+- `bash`：Go 多了后台任务模式和 `/task`
+- `write_file` / `replace_file`：Go 有 approval gate，Python 当前主要是 `bash` 走 approval
+- MCP：Go 目前把结果压成字符串；Python 会保留 text/image/audio content
+
+---
+
+## 10. 对 Go 版最有价值的参考文件
+
+如果后面继续补 parity，最该反复对照的是：
+
+### Runtime
+
+- `temp/src/kimi_cli/soul/kimisoul.py`
+- `temp/src/kimi_cli/soul/wire.py`
+- `temp/src/kimi_cli/soul/approval.py`
+- `temp/src/kimi_cli/soul/context.py`
+- `temp/src/kimi_cli/soul/denwarenji.py`
+
+### 配置与启动
+
+- `temp/src/kimi_cli/config.py`
+- `temp/src/kimi_cli/ui/shell/setup.py`
+- `temp/src/kimi_cli/tools/web/search.py`
+
+### ACP
+
+- `temp/src/kimi_cli/ui/acp/__init__.py`
+- `temp/src/kimi_cli/tools/mcp.py`
+
+### Shell 交互
+
+- `temp/src/kimi_cli/ui/shell/metacmd.py`
+- `temp/src/kimi_cli/ui/shell/prompt.py`
+- `temp/src/kimi_cli/ui/shell/update.py`
+
+---
+
+## 11. 当前结论
+
+“下一步先做什么”其实有两个答案，取决于你优先看哪种差距。
+
+### 11.1 如果按代码正确性 / parity 完整度排
+
+应该先做：
+
+- ACP parity
+
+因为当前 ACP 路径仍然有真正的行为缺口：
+
+- approval 没有完整接通
+- `ToolCallPart` 没有投影
+- richer content block 没保真
+
+这比一般的 shell polish 更像一个还没收口的 subsystem。
+
+### 11.2 如果按终端用户第一感受排
+
+应该先做：
+
+- temp 风格的 provider + `/setup` + model discovery + search config
+
+因为这是 `temp/` 参考实现里最有辨识度的产品能力，也是当前最大的用户侧落差。
+
+### 11.3 我的建议
+
+综合当前代码状态，我会建议：
+
+1. 先补 ACP parity
+2. 紧接着补 provider / setup / config parity
+
+这样顺序更稳：
+
+- 先把还存在行为缺口的 transport 收口
+- 再把最显著的配置与初始化体验差距补上
+
 
 Updated: 2026-04-01
 
-### Implemented Core
-
-- Entry chain: `cmd/fimi -> internal/app`
-- Config loading with models/providers/web/MCP settings
-- Session create / continue / resume / list / delete flow
-- JSONL history persistence with sliding window reads
-- Checkpoint create / revert / list / backup rotation in `internal/contextstore`
-- Multi-step runtime loop with event sink and streaming
-- Tool-call execution loop with retry logic, backoff/jitter, and retry status updates
-- Token usage persistence
-- Cancellation-safe shielding for runtime-owned contextstore writes
-- LLM engine boundary with streaming support
-- OpenAI-compatible (dual wire: Chat Completions + Responses) and Qwen-compatible providers
-- MCP integration via go-sdk (multi-server, tool discovery, tool calling)
-- ACP server (JSON-RPC over stdio, initialize/authenticate/session/prompt/cancel)
-- Tool subtitle extraction (`internal/runtime/toolsubtitle.go`)
-- Output shaping (50K chars total, 2K per line)
-- D-Mail integration (`internal/dmail`) with runtime rollback
-- Wire system (`internal/wire`) — bidirectional buffered channel between runtime and UI
-- Approval system (`internal/approval`) — yolo mode, auto-approve actions, approve-for-session
-- Tool approval gates on bash, write_file, replace_file
-
-### Go Tools (13 registered)
-
-| Tool | Kind | Handler | Description |
-| --- | --- | --- | --- |
-| `agent` | agent | yes | Subagent delegation with continuation prompt (auto-re-prompts if response < 200 chars), max-steps detection |
-| `think` | utility | yes | Private reasoning note |
-| `set_todo_list` | utility | yes | Todo list management |
-| `bash` | command | yes | Shell commands with 120s default/300s max timeout, streaming output, **background mode** (`background:true`, `task_id`) via `BackgroundManager` (24h timeout) |
-| `search_web` | utility | yes | DuckDuckGo HTML scraper |
-| `fetch_url` | utility | yes | HTTP fetch with heuristic content extraction + scoring |
-| `read_file` | file | yes | Read file with offset/limit |
-| `glob` | file | yes | Glob matching (supports `**`), path sandboxing |
-| `grep` | file | yes | Regex grep with line numbers |
-| `write_file` | file | yes | Write file with parent dir creation, path sandboxing |
-| `replace_file` | file | yes | String replace with `replace_all` support, batch edits |
-| `patch_file` | file | yes | Unified diff patch application, path sandboxing |
-| `send_dmail` | utility | yes | D-Mail time-travel message, triggers runtime rollback |
-
-### Go UI
-
-| Component | Location | Features |
-| --- | --- | --- |
-| Print UI | `internal/ui/printui` | Text mode, stream-json mode (via `--output`) |
-| Shell UI | `internal/ui/shell` | Bubble Tea interactive UI, session resume, checkpoint/rewind, toast notifications, `@` file completer, tool cards, history persistence |
-| ACP Server | `internal/acp` | Multi-session JSON-RPC over stdio, event projection, cancel propagation, `set_session_mode` handler |
-
-#### Go Shell Features
-
-- Session resume UI with delete (Ctrl+D)
-- Command autocomplete popup on `/`
-- Inline slash command suggestions
-- Scrollable transcript
-- Tool result cards with status icon, args box, output box (`components/tool_card.go`)
-- Tool result folding with Ctrl+O toggle
-- Approval panel with arrow-key selection (approve / approve-for-session / reject)
-- Ctrl+C resolves pending approvals on exit
-- Context usage display in status bar
-- Markdown rendering via glamour (`renderers/markdown.go`)
-- Tool subtitle extraction via `toolsubtitle.go`
-- Toast notifications (`toast.go`): 4 levels (Info/Warning/Error/Success), TTL auto-dismiss, max 5 stack
-- Prompt history persistence (`history.go`): line-delimited file, up/down arrow navigation
-- `@` file mention completer (`completer/`): fuzzy matching, 2-tier TTL cache, 11-category ignore list
-- Cursor positioning in InputModel: left/right arrows, mid-string insert/delete
-- `/rewind` command for checkpoint selection and revert
-- `/resume` command for session switching
-- `/compact` command for context compaction with backup
-- `/init` command for AGENTS.md generation
-- `/version` command for version display
-- `/release-notes` command for changelog display
-- `/setup` command for interactive config wizard
-- `/reload` command for config hot-reload + file index refresh
-
-#### Go Shell Subpackages
-
-| Subpackage | Files | Description |
-| --- | --- | --- |
-| `completer/` | `fileindex.go`, `fuzzy.go` | File indexer (2-tier TTL cache, ignore list) + fuzzy matcher (prefix/consecutive/position scoring) |
-| `components/` | `banner.go`, `status_bar.go`, `tool_card.go` | Reusable UI widgets |
-| `renderers/` | `markdown.go` | Glamour-based markdown rendering |
-| `styles/` | `colors.go`, `lipgloss.go` | Lipgloss color/style definitions |
+Purpose: 跟踪 `temp/` 中 Python `kimi-cli` 参考实现和当前 Go 版 `fimi-cli` 的真实差距，并给出下一步优先级。
 
 ---
 
-## Gap Analysis
+## 1. 当前状态结论
 
-### Capability Matrix
+Go 版现在已经不是“runtime 还没搭起来”的阶段了。
 
-| Area | Python v0.35 | Go | Status |
-| --- | --- | --- | --- |
-| Entry / app wiring | yes | yes | `done` |
-| Config: models/providers | yes | yes | `done` |
-| Config: web search | Moonshot API | DuckDuckGo | `diverged` |
-| Session create/continue | yes | yes | `done` |
-| Session resume UI | yes | yes | `done` |
-| Context history (JSONL) | yes | yes | `done` |
-| Checkpoint storage | yes | yes | `done` |
-| D-Mail / rollback | BackToTheFuture + DenwaRenji | yes (`internal/dmail` + runtime integration) | `done` |
-| Wire system | `Wire` class with ContextVar | `internal/wire` (buffered chan 64, context key, Send/Receive/Shutdown) | `done` |
-| Approval system | `Approval` class with yolo/auto-approve/reject | `internal/approval` (yolo, auto-approve, approve-for-session, reject) | `done` |
-| Tool context tracking | `CustomToolset` + ContextVar | approval context propagation via `approval.WithContext` | `done` |
-| Runtime: steer input | no explicit mechanism | no | `same` |
-| Multi-step runtime | yes | yes | `done` |
-| Step retry | tenacity + jitter + connection recovery | retryable error classification + backoff/jitter + status updates | `done` |
-| Streaming text/tool deltas | yes | yes | `done` |
-| Runtime events | 7 types + ApprovalRequest | 7 runtime event types + ApprovalRequest + ToastMessage via wire | `done+extra` |
-| Tool subtitle extraction | yes (per-tool logic) | yes (`toolsubtitle.go`) | `done` |
-| Output shaping | 50K chars, 2K/line | 50K chars, 2K/line | `done` |
-| Print UI: text | yes | yes | `done` |
-| Print UI: stream-json | yes | yes (via --output stream-json) | `done` |
-| Shell UI: basic REPL | yes | yes | `done` |
-| Shell UI: live rendering | Rich.Live 4fps | Bubble Tea View() rebuild | `partial` |
-| Shell: `/compact` | yes | yes | `done` |
-| Shell: `/rewind` | `/clear` (revert to checkpoint 0) | `/rewind` (select any checkpoint) | `done+extra` |
-| Shell: `/release-notes` | yes | yes (embedded changelog) | `done` |
-| Shell: `/version` | yes | yes | `done` |
-| Shell: `/setup` | yes (interactive wizard) | yes (ModeSetup with 5 phases) | `done` |
-| Shell: `/reload` | yes (config hot-reload) | yes (config.Load + file index refresh) | `done` |
-| Shell: `/init` (AGENTS.md) | yes | yes | `done` |
-| Shell: `@` file completer | yes (fuzzy, 2-tier, cached) | yes (`completer/` subpackage, fuzzy matching, 2-tier TTL cache) | `done` |
-| Shell: bottom toolbar | yes (time + mode + context) | yes (status bar with time + keyboard hint) | `done` |
-| Shell: tool result cards | yes | yes (`components/tool_card.go`, wired into runtime event pipeline) | `done` |
-| Shell: approval panel | yes | yes (ModeApprovalPrompt, arrow-key selection) | `done` |
-| Shell: mode toggle (agent/shell) | yes (Ctrl-K) | no | `missing` |
-| Shell: toast notifications | yes | yes (`toast.go`, 4 levels, TTL auto-dismiss, max 5 stack, via wire `ToastMessage`) | `done` |
-| Shell: prompt history | yes (per-directory JSONL) | yes (line-delimited file, up/down arrow) | `done` |
-| Shell: background tasks | yes (auto-update) | no | `missing` |
-| Auto-update | yes (background check + install) | no | `missing` |
-| First-run setup wizard | yes (`/setup`) | yes (`/setup` interactive wizard) | `done` |
-| ACP server mode | yes (multi-session) | yes (multi-session) | `done` |
-| ACP: RPC handlers | `initialize`, `new_session`, `load_session`, `resume_session`, `list_sessions`, `prompt`, `cancel`, `set_session_model`, `authenticate` | same + `set_session_mode` | `done+extra` |
-| ACP: event projection | yes | yes | `done` |
-| ACP: content block conversion | Text/Image/Audio/Resource | text only | `partial` |
-| ACP: tool result conversion | full schema | truncated at 10K chars | `partial` |
-| ACP: authentication | stubbed | stubbed | `same` |
-| Agent spec | 7 fields | 8 fields (has `model`) | `done+extra` |
-| Subagent: continuation prompt | yes (< 200 chars re-run) | yes | `done` |
-| MCP tool bridge | fastmcp adapter | go-sdk adapter | `done` |
-| SendDMail tool | yes | yes | `done` |
+更准确的判断是：
 
-### Tool Parity Detail
-
-| Python Tool | Go Equivalent | Status |
-| --- | --- | --- |
-| `Bash` | `bash` | `done` (approval gate added; timeout 120s vs Python 60s; Go adds background mode) |
-| `ReadFile` | `read_file` | `done` |
-| `WriteFile` | `write_file` | `done` |
-| `Glob` | `glob` | `done` (Go supports `**`, Python rejects prefix) |
-| `Grep` | `grep` | `done` |
-| `StrReplaceFile` | `replace_file` | `done` (both support `replace_all` + batch edits) |
-| `PatchFile` | `patch_file` | `done` |
-| `Think` | `think` | `done` |
-| `SetTodoList` | `set_todo_list` | `done` |
-| `Task` | `agent` | `done` (both have continuation prompt) |
-| `SendDMail` | `send_dmail` | `done` |
-| `SearchWeb` | `search_web` | `diverged` (Moonshot vs DuckDuckGo) |
-| `FetchURL` | `fetch_url` | `diverged` (trafilatura vs heuristic) |
-| `MCPTool` | MCP handler in `tools/mcp.go` | `done` |
-
-### Snapshot Corrections / Notes
-
-- Python reference has **no separate `soul/event.py`**; event types are defined in `soul/wire.py`.
-- Python shell currently auto-approves `ApprovalRequest` in `ui/shell/__init__.py`; approval UI there is still a TODO stub.
-- Go shell parity has moved ahead in several places: toast notifications, prompt history, `@` completer, `/reload`, and live tool cards are implemented.
-- Main remaining Go parity gaps are shell mode toggle, background task management in ShellApp, and the Python auto-update system.
+- runtime 主链已经基本成型
+- shell 主链也已经基本成型
+- 当前剩下的缺口主要集中在 ACP 深水区、provider/setup/config parity，以及少量 temp 语义对齐项
 
 ---
 
-## Remaining Work
+## 2. 已完成或基本完成的 parity
 
-### Phase 12: Shell Parity
+下面这些能力，Go 版已经做完，或者已经不再是主要差距：
 
-- [x] Add `/version` command
-- [x] Add `/release-notes` command (changelog parser, embedded CHANGELOG.md)
-- [x] Add keyboard shortcut hint to status bar (Ctrl+O展开/折叠)
-- [x] Add `/setup` command (interactive config wizard with ModeSetup)
-- [x] Add config.Save() and SaveFile() for atomic config writes
-- [x] Add approval panel (ModeApprovalPrompt, arrow-key selection, approve/approve-for-session/reject)
-- [x] Add `@` file mention completer (fuzzy, 2-tier lazy index, ignore list, cursor positioning)
-- [x] Add `/reload` command (config hot-reload + file index refresh)
-- [x] Add cursor positioning to InputModel (left/right arrows, mid-string insert/delete)
-- [x] Add toast notifications system (`toast.go` + wire `ToastMessage`)
-- [x] Add prompt history persistence (`history.go`, line-delimited local file)
-- [ ] Add mode toggle (agent/shell) -- lower priority
-- [ ] Add external editor (Ctrl-O) -- lower priority
-- [ ] Add clipboard paste -- lower priority
-- [ ] Add background task browser (`/task`) -- lower priority
+### Runtime / Core
 
-### Phase 13: Wire/Approval System -- DONE
+- [x] 多 step runtime loop
+- [x] 用户 prompt 边界 checkpoint
+- [x] step 前 checkpoint
+- [x] D-Mail / rollback
+- [x] streaming text / tool call / tool result
+- [x] step retry + backoff + jitter
+- [x] context write shielding
+- [x] context usage / retry status 回传
 
-- [x] Implement bidirectional Wire-like channel (events + approval requests)
-- [x] Add context key pattern for implicit wire access (`wire.WithCurrent` / `wire.Current`)
-- [x] Implement Approval system with yolo mode and auto-approve actions
-- [x] Add `ApprovalRequest` message type via wire
-- [x] Add tool approval gates (bash, write_file, replace_file)
-- [x] Add approval panel UI (ModeApprovalPrompt, arrow keys, 3-way resolve)
-- [x] Race condition fix: `wasIdle` pattern for late wire events after completion
+关键实现：
 
-### Phase 14: Runtime Parity
+- `internal/runtime/runtime.go`
+- `internal/dmail/dmail.go`
+- `internal/contextstore/`
 
-- [x] Add exponential backoff with jitter for step retry
-- [x] Add shield equivalent for context writes (prevent cancellation corruption)
-- [ ] Add background task management in ShellApp
+### Wire / Approval
 
-### Phase 15: Auto-Update System
+- [x] bidirectional wire
+- [x] `ApprovalRequest.Wait/Resolve`
+- [x] yolo / auto-approve / approve-for-session
+- [x] shell 审批面板
 
-Python reference has this system (`ui/shell/update.py` + background check in `ShellApp`), but Go does not yet.
+关键实现：
 
-- [ ] Add version check against CDN
-- [ ] Add tar.gz download and extraction
-- [ ] Add background update check task
-- [ ] Add toast notification for available updates
+- `internal/wire/wire.go`
+- `internal/wire/message.go`
+- `internal/approval/approval.go`
+- `internal/ui/shell/model.go`
 
-### Phase 16: Go-Specific Cleanup
+### Shell
 
-- [ ] Decide on bash timeout default (Python: 60s, Go: 120s)
-- [ ] Align grep sandboxing (Python: no sandbox, Go: should it have?)
-- [ ] Decide on Glob `**` handling (Python rejects prefix, Go allows)
+- [x] `/compact`
+- [x] `/rewind`
+- [x] `/resume`
+- [x] `/task`
+- [x] `/init`
+- [x] `/version`
+- [x] `/release-notes`
+- [x] `/setup`
+- [x] `/reload`
+- [x] prompt history
+- [x] `@` 文件补全
+- [x] toast
+- [x] tool cards
+- [x] approval UI
 
----
+关键实现：
 
-## Immediate Next Steps
+- `internal/ui/shell/model.go`
+- `internal/ui/shell/shell.go`
+- `internal/ui/shell/history.go`
+- `internal/ui/shell/completer/`
+- `internal/ui/shell/toast.go`
 
-Highest-impact remaining items in order:
+### Tools / Integration
 
-1. **Runtime parity** (Phase 14) -- background task management in `ShellApp`
-2. **Auto-update** (Phase 15) -- background version check + install flow
-3. **Shell remaining polish** (Phase 12) -- mode toggle, external editor, clipboard paste, background task browser
-4. **Go-specific cleanup** (Phase 16) -- align tool defaults with Python
+- [x] `agent`
+- [x] `think`
+- [x] `set_todo_list`
+- [x] `bash`
+- [x] `read_file`
+- [x] `glob`
+- [x] `grep`
+- [x] `write_file`
+- [x] `replace_file`
+- [x] `patch_file`
+- [x] `send_dmail`
+- [x] `search_web`
+- [x] `fetch_url`
+- [x] MCP bridge
 
----
+关键实现：
 
-## Architecture Diagrams
+- `internal/tools/registry.go`
+- `internal/tools/builtin.go`
+- `internal/tools/agent.go`
+- `internal/tools/mcp.go`
+- `internal/mcp/`
 
-### Current Go Architecture
+### ACP 基础框架
 
-```
-cmd/fimi
-  |
-  v
-internal/app
-  |
-  +-- internal/config       (models, providers, web, MCP, history window)
-  +-- internal/session      (session metadata)
-  +-- internal/agentspec    (YAML agent definitions)
-  +-- internal/contextstore (JSONL history, checkpoints)
-  +-- internal/tools        (13 builtin tools + MCP bridge + background manager)
-  +-- internal/llm          (OpenAI/Qwen providers, dual wire API)
-  +-- internal/mcp          (MCP client lifecycle, tool discovery)
-  +-- internal/runtime      (step loop, events, retry, subtitle)
-  +-- internal/dmail        (D-Mail state machine, rollback trigger)
-  +-- internal/wire         (bidirectional channel, events + approval + toast)
-  +-- internal/approval     (permission gating, yolo, auto-approve)
-  +-- internal/acp          (JSON-RPC server, event projection)
-  +-- internal/ui
-  |     +-- printui         (text output, stream-json)
-  |     +-- shell           (Bubble Tea interactive)
-  |           +-- completer (file index + fuzzy match)
-  |           +-- components (banner, status bar, tool card)
-  |           +-- renderers (markdown)
-  |           +-- styles    (lipgloss styles)
-  +-- internal/websearch    (DuckDuckGo scraper)
-  +-- internal/webfetch     (HTTP fetch, content extraction)
-```
+- [x] `initialize`
+- [x] `new_session`
+- [x] `list_sessions`
+- [x] `resume_session`
+- [x] `load_session`
+- [x] `prompt`
+- [x] `cancel`
+- [x] `set_session_model`
+- [x] `set_session_mode`
 
-### Target Architecture (After Gaps Closed)
+关键实现：
 
-```
-CLI / Shell / Print / ACP
-  |
-  v
-internal/app
-  |
-  +-- config               infrastructure
-  +-- session              infrastructure
-  +-- agentspec            adapter/integration
-  +-- dmail                rollback / time-travel
-  +-- approval             permission gating (NEW)
-  +-- wire                 bidirectional channel (NEW)
-  +-- ui/*
-  |     +-- printui (text, stream-json)
-  |     +-- shell (richer meta commands, tool cards, @ completer, toolbar, toasts)
-  |     +-- acp (full content block conversion, approval requests)
-  |
-  v
-internal/runtime           core agent logic
-  |
-  +-- contextstore         core logic + persistence
-  +-- runtime/events       core boundary (events + ApprovalRequest)
-  +-- llm                  replaceable adapter
-  +-- tools                replaceable boundary
-  |     +-- builtin local tools
-  |     +-- web tools (search_web, fetch_url)
-  |     +-- MCP bridge
-  |     +-- delegation (with continuation)
-  |     +-- dmail tool
-```
+- `internal/acp/server.go`
+- `internal/acp/session.go`
+- `internal/acp/types.go`
 
 ---
 
-## Design Notes
+## 3. 旧计划里已过时的判断
 
-### Good Patterns
+这几项不该再放在 “待完成” 里：
 
-- Runtime unaware of UI rendering details
-- Tool execution behind explicit `ToolExecutor` interface
-- Event sink as UI boundary
-- Config-driven model/provider selection
-- Checkpoint store independent of runtime
-- Tool subtitle extraction lives in runtime, not UI
+- `background task management in ShellApp`
+- `/task` background task browser
 
-### Things to Avoid
+因为它们已经存在：
 
-- Bolting MCP directly into runtime branches
-- Letting shell concerns leak into runtime
-- Assuming `agentspec.Spec.Model` means per-subagent override works
-- Planning around Python files not in `temp/`
+- `bash` 支持 `background:true`
+- `bash` 支持 `task_id`
+- shell 已有 `/task` list / status / kill
+- session 级 `BackgroundManager` 已接入 runner
+
+相关实现：
+
+- `internal/tools/background.go`
+- `internal/tools/builtin.go`
+- `internal/app/app.go`
+- `internal/ui/shell/model.go`
 
 ---
 
-## Out of Scope
+## 4. 当前真正还没补齐的差距
 
-The following are present in `temp/` but not treated as migration targets:
+### A. ACP parity 仍然明显不完整
 
-- Test tools (`Plus`, `Compare`, `Panic`)
-- Moonshot-specific search API (using DuckDuckGo instead)
-- RALPH loop (FlowRunner decision node system) -- noted as not present in v0.35
-- Feedback submission command (`/feedback`) -- external service integration
+这是当前最实质的缺口。
+
+Python `temp` 里 ACP 路径具备：
+
+- approval request 处理
+- `ToolCallPart` 流式参数拼接
+- 更完整的 tool-call 状态投影
+- richer content block 映射
+
+当前 Go ACP 仍缺：
+
+- [ ] ACP 路径注入 approval 上下文
+- [ ] ACP 侧消费 `ApprovalRequest`
+- [ ] ACP 投影 `ToolCallPart`
+- [ ] richer MCP content 映射，而不是简单压成字符串
+
+当前症状：
+
+- ACP 只投影 `TextPart` / `ToolCall` / `ToolResult`
+- `ApprovalRequest` 在 ACP 路径上没有真正接通
+- `ToolCallPart` 被忽略
+- 非文本 content block 没有完整保真
+
+关键文件：
+
+- `internal/app/app.go`
+- `internal/acp/session.go`
+- `internal/ui/run.go`
+- `internal/tools/mcp.go`
+
+### B. Provider / Setup / Config 还没对齐 temp
+
+这是最大的用户侧产品差距。
+
+Python `temp` 里：
+
+- 默认配置为空
+- `/setup` 是必经路径
+- `/setup` 会请求远端 `/models`
+- 会保存模型的 context window
+- 会自动配置 `services.moonshot_search`
+- provider 语义是 temp 自己的那套平台导向语义
+
+当前 Go 版：
+
+- [ ] 默认配置仍是 placeholder/内建默认模型语义
+- [ ] `/setup` 还是静态本地向导
+- [ ] 不会拉取远端模型列表
+- [ ] 不会写 `ContextWindowTokens`
+- [ ] 没有 `services.moonshot_search`
+- [ ] `/setup` 暴露了 `anthropic` 选项，但 runtime 并未支持该 provider
+
+关键文件：
+
+- `internal/config/config.go`
+- `internal/ui/shell/model.go`
+- `internal/app/llm_builder.go`
+- `temp/src/kimi_cli/config.py`
+- `temp/src/kimi_cli/ui/shell/setup.py`
+
+### C. Shell raw mode / dual-mode 还没做
+
+Python `temp` 里有 agent mode / shell mode 切换。
+
+当前 Go 版：
+
+- [ ] 没有 `Ctrl-K` 模式切换
+- [ ] 没有 temp 那种 raw shell mode
+
+这不是阻塞主链的缺口，但确实仍未对齐。
+
+### D. Auto-update 还没做
+
+Python `temp` 里有：
+
+- 后台版本检查
+- 下载 tar.gz
+- 安装到本地
+- toast 提示更新
+
+当前 Go 版：
+
+- [ ] 没有等价 auto-update 流程
+
+注意不要和已经存在的 background bash task 混淆。
+
+### E. 少量工具语义仍偏薄
+
+这些工具已经“有同名能力”，但还没完全对齐 temp 的语义：
+
+- [ ] `read_file`：还没有 temp 那套 offset/limit/cat -n 风格输出
+- [ ] `grep`：参数能力比 temp 少很多
+- [ ] `search_web.include_content`：Go 的 DuckDuckGo backend 当前实际忽略
+- [ ] `fetch_url`：Go 是 heuristic extractor，不是 `trafilatura`
+- [ ] MCP 结果：Go 目前多媒体内容被压成字符串说明
+
+这块建议放在 ACP 和配置链路之后做。
+
+---
+
+## 5. 明确的主动分歧
+
+这些不一定要改，但计划里应该明确它们是“主动分歧”而不是“漏实现”：
+
+- `search_web`：Go 用 DuckDuckGo；Python 用 Moonshot Search
+- `fetch_url`：Go 用自写启发式抽取；Python 用 `trafilatura`
+- `bash`：Go 默认 120s；Python 默认 60s
+- `bash`：Go 多了后台任务模式和 `/task`
+- `write_file` / `replace_file`：Go 增加了 approval gate
+- MCP：Go 当前做字符串降级；Python 保留 richer content
+
+---
+
+## 6. 下一步优先级
+
+### Priority 1: ACP parity
+
+如果按“当前代码最需要补的 correctness gap”排，ACP 应该放第一。
+
+原因：
+
+- 它是当前最明显的 subsystem-level 缺口
+- 差距不是 UI polish，而是行为语义缺失
+- 范围相对收敛，能独立成一个完整阶段
+
+最小闭环建议：
+
+1. 在 ACP run 路径注入 `approval.WithContext(...)`
+2. 让 ACP transport 能处理 `ApprovalRequest`
+3. 把 `ToolCallPart` 投影到 ACP 更新流
+4. 给 MCP richer content 找到最小可接受映射
+
+### Priority 2: Provider / Setup / Config parity
+
+如果按“和 temp 的产品体验差距”排，这块应该排第一或第二。
+
+建议最小闭环：
+
+1. 决定是否引入 temp 对应的 provider 语义
+2. 重写 `/setup` 为平台选择 + 远端模型发现
+3. 保存 `ContextWindowTokens`
+4. 增加 `services.moonshot_search`
+5. 删除或真正实现 `anthropic` 选项
+6. 重新决定 first-run config 是否保留 placeholder 默认模型
+
+### Priority 3: Shell raw mode toggle
+
+建议做成一个小而干净的 parity phase：
+
+- `Ctrl-K`
+- agent/shell mode 状态
+- 前台 raw shell command 执行路径
+
+### Priority 4: Auto-update
+
+建议独立成单独 phase，不和 ACP 或 setup 混做。
+
+### Priority 5: Tool semantic parity
+
+建议顺序：
+
+1. `read_file`
+2. `grep`
+3. `search_web.include_content`
+4. MCP richer result handling
+
+---
+
+## 7. 建议的执行顺序
+
+如果你想按“代码正确性和架构收口”推进：
+
+1. ACP parity
+2. provider/setup/config parity
+3. shell raw mode toggle
+4. auto-update
+5. tool semantic parity
+
+如果你想按“终端用户第一感受”推进：
+
+1. provider/setup/config parity
+2. ACP parity
+3. auto-update
+4. shell raw mode toggle
+5. tool semantic parity
+
+我更推荐第一种顺序，因为 ACP 现在是更明显的行为缺口。
+
+---
+
+## 8. 本轮结论
+
+一句话总结：
+
+- `PLAN.md` 不该再把 runtime / shell 主链写成“还没补齐”
+- 真正该做的下一步，是先把 ACP parity 补到不再绕开 approval、不再丢 tool delta
+
+紧随其后的第二步，是把 provider/setup/config 这条链路做成真正对齐 `temp/` 的实现。
