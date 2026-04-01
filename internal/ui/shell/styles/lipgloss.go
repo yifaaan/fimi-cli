@@ -116,16 +116,20 @@ var (
 				Bold(true)
 
 	ToolDiffContextStyle = lipgloss.NewStyle().
-				Foreground(ColorWhite)
+				Foreground(ColorWhite).
+				Background(ColorToolBg)
 
 	ToolDiffAddedStyle = lipgloss.NewStyle().
-				Foreground(ColorSuccess)
+				Foreground(ColorBrightWhite).
+				Background(Color("22"))
 
 	ToolDiffRemovedStyle = lipgloss.NewStyle().
-				Foreground(ColorError)
+				Foreground(ColorBrightWhite).
+				Background(ColorErrorBg)
 
 	ToolDiffHunkStyle = lipgloss.NewStyle().
-				Foreground(ColorInfo).
+				Foreground(ColorBrightWhite).
+				Background(Color("24")).
 				Bold(true)
 
 	ApprovalTitleStyle = lipgloss.NewStyle().

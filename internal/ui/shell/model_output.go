@@ -263,7 +263,7 @@ func (m OutputModel) renderActivityGroupBlock(block TranscriptBlock) string {
 	for _, item := range group.Items {
 		lines = append(lines, renderActivityItem(item))
 	}
-	if preview := m.renderPreviewBody(block.ID, group.Preview); preview != "" {
+	if preview := m.renderPreviewBody(block.ID, group.Title, group.Preview); preview != "" {
 		lines = append(lines, preview)
 	}
 	return strings.Join(lines, "\n")
@@ -289,12 +289,17 @@ func renderActivityItem(item ActivityItem) string {
 	return styles.ActivityDetailStyle.Render("  - " + verb + " " + text)
 }
 
-func (m OutputModel) renderPreviewBody(blockID string, preview PreviewBody) string {
+func (m OutputModel) renderPreviewBody(blockID string, title string, preview PreviewBody) string {
 	preview.Text = strings.TrimSpace(preview.Text)
 	if preview.Text == "" {
 		return ""
 	}
 	expanded := m.expanded[blockID]
+	if preview.Kind == PreviewKindDiff {
+		if rendered, ok := renderEditDiffPreviewBody(title, preview.Text, expanded); ok {
+			return rendered
+		}
+	}
 	limit := previewDefaultLimit(preview.Kind)
 	hint := "Ctrl+O to expand"
 	if expanded {

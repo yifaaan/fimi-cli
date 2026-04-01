@@ -88,6 +88,8 @@ func TestOutputModelRendersTranscriptBlocks(t *testing.T) {
 		"Ran pwd && rg --files",
 		"Edited PLAN.md (+1 -1)",
 		"@@ -1,2 +1,2 @@",
+		"-   1 old",
+		"+   1 new",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("InteractiveView() missing %q in:\n%s", want, view)
@@ -305,6 +307,56 @@ func TestOutputModelToggleExpandTargetsLatestCollapsiblePreview(t *testing.T) {
 	expanded := updated.InteractiveView()
 	if !strings.Contains(expanded, "line 20") {
 		t.Fatalf("expanded InteractiveView() missing expanded content:\n%s", expanded)
+	}
+}
+
+func TestRenderEditDiffPreviewBodyKeepsAllChangesAndCollapsesContext(t *testing.T) {
+	summary := "Edited main.go (+2 -1)"
+	content := strings.Join([]string{
+		"@@ -1,13 +1,14 @@",
+		" line 1",
+		" line 2",
+		" line 3",
+		" line 4",
+		"-line 5",
+		"+new line 5",
+		" line 6",
+		" line 7",
+		" line 8",
+		" line 9",
+		" line 10",
+		"+new line 11",
+		" line 12",
+		" line 13",
+	}, "\n")
+
+	collapsed, ok := renderEditDiffPreviewBody(summary, content, false)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBody() = false, want diff preview rendered")
+	}
+	for _, want := range []string{
+		"@@ -1,13 +1,14 @@",
+		"-   5 line 5",
+		"+   5 new line 5",
+		"+  11 new line 11",
+		"...",
+	} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("collapsed diff missing %q in:\n%s", want, collapsed)
+		}
+	}
+	if strings.Contains(collapsed, formatDiffNumberedLine(" ", 1, "line 1")) {
+		t.Fatalf("collapsed diff = %q, want distant unchanged context collapsed", collapsed)
+	}
+
+	expanded, ok := renderEditDiffPreviewBody(summary, content, true)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBody(expanded) = false, want diff preview rendered")
+	}
+	for _, want := range []string{"line 1", "line 10", "line 13", "Ctrl+O to collapse"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded diff missing %q in:\n%s", want, expanded)
+		}
 	}
 }
 
