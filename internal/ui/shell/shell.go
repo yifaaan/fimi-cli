@@ -39,6 +39,7 @@ func helpText() string {
 		"  Ctrl+C/Ctrl+D   Exit (when idle)",
 		"  Ctrl+L          Clear screen",
 		"  Ctrl+O          Toggle tool result expansion",
+		"  Mouse wheel     Scroll transcript history",
 	}
 	return strings.Join(lines, "\n")
 }
@@ -165,6 +166,7 @@ func Run(ctx context.Context, deps Dependencies) error {
 		model,
 		tea.WithInput(input),
 		tea.WithOutput(output),
+		tea.WithMouseCellMotion(),
 	)
 
 	// 在 goroutine 中运行，以便处理 context 取消

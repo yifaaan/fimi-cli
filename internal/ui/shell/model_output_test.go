@@ -10,6 +10,7 @@ import (
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/ui/shell/styles"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -420,5 +421,45 @@ func TestMarkPrintedUntilLeavesLatestUserTurnUnprinted(t *testing.T) {
 	rendered := model.RenderUnprintedCommitted()
 	if len(rendered) != 1 || !strings.Contains(rendered[0], "latest prompt") {
 		t.Fatalf("RenderUnprintedCommitted() = %#v, want latest user prompt still unprinted", rendered)
+	}
+}
+
+func TestOutputModelMouseWheelScrollsFullHistory(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+	model = model.WithViewportHeight(9)
+	for _, text := range []string{
+		"first message",
+		"second message",
+		"third message",
+		"fourth message",
+		"fifth message",
+		"sixth message",
+	} {
+		model = model.AppendBlock(TranscriptBlock{Kind: BlockKindUserPrompt, UserText: text})
+	}
+
+	initial := model.View()
+	if !strings.Contains(initial, "fourth message") || !strings.Contains(initial, "sixth message") {
+		t.Fatalf("initial View() = %q, want latest viewport slice", initial)
+	}
+	if strings.Contains(initial, "first message") {
+		t.Fatalf("initial View() = %q, want oldest message out of view before scrolling", initial)
+	}
+
+	updated := model
+	for i := 0; i < 4; i++ {
+		updated, _ = updated.Update(tea.MouseMsg{
+			Button: tea.MouseButtonWheelUp,
+			Action: tea.MouseActionPress,
+		}, updated.width, updated.viewportHeight)
+	}
+
+	scrolled := updated.View()
+	if !strings.Contains(scrolled, "first message") || !strings.Contains(scrolled, "third message") {
+		t.Fatalf("scrolled View() = %q, want oldest viewport slice after wheel-up", scrolled)
+	}
+	if strings.Contains(scrolled, "sixth message") {
+		t.Fatalf("scrolled View() = %q, want latest message out of view after scrolling to top", scrolled)
 	}
 }
