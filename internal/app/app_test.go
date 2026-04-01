@@ -1913,6 +1913,56 @@ func TestDependenciesBuildRunnerForAgentRunsWithResolvedAgentTools(t *testing.T)
 	}
 }
 
+func TestDependenciesBuildRunnerForAgentWiresDMailHandlerBeforeExecutor(t *testing.T) {
+	deps := dependencies{
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			return &dmailToolClient{}, nil
+		},
+	}
+	cfg := config.Config{
+		DefaultModel: "custom-model",
+		Models: map[string]config.ModelConfig{
+			"custom-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "custom-model",
+			},
+		},
+	}
+
+	runner, err := deps.buildRunnerForAgent(cfg, loadedAgent{
+		Tools: []tools.Definition{{
+			Name: tools.ToolSendDMail,
+			Kind: tools.KindUtility,
+		}},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildRunnerForAgent() error = %v", err)
+	}
+	defer closeRuntimeRunner(runner)
+
+	result, err := runner.Run(
+		context.Background(),
+		contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")),
+		runtime.Input{
+			Prompt:       "send a dmail",
+			Model:        "custom-model",
+			SystemPrompt: "You are the configured agent.",
+		},
+	)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != runtime.RunStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, runtime.RunStatusFinished)
+	}
+	if len(result.Steps) < 1 || len(result.Steps[0].ToolExecutions) != 1 {
+		t.Fatalf("first step tool executions = %#v, want one execution", result.Steps)
+	}
+	if got := result.Steps[0].ToolExecutions[0].Output; !strings.Contains(got, "D-Mail sent") {
+		t.Fatalf("send_dmail output = %q, want D-Mail confirmation", got)
+	}
+}
+
 func TestDependenciesBuildRunnerForAgentKeepsBackgroundTasksAcrossRuns(t *testing.T) {
 	client := &backgroundTaskSessionClient{}
 	deps := dependencies{
@@ -2053,6 +2103,35 @@ func TestDependenciesRunShellClosesRunnerAfterShellExit(t *testing.T) {
 	}
 	if !runner.closed {
 		t.Fatal("runner closed = false, want close after shell exit")
+	}
+}
+
+func TestDependenciesPreparePrintStoreCreatesEmptyHistory(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "print-history.jsonl")
+	deps := dependencies{
+		createSession: func(workDir string) (session.Session, error) {
+			return session.Session{
+				ID:          "print-session",
+				WorkDir:     workDir,
+				HistoryFile: historyFile,
+			}, nil
+		},
+	}
+
+	store, err := deps.preparePrintStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("preparePrintStore() error = %v", err)
+	}
+	if store.Path() != historyFile {
+		t.Fatalf("store.Path() = %q, want %q", store.Path(), historyFile)
+	}
+
+	records, err := store.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("len(ReadAll()) = %d, want 0", len(records))
 	}
 }
 
@@ -2244,6 +2323,26 @@ func extractBackgroundTaskID(content string) string {
 
 type fakeToolCallClient struct {
 	replies int
+}
+
+type dmailToolClient struct {
+	replies int
+}
+
+func (c *dmailToolClient) Reply(request llm.Request) (llm.Response, error) {
+	if c.replies == 0 {
+		c.replies++
+		return llm.Response{
+			Text: "sending d-mail",
+			ToolCalls: []llm.ToolCall{{
+				ID:        "call_dmail",
+				Name:      tools.ToolSendDMail,
+				Arguments: `{"message":"retry from checkpoint","checkpoint_id":0}`,
+			}},
+		}, nil
+	}
+
+	return llm.Response{Text: "done"}, nil
 }
 
 func (c *fakeToolCallClient) Reply(request llm.Request) (llm.Response, error) {

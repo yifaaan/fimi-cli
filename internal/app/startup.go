@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -139,6 +140,7 @@ func loadShellInitialRecords(cfg config.Config, store contextstore.Context) ([]c
 }
 
 func buildShellDependencies(
+	runCtx context.Context,
 	runner runtimeRunner,
 	store contextstore.Context,
 	agent loadedAgent,
@@ -151,6 +153,7 @@ func buildShellDependencies(
 ) shell.Dependencies {
 	return shell.Dependencies{
 		Runner:         runner,
+		RunContext:     runCtx,
 		TaskManager:    backgroundTaskManagerFromRunner(runner),
 		Store:          store,
 		Input:          os.Stdin,
