@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -21,9 +23,7 @@ type Client struct {
 func NewClient(ctx context.Context, name string, command string, args []string, env map[string]string) (*Client, error) {
 	// Build the command
 	cmd := exec.CommandContext(ctx, command, args...)
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = mergeCommandEnv(os.Environ(), env)
 
 	// Create MCP client
 	client := mcp.NewClient(&mcp.Implementation{
@@ -66,6 +66,38 @@ func NewClient(ctx context.Context, name string, command string, args []string, 
 		session: session,
 		tools:   tools,
 	}, nil
+}
+
+func mergeCommandEnv(base []string, overrides map[string]string) []string {
+	if len(base) == 0 && len(overrides) == 0 {
+		return nil
+	}
+
+	values := make(map[string]string, len(base)+len(overrides))
+	order := make([]string, 0, len(base)+len(overrides))
+	for _, item := range base {
+		name, value, ok := strings.Cut(item, "=")
+		if !ok || name == "" {
+			continue
+		}
+		if _, exists := values[name]; !exists {
+			order = append(order, name)
+		}
+		values[name] = value
+	}
+	for name, value := range overrides {
+		if _, exists := values[name]; !exists {
+			order = append(order, name)
+		}
+		values[name] = value
+	}
+
+	env := make([]string, 0, len(order))
+	for _, name := range order {
+		env = append(env, name+"="+values[name])
+	}
+
+	return env
 }
 
 // Close closes the MCP client session.
