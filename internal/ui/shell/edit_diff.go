@@ -129,9 +129,9 @@ func renderEditDiffPreviewBody(summary string, content string, expanded bool) (s
 		return "", false
 	}
 
-	actionHint := "Ctrl+O to expand"
+	actionHint := previewToggleHint(false)
 	if expanded {
-		actionHint = "Ctrl+O to collapse"
+		actionHint = previewToggleHint(true)
 	}
 
 	visible, hidden := collapseEditDiffContext(preview.Lines, expanded)
@@ -142,9 +142,9 @@ func renderEditDiffPreviewBody(summary string, content string, expanded bool) (s
 	}
 
 	if hidden > 0 {
-		lines = append(lines, styles.HelpStyle.Render(fmt.Sprintf("     ... %d unchanged lines hidden (%s)", hidden, actionHint)))
+		lines = append(lines, renderPreviewFooter("     ", PreviewKindDiff, hidden, "unchanged lines", actionHint))
 	} else if expanded {
-		lines = append(lines, styles.HelpStyle.Render("     ("+actionHint+")"))
+		lines = append(lines, renderPreviewFooter("     ", PreviewKindDiff, 0, "", actionHint))
 	}
 
 	return strings.Join(lines, "\n"), true
@@ -167,6 +167,13 @@ func renderEditDiffLine(line editDiffLine) string {
 		}
 		return styles.ToolDiffContextStyle.Render(formatDiffNumberedLine(" ", lineNo, line.Text))
 	}
+}
+
+func previewToggleHint(expanded bool) string {
+	if expanded {
+		return "Ctrl+O collapse"
+	}
+	return "Ctrl+O expand"
 }
 
 func formatDiffNumberedLine(prefix string, lineNo int, text string) string {

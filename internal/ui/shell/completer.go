@@ -1,15 +1,11 @@
 package shell
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"fimi-cli/internal/ui/shell/completer"
-	"fimi-cli/internal/ui/shell/styles"
-
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -64,38 +60,17 @@ func (m Model) renderFileCompletion() string {
 		return ""
 	}
 
-	dropdownStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(styles.ColorMuted).
-		Padding(0, 1)
-
-	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("14")). // bright cyan
-		Bold(true)
-
-	normalStyle := lipgloss.NewStyle().
-		Foreground(styles.ColorMuted)
-
-	var lines []string
+	var items []string
 	maxDisplay := 5
 	if len(m.fileCompletionItems) < maxDisplay {
 		maxDisplay = len(m.fileCompletionItems)
 	}
 
 	for i := 0; i < maxDisplay; i++ {
-		path := m.fileCompletionItems[i]
-		if i == m.selectedFileCompletion {
-			lines = append(lines, selectedStyle.Render(fmt.Sprintf("> %s", path)))
-		} else {
-			lines = append(lines, normalStyle.Render(fmt.Sprintf("  %s", path)))
-		}
+		items = append(items, m.fileCompletionItems[i])
 	}
 
-	if len(m.fileCompletionItems) > maxDisplay {
-		lines = append(lines, normalStyle.Render(fmt.Sprintf("  ... %d more", len(m.fileCompletionItems)-maxDisplay)))
-	}
-
-	return dropdownStyle.Render(strings.Join(lines, "\n"))
+	return m.renderDropdown("Files", items, m.selectedFileCompletion, len(m.fileCompletionItems)-maxDisplay)
 }
 
 // resetFileCompletion clears file completion state.

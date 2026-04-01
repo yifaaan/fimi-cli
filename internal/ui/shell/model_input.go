@@ -200,29 +200,44 @@ func (m InputModel) handleKeyPress(msg tea.KeyMsg) (InputModel, tea.Cmd) {
 
 // View 渲染输入区域。
 func (m InputModel) View() string {
-	// 输入提示符
-	prompt := styles.PromptStyle.Render("fimi> ")
-
-	// 输入值
-	inputValue := m.value
-	if inputValue == "" {
-		// 显示占位符
-		inputValue = styles.HelpStyle.Render("Type your message...")
+	width := m.width
+	if width <= 0 {
+		width = defaultRenderWidth
 	}
+	if width < 32 {
+		width = 32
+	}
+	bodyWidth := messageBodyWidth(width)
 
-	// 光标渲染在 cursorPos 位置
-	cursor := "▌"
-	before := m.value[:m.cursorPos]
-	after := m.value[m.cursorPos:]
+	before := styles.ComposerTextStyle.Render(m.value[:m.cursorPos])
+	after := styles.ComposerTextStyle.Render(m.value[m.cursorPos:])
+	cursor := styles.ComposerCursorStyle.Render("|")
 
-	cursor = "|"
-
-	var inputLine string
+	var content string
 	if m.value == "" {
-		inputLine = lipgloss.JoinHorizontal(lipgloss.Top, prompt, inputValue, cursor)
+		content = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			styles.PromptStyle.Render("> "),
+			styles.ComposerPlaceholderStyle.Render("Ask fimi to do anything"),
+			cursor,
+		)
 	} else {
-		inputLine = lipgloss.JoinHorizontal(lipgloss.Top, prompt, before, cursor, after)
+		content = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			styles.PromptStyle.Render("> "),
+			before,
+			cursor,
+			after,
+		)
 	}
 
-	return inputLine
+	footer := lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		styles.ComposerHeaderStyle.Render("Message"),
+		styles.ComposerHintStyle.Render(" · Enter send · Up/Down history · @ files · / commands"),
+	)
+
+	body := lipgloss.JoinVertical(lipgloss.Left, content, footer)
+
+	return transcriptBodyIndent() + styles.ComposerBoxStyle.Width(bodyWidth).Render(body)
 }

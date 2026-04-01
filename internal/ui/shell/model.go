@@ -616,20 +616,7 @@ func (m Model) renderCommandSuggestions() string {
 		return ""
 	}
 
-	// Dropdown styles.
-	dropdownStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(styles.ColorMuted).
-		Padding(0, 1)
-
-	selectedStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("14")). // bright cyan
-		Bold(true)
-
-	normalStyle := lipgloss.NewStyle().
-		Foreground(styles.ColorMuted)
-
-	var lines []string
+	var items []string
 	maxDisplay := 5 // Show up to five suggestions.
 	if len(filtered) < maxDisplay {
 		maxDisplay = len(filtered)
@@ -637,18 +624,42 @@ func (m Model) renderCommandSuggestions() string {
 
 	for i := 0; i < maxDisplay; i++ {
 		cmd := filtered[i]
-		if i == m.selectedSuggestion {
-			lines = append(lines, selectedStyle.Render(fmt.Sprintf("> %s", cmd.Name)))
-		} else {
-			lines = append(lines, normalStyle.Render(fmt.Sprintf("  %s", cmd.Name)))
+		items = append(items, cmd.Name)
+	}
+
+	return m.renderDropdown("Commands", items, m.selectedSuggestion, len(filtered)-maxDisplay)
+}
+
+func (m Model) renderDropdown(title string, items []string, selected int, remaining int) string {
+	if len(items) == 0 {
+		return ""
+	}
+
+	lines := []string{styles.DropdownTitleStyle.Render(title)}
+	for i, item := range items {
+		if i == selected {
+			lines = append(lines, styles.DropdownSelectedStyle.Render(item))
+			continue
 		}
+		lines = append(lines, styles.DropdownOptionStyle.Render("  "+item))
 	}
 
-	if len(filtered) > maxDisplay {
-		lines = append(lines, normalStyle.Render(fmt.Sprintf("  ... %d more", len(filtered)-maxDisplay)))
+	if remaining > 0 {
+		lines = append(lines, styles.DropdownMetaStyle.Render(fmt.Sprintf("  +%d more", remaining)))
 	}
 
-	return dropdownStyle.Render(strings.Join(lines, "\n"))
+	return transcriptBodyIndent() + styles.DropdownBoxStyle.Width(m.dropdownWidth()).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) dropdownWidth() int {
+	width := m.width
+	if width <= 0 {
+		width = defaultRenderWidth
+	}
+	if width < 32 {
+		width = 32
+	}
+	return messageBodyWidth(width)
 }
 
 // handleSubmit processes a submitted prompt.

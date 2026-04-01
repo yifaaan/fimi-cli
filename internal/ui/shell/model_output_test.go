@@ -17,7 +17,7 @@ import (
 func TestOutputModelRendersTranscriptBlocks(t *testing.T) {
 	model := NewOutputModel()
 	model.width = 100
-	model.height = 30
+	model.height = 40
 
 	model = model.AppendBlock(TranscriptBlock{
 		ID:       "user-1",
@@ -353,7 +353,7 @@ func TestRenderEditDiffPreviewBodyKeepsAllChangesAndCollapsesContext(t *testing.
 	if !ok {
 		t.Fatal("renderEditDiffPreviewBody(expanded) = false, want diff preview rendered")
 	}
-	for _, want := range []string{"line 1", "line 10", "line 13", "Ctrl+O to collapse"} {
+	for _, want := range []string{"line 1", "line 10", "line 13", "Ctrl+O collapse"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded diff missing %q in:\n%s", want, expanded)
 		}
@@ -479,7 +479,7 @@ func TestMarkPrintedUntilLeavesLatestUserTurnUnprinted(t *testing.T) {
 func TestOutputModelMouseWheelScrollsFullHistory(t *testing.T) {
 	model := NewOutputModel()
 	model.width = 80
-	model = model.WithViewportHeight(9)
+	model = model.WithViewportHeight(4)
 	for _, text := range []string{
 		"first message",
 		"second message",
@@ -492,7 +492,7 @@ func TestOutputModelMouseWheelScrollsFullHistory(t *testing.T) {
 	}
 
 	initial := model.View()
-	if !strings.Contains(initial, "fourth message") || !strings.Contains(initial, "sixth message") {
+	if !strings.Contains(initial, "third message") || !strings.Contains(initial, "sixth message") {
 		t.Fatalf("initial View() = %q, want latest viewport slice", initial)
 	}
 	if strings.Contains(initial, "first message") {
@@ -500,7 +500,7 @@ func TestOutputModelMouseWheelScrollsFullHistory(t *testing.T) {
 	}
 
 	updated := model
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 1; i++ {
 		updated, _ = updated.Update(tea.MouseMsg{
 			Button: tea.MouseButtonWheelUp,
 			Action: tea.MouseActionPress,
@@ -508,7 +508,7 @@ func TestOutputModelMouseWheelScrollsFullHistory(t *testing.T) {
 	}
 
 	scrolled := updated.View()
-	if !strings.Contains(scrolled, "first message") || !strings.Contains(scrolled, "third message") {
+	if !strings.Contains(scrolled, "first message") || !strings.Contains(scrolled, "fourth message") {
 		t.Fatalf("scrolled View() = %q, want oldest viewport slice after wheel-up", scrolled)
 	}
 	if strings.Contains(scrolled, "sixth message") {

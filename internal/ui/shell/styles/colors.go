@@ -62,32 +62,38 @@ var (
 
 // UI 元素色
 var (
-	// 主色调 - 品牌色
-	ColorPrimary Color = ColorBrightMagenta
+	// 主色调 - 参考 Codex 的冷色强调
+	ColorPrimary Color = "14"
 
 	// 次要色调
-	ColorSecondary Color = ColorMagenta
+	ColorSecondary Color = "12"
 
 	// 边框色
-	ColorBorder Color = ColorBrightBlack
+	ColorBorder Color = "240"
 
 	// 标题色
 	ColorTitle Color = ColorBrightWhite
 
 	// 暗淡文本（如时间戳、提示）
-	ColorMuted Color = ColorBrightBlack
+	ColorMuted Color = "245"
 
 	// 强调文本
-	ColorAccent Color = ColorBrightYellow
+	ColorAccent Color = "81"
 )
 
 // 背景色
 var (
+	// 主面板背景
+	ColorPanelBg Color = "236"
+
+	// 次级面板背景
+	ColorSubtleBg Color = "237"
+
 	// 输入框背景
-	ColorInputBg Color = "235" // 256色：深灰
+	ColorInputBg Color = ColorPanelBg
 
 	// 工具卡片背景
-	ColorToolBg Color = "236" // 256色：稍深灰
+	ColorToolBg Color = ColorSubtleBg
 
 	// 错误背景
 	ColorErrorBg Color = "52" // 256色：深红

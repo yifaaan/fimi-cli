@@ -24,38 +24,20 @@ type BannerInfo struct {
 
 // RenderBanner 渲染启动横幅。
 func RenderBanner(info BannerInfo) string {
-	logoStyle := lipgloss.NewStyle().Foreground(styles.ColorPrimary).Bold(true)
-	titleStyle := lipgloss.NewStyle().Foreground(styles.ColorTitle).Bold(true)
-	metaStyle := lipgloss.NewStyle().Foreground(styles.ColorAccent)
-	pathStyle := lipgloss.NewStyle().Foreground(styles.ColorInfo)
-	mutedStyle := lipgloss.NewStyle().Foreground(styles.ColorMuted)
-	summaryStyle := lipgloss.NewStyle().Foreground(styles.ColorMuted).Italic(true)
-
 	var lines []string
-	lines = append(lines, logoStyle.Render("▐▛███▜▌")+"   "+titleStyle.Render(buildBannerTitle(info)))
-	lines = append(lines, logoStyle.Render("▝▜█████▛▘")+"  "+metaStyle.Render(buildBannerSubtitle(info)))
+	lines = append(lines, styles.TitleStyle.Render(buildBannerTitle(info)))
+	lines = append(lines, styles.BannerMetaStyle.Render(buildBannerSubtitle(info)))
 
-	if workDir := formatBannerPath(info.WorkDir); workDir != "" {
-		lines = append(lines, logoStyle.Render("  ▘▘ ▝▝")+"    "+pathStyle.Render(workDir))
+	if metaLine := renderBannerMetaLine(info); metaLine != "" {
+		lines = append(lines, metaLine)
 	}
 
-	if info.SessionID != "" {
-		lines = append(lines, mutedStyle.Render(fmt.Sprintf("session: %s", shortSessionID(info.SessionID))))
+	if summary := renderBannerSummary(info); summary != "" {
+		lines = append(lines, styles.BannerSummaryStyle.Render(summary))
 	}
 
-	if info.LastSummary != "" {
-		role := strings.TrimSpace(info.LastRole)
-		if role == "" {
-			role = "last"
-		}
-		// 摘要只做展示截断，不改变真实上下文数据。
-		if role != "user" {
-			lines = append(lines, summaryStyle.Render(fmt.Sprintf("%s: %s", role, truncateBannerText(info.LastSummary, 72))))
-		}
-	}
-
-	lines = append(lines, mutedStyle.Render("commands: /help /clear /exit"))
-	return strings.Join(lines, "\n")
+	lines = append(lines, styles.BannerHintStyle.Render("Enter send | /help /clear /exit | Ctrl+C quit"))
+	return styles.BannerBoxStyle.Render(strings.Join(lines, "\n"))
 }
 
 func buildBannerTitle(info BannerInfo) string {
@@ -82,9 +64,52 @@ func buildBannerSubtitle(info BannerInfo) string {
 		parts = append(parts, "dev build")
 	}
 	if len(parts) == 0 {
-		return "interactive shell"
+		return "interactive coding shell"
 	}
 	return strings.Join(parts, " · ")
+}
+
+func renderBannerMetaLine(info BannerInfo) string {
+	var chips []string
+
+	if workDir := formatBannerPath(info.WorkDir); workDir != "" {
+		chips = append(chips, styles.BannerMetaChipStyle.Render(workDir))
+	}
+	if model := strings.TrimSpace(info.ModelName); model != "" {
+		chips = append(chips, styles.BannerMetaChipStyle.Render(model))
+	}
+	if info.SessionID != "" {
+		sessionText := "new " + shortSessionID(info.SessionID)
+		if info.SessionReused {
+			sessionText = "resume " + shortSessionID(info.SessionID)
+		}
+		chips = append(chips, styles.BannerMetaChipStyle.Render(sessionText))
+	}
+	if strings.TrimSpace(info.AppVersion) == "dev" {
+		chips = append(chips, styles.BannerMetaChipStyle.Render("dev build"))
+	}
+
+	if len(chips) == 0 {
+		return ""
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Left, chips...)
+}
+
+func renderBannerSummary(info BannerInfo) string {
+	if info.LastSummary == "" {
+		return ""
+	}
+
+	role := strings.TrimSpace(info.LastRole)
+	if role == "" {
+		role = "last"
+	}
+	if role == "user" {
+		return ""
+	}
+
+	// 摘要只做展示截断，不改变真实上下文数据。
+	return fmt.Sprintf("%s: %s", role, truncateBannerText(info.LastSummary, 96))
 }
 
 func shortSessionID(sessionID string) string {

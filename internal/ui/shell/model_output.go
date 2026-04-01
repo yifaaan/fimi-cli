@@ -10,10 +10,12 @@ import (
 	"fimi-cli/internal/ui/shell/styles"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
 const defaultRenderWidth = 80
+const messageLabelWidth = 6
 
 type LineType int
 
@@ -209,9 +211,9 @@ func (m OutputModel) renderBlock(block TranscriptBlock) string {
 
 	switch block.Kind {
 	case BlockKindUserPrompt:
-		return styles.UserBubbleStyle.Width(maxInt(1, m.renderWidth()-2)).Render(block.UserText)
+		return renderUserPromptBlock(block.UserText, m.panelWidth())
 	case BlockKindAssistantNote:
-		return renderAssistantNoteBlock(block.NoteText)
+		return renderAssistantNoteBlock(block.NoteText, m.panelWidth())
 	case BlockKindActivityGroup:
 		return m.renderActivityGroupBlock(block)
 	case BlockKindApproval:
@@ -221,24 +223,29 @@ func (m OutputModel) renderBlock(block TranscriptBlock) string {
 	case BlockKindElapsed:
 		return styles.ElapsedStyle.Render(block.Text)
 	case BlockKindError:
-		return styles.ErrorStyle.Render(block.Text)
+		return styles.ErrorNoticeStyle.Width(m.panelWidth()).Render(block.Text)
 	case BlockKindSystemNotice:
-		return styles.SystemStyle.Render(block.Text)
+		return styles.SystemNoticeStyle.Width(m.panelWidth()).Render(block.Text)
 	default:
 		return block.Text
 	}
 }
 
-func renderAssistantNoteBlock(note string) string {
+func renderUserPromptBlock(text string, width int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return renderLabeledMessage("You", styles.UserLabelStyle, styles.UserBubbleStyle.Width(messageBodyWidth(width)).Render(text))
+}
+
+func renderAssistantNoteBlock(note string, width int) string {
 	paragraphs := splitParagraphs(note)
 	if len(paragraphs) == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(paragraphs))
-	for _, paragraph := range paragraphs {
-		lines = append(lines, styles.AssistantBulletStyle.Render(paragraph))
-	}
-	return strings.Join(lines, "\n\n")
+	body := strings.Join(paragraphs, "\n\n")
+	return renderLabeledMessage("fimi", styles.AssistantLabelStyle, styles.AssistantBubbleStyle.Width(messageBodyWidth(width)).Render(body))
 }
 
 func splitParagraphs(text string) []string {
@@ -248,13 +255,26 @@ func splitParagraphs(text string) []string {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part != "" {
-			paragraphs = append(paragraphs, strings.ReplaceAll(part, "\n", " "))
+			paragraphs = append(paragraphs, normalizeAssistantParagraph(part))
 		}
 	}
 	if len(paragraphs) == 0 && strings.TrimSpace(text) != "" {
-		return []string{strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))}
+		return []string{normalizeAssistantParagraph(text)}
 	}
 	return paragraphs
+}
+
+func normalizeAssistantParagraph(part string) string {
+	lines := strings.Split(part, "\n")
+	normalized := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return strings.Join(normalized, "\n")
 }
 
 func (m OutputModel) renderActivityGroupBlock(block TranscriptBlock) string {
@@ -266,7 +286,7 @@ func (m OutputModel) renderActivityGroupBlock(block TranscriptBlock) string {
 	if preview := m.renderPreviewBody(block.ID, group.Title, group.Preview); preview != "" {
 		lines = append(lines, preview)
 	}
-	return strings.Join(lines, "\n")
+	return activityCardStyle(group.Accent).Width(m.panelWidth()).Render(strings.Join(lines, "\n"))
 }
 
 func renderActivityTitle(title string, accent string) string {
@@ -274,7 +294,12 @@ func renderActivityTitle(title string, accent string) string {
 	if title == "" {
 		title = "Activity"
 	}
-	return styles.ActivityTitleStyle.Render("- " + title)
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		renderActivityBadge(accent),
+		" ",
+		styles.ActivityTitleStyle.Render(title),
+	)
 }
 
 func renderActivityItem(item ActivityItem) string {
@@ -283,10 +308,22 @@ func renderActivityItem(item ActivityItem) string {
 	if verb == "" && text == "" {
 		return ""
 	}
-	if text == "" {
-		return styles.ActivityDetailStyle.Render("  - " + verb)
+
+	line := strings.TrimSpace(strings.Join([]string{verb, text}, " "))
+	prefix := "  - "
+	style := styles.ActivityPendingStyle
+	switch item.Status {
+	case ActivityItemRunning:
+		prefix = "  > "
+		style = styles.ActivityRunningStyle
+	case ActivityItemCompleted:
+		prefix = "  - "
+		style = styles.ActivityCompletedStyle
+	case ActivityItemFailed:
+		prefix = "  ! "
+		style = styles.ActivityFailedStyle
 	}
-	return styles.ActivityDetailStyle.Render("  - " + verb + " " + text)
+	return style.Render(prefix + line)
 }
 
 func (m OutputModel) renderPreviewBody(blockID string, title string, preview PreviewBody) string {
@@ -301,10 +338,9 @@ func (m OutputModel) renderPreviewBody(blockID string, title string, preview Pre
 		}
 	}
 	limit := previewDefaultLimit(preview.Kind)
-	hint := "Ctrl+O to expand"
+	hint := previewToggleHint(expanded)
 	if expanded {
 		limit = expandedPreviewLineLimit
-		hint = "Ctrl+O to collapse"
 	}
 
 	lines := strings.Split(strings.TrimRight(preview.Text, "\n"), "\n")
@@ -324,9 +360,9 @@ func (m OutputModel) renderPreviewBody(blockID string, title string, preview Pre
 			if preview.Kind == PreviewKindDiff {
 				suffix = "diff lines"
 			}
-			rendered = append(rendered, styles.HelpStyle.Render(fmt.Sprintf("    ... +%d %s (%s)", hidden, suffix, hint)))
+			rendered = append(rendered, renderPreviewFooter("    ", preview.Kind, hidden, suffix, hint))
 		} else {
-			rendered = append(rendered, styles.HelpStyle.Render("    ("+hint+")"))
+			rendered = append(rendered, renderPreviewFooter("    ", preview.Kind, 0, "", hint))
 		}
 	}
 	return strings.Join(rendered, "\n")
@@ -359,7 +395,7 @@ func renderInlineApprovalBlock(block ApprovalBlock) string {
 		title = "Rejected"
 	}
 
-	lines := []string{styles.ApprovalTitleStyle.Render("- " + title)}
+	lines := []string{renderApprovalHeader(title)}
 	if block.Action != "" {
 		lines = append(lines, styles.ActivityDetailStyle.Render("  "+block.Action))
 	}
@@ -368,7 +404,7 @@ func renderInlineApprovalBlock(block ApprovalBlock) string {
 	}
 
 	if block.Status != ApprovalStatusPending {
-		return strings.Join(lines, "\n")
+		return styles.ApprovalCardStyle.Render(strings.Join(lines, "\n"))
 	}
 
 	options := []string{"Approve", "Approve for session", "Reject"}
@@ -379,7 +415,7 @@ func renderInlineApprovalBlock(block ApprovalBlock) string {
 		}
 		lines = append(lines, styles.ApprovalOptionStyle.Render("  "+option))
 	}
-	return strings.Join(lines, "\n")
+	return styles.ApprovalCardStyle.Render(strings.Join(lines, "\n"))
 }
 
 func renderApprovalBlock(block ApprovalBlock) string {
@@ -393,7 +429,7 @@ func renderApprovalBlock(block ApprovalBlock) string {
 		title = "- Rejected"
 	}
 
-	lines := []string{styles.ApprovalTitleStyle.Render(title)}
+	lines := []string{renderApprovalHeader(strings.TrimPrefix(title, "- "))}
 	if block.Action != "" {
 		lines = append(lines, styles.ActivityDetailStyle.Render("  "+block.Action))
 	}
@@ -411,7 +447,7 @@ func renderApprovalBlock(block ApprovalBlock) string {
 		}
 		lines = append(lines, styles.ApprovalOptionStyle.Render("  "+label))
 	}
-	return strings.Join(lines, "\n")
+	return styles.ApprovalCardStyle.Render(strings.Join(lines, "\n"))
 }
 
 func (m OutputModel) visibleHeight() int {
@@ -725,6 +761,126 @@ func (m OutputModel) renderWidth() int {
 		return defaultRenderWidth
 	}
 	return m.width
+}
+
+func (m OutputModel) panelWidth() int {
+	width := m.renderWidth() - 2
+	if width < 20 {
+		return 20
+	}
+	return width
+}
+
+func activityCardStyle(accent string) lipgloss.Style {
+	return styles.ActivityCardStyle.Copy().BorderForeground(activityAccentColor(accent))
+}
+
+func renderActivityBadge(accent string) string {
+	style := styles.ActivityBadgeBaseStyle.Copy().
+		Background(activityAccentColor(accent)).
+		Foreground(activityBadgeForeground(accent))
+	return style.Render(activityBadgeLabel(accent))
+}
+
+func activityBadgeLabel(accent string) string {
+	switch strings.TrimSpace(accent) {
+	case "explore":
+		return "EXPLORED"
+	case "command":
+		return "COMMAND"
+	case "edit":
+		return "EDIT"
+	case "plan":
+		return "PLAN"
+	case "delegate":
+		return "AGENT"
+	default:
+		return "ACTION"
+	}
+}
+
+func activityAccentColor(accent string) styles.Color {
+	switch strings.TrimSpace(accent) {
+	case "explore":
+		return styles.ColorInfo
+	case "command":
+		return styles.ColorAccent
+	case "edit":
+		return styles.ColorSecondary
+	case "plan":
+		return styles.ColorPrimary
+	case "delegate":
+		return styles.ColorWarning
+	default:
+		return styles.ColorBorder
+	}
+}
+
+func activityBadgeForeground(accent string) styles.Color {
+	switch strings.TrimSpace(accent) {
+	case "explore", "command", "plan", "delegate":
+		return styles.ColorBlack
+	default:
+		return styles.ColorWhite
+	}
+}
+
+func renderPreviewFooter(indent string, kind PreviewKind, hidden int, suffix string, hint string) string {
+	parts := []string{indent}
+	parts = append(parts, styles.ActivityPreviewLabelStyle.Render(previewKindLabel(kind)))
+	if hidden > 0 || hint != "" {
+		parts = append(parts, styles.HelpStyle.Render(" "))
+	}
+	if hidden > 0 {
+		parts = append(parts, styles.PreviewFooterStyle.Render(fmt.Sprintf("+%d %s", hidden, suffix)))
+		if hint != "" {
+			parts = append(parts, styles.HelpStyle.Render(" "))
+		}
+	}
+	if hint != "" {
+		parts = append(parts, styles.PreviewHintStyle.Render(hint))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Left, parts...)
+}
+
+func previewKindLabel(kind PreviewKind) string {
+	if kind == PreviewKindDiff {
+		return "Diff"
+	}
+	return "Preview"
+}
+
+func renderLabeledMessage(label string, labelStyle lipgloss.Style, body string) string {
+	labelBox := labelStyle.Copy().
+		Width(messageLabelWidth).
+		Align(lipgloss.Right).
+		Render(label)
+	return lipgloss.JoinHorizontal(lipgloss.Top, labelBox, " ", body)
+}
+
+func messageBodyWidth(totalWidth int) int {
+	width := totalWidth - messageLabelWidth - 1
+	if width < 12 {
+		return 12
+	}
+	return width
+}
+
+func transcriptBodyIndent() string {
+	return strings.Repeat(" ", messageLabelWidth+1)
+}
+
+func renderApprovalHeader(title string) string {
+	badge := styles.ActivityBadgeBaseStyle.Copy().
+		Foreground(styles.ColorBlack).
+		Background(styles.ColorWarning).
+		Render("APPROVAL")
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		badge,
+		" ",
+		styles.ApprovalTitleStyle.Render(title),
+	)
 }
 
 // wrapString wraps rendered terminal content without splitting ANSI escape

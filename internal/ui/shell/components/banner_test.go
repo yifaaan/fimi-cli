@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestRenderBannerIncludesLogoModelAndWorkDir(t *testing.T) {
+func TestRenderBannerIncludesModelAndWorkDir(t *testing.T) {
 	got := RenderBanner(BannerInfo{
 		SessionID:     "session-12345678",
 		SessionReused: true,
@@ -17,13 +17,12 @@ func TestRenderBannerIncludesLogoModelAndWorkDir(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"▐▛███▜▌",
 		"fimi-cli v1.2.3",
 		"glm-5 · continue session",
 		"/tmp/fimi-project",
-		"session: session-1234",
+		"resume session-1234",
 		"assistant: picked up from the latest checkpoint",
-		"commands: /help /clear /exit",
+		"Enter send | /help /clear /exit | Ctrl+C quit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("RenderBanner() missing %q in %q", want, got)
@@ -45,10 +44,10 @@ func TestRenderBannerOmitsUserSummaryLine(t *testing.T) {
 func TestRenderBannerFallsBackWithoutSession(t *testing.T) {
 	got := RenderBanner(BannerInfo{})
 
-	if !strings.Contains(got, "interactive shell") {
-		t.Fatalf("RenderBanner() = %q, want interactive shell subtitle", got)
+	if !strings.Contains(got, "interactive coding shell") {
+		t.Fatalf("RenderBanner() = %q, want interactive coding shell subtitle", got)
 	}
-	if strings.Contains(got, "session:") {
+	if strings.Contains(got, "resume ") || strings.Contains(got, "new ") {
 		t.Fatalf("RenderBanner() = %q, want no session line", got)
 	}
 }

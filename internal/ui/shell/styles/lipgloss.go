@@ -13,31 +13,57 @@ var (
 	// 用户消息样式
 	UserStyle = lipgloss.NewStyle().
 			Foreground(ColorUser).
-			Background(ColorInputBg).
-			Padding(0, 1)
+			Bold(true)
+
+	UserLabelStyle = lipgloss.NewStyle().
+			Foreground(ColorMuted).
+			Bold(true)
 
 	UserBubbleStyle = lipgloss.NewStyle().
 			Foreground(ColorWhite).
-			Background(ColorInputBg).
-			Padding(1, 2)
+			Background(ColorPanelBg).
+			Padding(0, 1)
 
 	// 助手消息样式
 	AssistantStyle = lipgloss.NewStyle().
-			Foreground(ColorAssistant).
+			Foreground(ColorPrimary).
 			Bold(true)
 
 	AssistantBulletStyle = lipgloss.NewStyle().
 				Foreground(ColorWhite)
 
+	AssistantBubbleStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite).
+				Border(lipgloss.NormalBorder(), false, false, false, true).
+				BorderForeground(ColorBorder).
+				PaddingLeft(1)
+
+	AssistantLabelStyle = lipgloss.NewStyle().
+				Foreground(ColorPrimary).
+				Bold(true)
+
 	// 系统消息样式
 	SystemStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
-			Italic(true)
+			Foreground(ColorMuted)
+
+	SystemNoticeStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite).
+				Background(ColorPanelBg).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Padding(0, 1)
 
 	// 错误消息样式
 	ErrorStyle = lipgloss.NewStyle().
 			Foreground(ColorError).
 			Bold(true)
+
+	ErrorNoticeStyle = lipgloss.NewStyle().
+				Foreground(ColorBrightWhite).
+				Background(ColorErrorBg).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorError).
+				Padding(0, 1)
 
 	// 工具名称样式
 	ToolNameStyle = lipgloss.NewStyle().
@@ -45,7 +71,7 @@ var (
 			Bold(true)
 
 	ActivityTitleStyle = lipgloss.NewStyle().
-				Foreground(ColorWhite).
+				Foreground(ColorTitle).
 				Bold(true)
 
 	ActivityDetailStyle = lipgloss.NewStyle().
@@ -53,6 +79,40 @@ var (
 
 	ActivityPreviewStyle = lipgloss.NewStyle().
 				Foreground(ColorWhite)
+
+	ActivityCardStyle = lipgloss.NewStyle().
+				Background(ColorSubtleBg).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Padding(0, 1)
+
+	ActivityBadgeBaseStyle = lipgloss.NewStyle().
+				Padding(0, 1).
+				Bold(true)
+
+	ActivityPreviewLabelStyle = lipgloss.NewStyle().
+					Foreground(ColorMuted).
+					Bold(true)
+
+	PreviewFooterStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
+
+	PreviewHintStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite).
+				Background(ColorPanelBg).
+				Padding(0, 1)
+
+	ActivityPendingStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
+
+	ActivityRunningStyle = lipgloss.NewStyle().
+				Foreground(ColorAccent)
+
+	ActivityCompletedStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
+
+	ActivityFailedStyle = lipgloss.NewStyle().
+				Foreground(ColorError)
 
 	TranscriptDividerStyle = lipgloss.NewStyle().
 				Foreground(ColorBorder)
@@ -81,13 +141,56 @@ var (
 
 	// 输入框样式
 	InputStyle = lipgloss.NewStyle().
-			Foreground(ColorPrimary).
-			Bold(true)
+			Foreground(ColorWhite)
 
 	// 输入提示符样式
 	PromptStyle = lipgloss.NewStyle().
 			Foreground(ColorPrimary).
 			Bold(true)
+
+	ComposerBoxStyle = lipgloss.NewStyle().
+				Background(ColorPanelBg).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Padding(0, 1)
+
+	ComposerHeaderStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted).
+				Bold(true)
+
+	ComposerPlaceholderStyle = lipgloss.NewStyle().
+					Foreground(ColorMuted)
+
+	ComposerHintStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
+
+	ComposerCursorStyle = lipgloss.NewStyle().
+				Foreground(ColorPrimary).
+				Bold(true)
+
+	ComposerTextStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite)
+
+	DropdownBoxStyle = lipgloss.NewStyle().
+				Background(ColorSubtleBg).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Padding(0, 1)
+
+	DropdownTitleStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted).
+				Bold(true)
+
+	DropdownSelectedStyle = lipgloss.NewStyle().
+				Foreground(ColorBlack).
+				Background(ColorPrimary).
+				Padding(0, 1)
+
+	DropdownOptionStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite)
+
+	DropdownMetaStyle = lipgloss.NewStyle().
+				Foreground(ColorMuted)
 
 	// 边框样式
 	BorderStyle = lipgloss.NewStyle().
@@ -144,21 +247,49 @@ var (
 	ApprovalOptionStyle = lipgloss.NewStyle().
 				Foreground(ColorMuted)
 
+	ApprovalCardStyle = lipgloss.NewStyle().
+				Background(ColorSubtleBg).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorWarning).
+				Padding(0, 1)
+
 	// 状态栏样式
 	StatusBarStyle = lipgloss.NewStyle().
 			Foreground(ColorWhite).
-			Background(ColorPrimary).
+			Background(ColorSubtleBg).
 			Padding(0, 1)
 
 	// 帮助文本样式
 	HelpStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
-			Italic(true)
+			Foreground(ColorMuted)
 
 	// 启动横幅样式
 	BannerStyle = lipgloss.NewStyle().
 			Foreground(ColorPrimary).
 			Bold(true)
+
+	BannerBoxStyle = lipgloss.NewStyle().
+			Background(ColorPanelBg).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorBorder).
+			Padding(0, 1)
+
+	BannerMetaStyle = lipgloss.NewStyle().
+			Foreground(ColorMuted)
+
+	BannerMetaChipStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite).
+				Background(ColorSubtleBg).
+				Padding(0, 1).
+				MarginRight(1)
+
+	BannerSummaryStyle = lipgloss.NewStyle().
+				Foreground(ColorWhite).
+				Background(ColorSubtleBg).
+				Padding(0, 1)
+
+	BannerHintStyle = lipgloss.NewStyle().
+			Foreground(ColorMuted)
 
 	// 会话信息样式
 	SessionStyle = lipgloss.NewStyle().
@@ -167,6 +298,13 @@ var (
 	// 模型名称样式
 	ModelStyle = lipgloss.NewStyle().
 			Foreground(ColorAccent)
+
+	LiveStatusStyle = lipgloss.NewStyle().
+			Foreground(ColorWhite).
+			Background(ColorSubtleBg).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorBorder).
+			Padding(0, 1)
 )
 
 // Toast styles
