@@ -81,6 +81,16 @@ func TestListSessionsFindsJSONLHistoryFiles(t *testing.T) {
 		if s.ID == "" {
 			t.Fatalf("ListSessions() ID is empty")
 		}
+		switch s.ID {
+		case "a":
+			if s.Preview != "hi" {
+				t.Fatalf("session a Preview = %q, want %q", s.Preview, "hi")
+			}
+		case "b":
+			if s.Preview != "..." {
+				t.Fatalf("session b Preview = %q, want %q", s.Preview, "...")
+			}
+		}
 	}
 }
 

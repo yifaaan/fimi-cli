@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fimi-cli/internal/contextstore"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +28,7 @@ type SessionInfo struct {
 	ID           string
 	WorkDir      string
 	HistoryFile  string
-	MessageCount int
+	Preview      string
 	LastModified time.Time
 	FileSize     int64 // 历史文件大小（字节）
 }
@@ -202,14 +203,11 @@ func ListSessions(workDir string) ([]SessionInfo, error) {
 			continue // 跳过无法获取信息的文件
 		}
 
-		// 统计消息数量
-		messageCount := countMessagesInHistoryFile(historyFile)
-
 		sessions = append(sessions, SessionInfo{
 			ID:           sessionID,
 			WorkDir:      absWorkDir,
 			HistoryFile:  historyFile,
-			MessageCount: messageCount,
+			Preview:      previewHistoryFile(historyFile),
 			LastModified: info.ModTime(),
 			FileSize:     info.Size(),
 		})
@@ -223,34 +221,29 @@ func ListSessions(workDir string) ([]SessionInfo, error) {
 	return sessions, nil
 }
 
-// countMessagesInHistoryFile 统计历史文件中的消息记录数量。
-// 只统计 role 不是特殊内部角色的记录。
-func countMessagesInHistoryFile(historyFile string) int {
-	data, err := os.ReadFile(historyFile)
-	if err != nil {
-		return 0
+func previewHistoryFile(historyFile string) string {
+	record, found, err := contextstore.New(historyFile).ReadFirstUserRecord()
+	if err != nil || !found {
+		return "..."
 	}
 
-	lines := strings.Split(string(data), "\n")
-	count := 0
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// 简单检查：如果不是内部角色标记，计为消息
-		// 实际格式是 JSON，这里简化处理，只检查是否包含 role 字段
-		if strings.Contains(line, `"role"`) {
-			// 排除内部角色
-			if !strings.Contains(line, `"_usage"`) &&
-				!strings.Contains(line, `"_checkpoint"`) &&
-				!strings.Contains(line, `"_system"`) {
-				count++
-			}
-		}
+	content := strings.TrimSpace(record.Content)
+	if content == "" {
+		return "..."
 	}
 
-	return count
+	firstLine, _, _ := strings.Cut(content, "\n")
+	firstLine = strings.TrimSpace(firstLine)
+	if firstLine == "" {
+		return "..."
+	}
+
+	runes := []rune(firstLine)
+	if len(runes) > 50 {
+		return string(runes[:50]) + "..."
+	}
+
+	return firstLine
 }
 
 // LoadSession 加载指定 ID 的 session。
