@@ -248,14 +248,15 @@ type StepConfig struct {
 
 // Runner 持有一次 runtime 执行所需的核心依赖。
 type Runner struct {
-	engine              Engine
-	toolExecutor        ToolExecutor
-	dmailer             DMailer
-	config              Config
-	runStepFn           func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error)
-	advanceRunFn        func(ctx context.Context, store contextstore.Context, result Result, stepResult StepResult) (Result, bool, error)
-	retryBackoffDelayFn func(attempt int) time.Duration
-	retrySleepFn        func(ctx context.Context, delay time.Duration) error
+	engine               Engine
+	toolExecutor         ToolExecutor
+	dmailer              DMailer
+	config               Config
+	runStepFn            func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error)
+	advanceRunFn         func(ctx context.Context, store contextstore.Context, result Result, stepResult StepResult) (Result, bool, error)
+	retryBackoffDelayFn  func(attempt int) time.Duration
+	retrySleepFn         func(ctx context.Context, delay time.Duration) error
+	shieldContextWriteFn func(ctx context.Context, write func() error) error
 }
 
 // New 创建最小 runtime runner。
@@ -303,36 +304,44 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		return Result{Status: RunStatusFinished}, nil
 	}
 
-	checkpointID, err := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		PromptPreview: checkpointPromptPreview(prompt),
-	})
-	if err != nil {
-		return Result{Status: RunStatusFailed}, fmt.Errorf("append checkpoint record: %w", err)
-	}
-
-	// When D-Mail is enabled, inject visible checkpoint markers so the LLM
-	// can target them with send_dmail. Without this, checkpoint IDs are invisible.
-	if r.dmailer != nil {
-		r.dmailer.SetCheckpointCount(checkpointID + 1)
-		if err := store.Append(contextstore.NewUserTextRecord(
-			fmt.Sprintf("<system>CHECKPOINT %d</system>", checkpointID),
-		)); err != nil {
-			return Result{Status: RunStatusFailed}, fmt.Errorf("append checkpoint marker: %w", err)
-		}
-	}
-
-	// 关键语义：用户 prompt 只在一次 run 的开始时追加到 history。
-	// 后续 step 不再重复注入 prompt，而是完全基于增长的 history 驱动。
 	userRecord := contextstore.NewUserTextRecord(prompt)
-	if err := store.Append(userRecord); err != nil {
-		return Result{Status: RunStatusFailed}, fmt.Errorf("append runtime record: %w", err)
-	}
-
 	result := Result{
 		Status:     RunStatusFinished,
 		UserRecord: &userRecord,
 		Steps:      make([]StepResult, 0, 1),
+	}
+
+	var checkpointID int
+	err := r.shieldContextWrite(ctx, func() error {
+		var err error
+		checkpointID, err = store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+			PromptPreview: checkpointPromptPreview(prompt),
+		})
+		if err != nil {
+			return err
+		}
+
+		// When D-Mail is enabled, inject visible checkpoint markers so the LLM
+		// can target them with send_dmail. Without this, checkpoint IDs are invisible.
+		if r.dmailer != nil {
+			r.dmailer.SetCheckpointCount(checkpointID + 1)
+			if err := store.Append(contextstore.NewUserTextRecord(
+				fmt.Sprintf("<system>CHECKPOINT %d</system>", checkpointID),
+			)); err != nil {
+				return err
+			}
+		}
+
+		// 关键语义：用户 prompt 只在一次 run 的开始时追加到 history。
+		// 后续 step 不再重复注入 prompt，而是完全基于增长的 history 驱动。
+		return store.Append(userRecord)
+	})
+	if err != nil {
+		if isInterruptedError(err) {
+			return r.interruptedResult(ctx, result)
+		}
+		return Result{Status: RunStatusFailed}, fmt.Errorf("persist prompt boundary: %w", err)
 	}
 	cfg := StepConfig{Model: input.Model, SystemPrompt: input.SystemPrompt}
 
@@ -358,17 +367,23 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		// Per-step checkpoint: only needed when D-Mail is enabled,
 		// because D-Mail needs mid-turn rollback targets.
 		if r.dmailer != nil {
-			stepCheckpointID, cpErr := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
-				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			err := r.shieldContextWrite(ctx, func() error {
+				stepCheckpointID, cpErr := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				})
+				if cpErr != nil {
+					return cpErr
+				}
+				r.dmailer.SetCheckpointCount(stepCheckpointID + 1)
+				return store.Append(contextstore.NewUserTextRecord(
+					fmt.Sprintf("<system>CHECKPOINT %d</system>", stepCheckpointID),
+				))
 			})
-			if cpErr != nil {
-				return Result{Status: RunStatusFailed}, fmt.Errorf("append step checkpoint: %w", cpErr)
-			}
-			r.dmailer.SetCheckpointCount(stepCheckpointID + 1)
-			if err := store.Append(contextstore.NewUserTextRecord(
-				fmt.Sprintf("<system>CHECKPOINT %d</system>", stepCheckpointID),
-			)); err != nil {
-				return Result{Status: RunStatusFailed}, fmt.Errorf("append step checkpoint marker: %w", err)
+			if err != nil {
+				if isInterruptedError(err) {
+					return r.interruptedResult(ctx, result)
+				}
+				return Result{Status: RunStatusFailed}, fmt.Errorf("persist step checkpoint: %w", err)
 			}
 		}
 
@@ -394,29 +409,32 @@ func (r Runner) Run(ctx context.Context, store contextstore.Context, input Input
 		// Check for pending D-Mail after tool execution
 		if !finished && r.dmailer != nil {
 			if message, checkpointID, ok := r.dmailer.Fetch(); ok {
-				// Revert context to the target checkpoint
-				if _, revertErr := store.RevertToCheckpoint(checkpointID); revertErr != nil {
-					return Result{Status: RunStatusFailed}, fmt.Errorf("revert to checkpoint %d: %w", checkpointID, revertErr)
-				}
+				err := r.shieldContextWrite(ctx, func() error {
+					if _, revertErr := store.RevertToCheckpoint(checkpointID); revertErr != nil {
+						return revertErr
+					}
 
-				// Create a new checkpoint at the revert point
-				newCheckpointID, cpErr := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
-					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+					newCheckpointID, cpErr := store.AppendCheckpointWithMetadata(contextstore.CheckpointMetadata{
+						CreatedAt: time.Now().UTC().Format(time.RFC3339),
+					})
+					if cpErr != nil {
+						return cpErr
+					}
+					r.dmailer.SetCheckpointCount(newCheckpointID + 1)
+					if err := store.Append(contextstore.NewUserTextRecord(
+						fmt.Sprintf("<system>CHECKPOINT %d</system>", newCheckpointID),
+					)); err != nil {
+						return err
+					}
+
+					dmailContent := fmt.Sprintf("<system>D-Mail received: %s</system>\n\nRead the D-Mail above carefully. Act on the information it contains. Do NOT mention the D-Mail mechanism or time travel to the user.", message)
+					return store.Append(contextstore.NewUserTextRecord(dmailContent))
 				})
-				if cpErr != nil {
-					return Result{Status: RunStatusFailed}, fmt.Errorf("append post-rollback checkpoint: %w", cpErr)
-				}
-				r.dmailer.SetCheckpointCount(newCheckpointID + 1)
-				if err := store.Append(contextstore.NewUserTextRecord(
-					fmt.Sprintf("<system>CHECKPOINT %d</system>", newCheckpointID),
-				)); err != nil {
-					return Result{Status: RunStatusFailed}, fmt.Errorf("append post-rollback checkpoint marker: %w", err)
-				}
-
-				// Append the D-Mail as a user message
-				dmailContent := fmt.Sprintf("<system>D-Mail received: %s</system>\n\nRead the D-Mail above carefully. Act on the information it contains. Do NOT mention the D-Mail mechanism or time travel to the user.", message)
-				if appendErr := store.Append(contextstore.NewUserTextRecord(dmailContent)); appendErr != nil {
-					return Result{Status: RunStatusFailed}, fmt.Errorf("append dmail message: %w", appendErr)
+				if err != nil {
+					if isInterruptedError(err) {
+						return r.interruptedResult(ctx, result)
+					}
+					return Result{Status: RunStatusFailed}, fmt.Errorf("persist rollback context: %w", err)
 				}
 
 				// Reset step count and continue from the reverted state
@@ -587,7 +605,9 @@ func (r Runner) runStep(
 
 	// 持久化 token 使用量
 	if assistantReply.Usage.TotalTokens > 0 {
-		if err := store.AppendUsage(assistantReply.Usage.TotalTokens); err != nil {
+		if err := r.shieldContextWrite(ctx, func() error {
+			return store.AppendUsage(assistantReply.Usage.TotalTokens)
+		}); err != nil {
 			return StepResult{}, fmt.Errorf("append usage record: %w", err)
 		}
 	}
@@ -606,10 +626,15 @@ func (r Runner) runStep(
 	records := []contextstore.TextRecord{
 		contextstore.NewAssistantTextRecord(assistantReply.Text),
 	}
-	for _, record := range records {
-		if err := store.Append(record); err != nil {
-			return StepResult{}, fmt.Errorf("append runtime record: %w", err)
+	if err := r.shieldContextWrite(ctx, func() error {
+		for _, record := range records {
+			if err := store.Append(record); err != nil {
+				return err
+			}
 		}
+		return nil
+	}); err != nil {
+		return StepResult{}, fmt.Errorf("append runtime record: %w", err)
 	}
 
 	return StepResult{
@@ -642,10 +667,15 @@ func (r Runner) advanceRun(
 				stepResult.Status = StepStatusFailed
 				stepResult.ToolFailure = &toolErr
 				// 在返回错误前，先把 tool records 写入 history
-				for _, record := range stepResult.BuildToolStepRecords() {
-					if appendErr := store.Append(record); appendErr != nil {
-						return Result{}, false, fmt.Errorf("append tool failure record: %w", appendErr)
+				if err := r.shieldContextWrite(ctx, func() error {
+					for _, record := range stepResult.BuildToolStepRecords() {
+						if appendErr := store.Append(record); appendErr != nil {
+							return appendErr
+						}
 					}
+					return nil
+				}); err != nil {
+					return Result{}, false, fmt.Errorf("append tool failure record: %w", err)
 				}
 				result.Steps = append(result.Steps, stepResult)
 				if emitErr := r.emitStepEvents(ctx, store, stepResult); emitErr != nil {
@@ -658,10 +688,15 @@ func (r Runner) advanceRun(
 		}
 		stepResult.ToolExecutions = toolExecutions
 		// 成功执行后，把 tool records 写入 history
-		for _, record := range stepResult.BuildToolStepRecords() {
-			if appendErr := store.Append(record); appendErr != nil {
-				return Result{}, false, fmt.Errorf("append tool step record: %w", appendErr)
+		if err := r.shieldContextWrite(ctx, func() error {
+			for _, record := range stepResult.BuildToolStepRecords() {
+				if appendErr := store.Append(record); appendErr != nil {
+					return appendErr
+				}
 			}
+			return nil
+		}); err != nil {
+			return Result{}, false, fmt.Errorf("append tool step record: %w", err)
 		}
 	default:
 		return Result{}, false, fmt.Errorf("%w: %q", ErrUnknownStepKind, stepResult.Kind)
@@ -837,6 +872,20 @@ func (r Runner) retrySleep(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func (r Runner) shieldContextWrite(ctx context.Context, write func() error) error {
+	if r.shieldContextWriteFn != nil {
+		return r.shieldContextWriteFn(ctx, write)
+	}
+	if err := write(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (r Runner) emitEvent(ctx context.Context, event runtimeevents.Event) error {

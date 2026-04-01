@@ -1492,13 +1492,13 @@ func TestRunnerRunEmitsInterruptedEventWhenContextCancelled(t *testing.T) {
 		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
 	}
 
-	got := receiveWireEvents(t, w, 5)
-	wantLast := runtimeevents.StepInterrupted{}
-	if len(got) == 0 {
-		t.Fatalf("captured events = 0, want at least 1")
+	got := receiveWireEvents(t, w, 2)
+	want := []runtimeevents.Event{
+		runtimeevents.StepBegin{Number: 1},
+		runtimeevents.StepInterrupted{},
 	}
-	if !reflect.DeepEqual(got[len(got)-1], wantLast) {
-		t.Fatalf("last event = %#v, want %#v", got[len(got)-1], wantLast)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured events = %#v, want %#v", got, want)
 	}
 }
 
@@ -1589,6 +1589,169 @@ func TestRunnerRunCheckpointFailureAbortsBeforeHistoryMutation(t *testing.T) {
 	}
 	if _, statErr := os.Stat(ctx.Path()); !errors.Is(statErr, os.ErrNotExist) && statErr == nil {
 		t.Fatalf("Stat(%q) error = nil, want non-existent history file", ctx.Path())
+	}
+}
+
+func TestRunnerRunReturnsInterruptedAfterShieldedPromptBoundaryPersistence(t *testing.T) {
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	engine := &trackingEngine{}
+	runner := New(engine, Config{})
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	shieldCalls := 0
+	runner.shieldContextWriteFn = func(ctx context.Context, write func() error) error {
+		shieldCalls++
+		if err := write(); err != nil {
+			return err
+		}
+		if shieldCalls == 1 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	result, err := runner.Run(rootCtx, store, Input{Prompt: "hello"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, context.Canceled)
+	}
+	if result.Status != RunStatusInterrupted {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
+	}
+	if engine.called {
+		t.Fatal("engine called = true, want false")
+	}
+
+	records, readErr := store.ReadAll()
+	if readErr != nil {
+		t.Fatalf("ReadAll() error = %v", readErr)
+	}
+	wantRecords := []contextstore.TextRecord{
+		contextstore.NewUserTextRecord("hello"),
+	}
+	if !reflect.DeepEqual(records, wantRecords) {
+		t.Fatalf("history records = %#v, want %#v", records, wantRecords)
+	}
+
+	checkpoints, listErr := store.ListCheckpoints()
+	if listErr != nil {
+		t.Fatalf("ListCheckpoints() error = %v", listErr)
+	}
+	if len(checkpoints) != 1 {
+		t.Fatalf("len(ListCheckpoints()) = %d, want 1", len(checkpoints))
+	}
+}
+
+func TestRunnerRunStepReturnsInterruptedAfterShieldedAssistantPersistence(t *testing.T) {
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := New(staticEngine{reply: AssistantReply{Text: "done"}}, Config{})
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	runner.shieldContextWriteFn = func(ctx context.Context, write func() error) error {
+		if err := write(); err != nil {
+			return err
+		}
+		cancel()
+		return ctx.Err()
+	}
+
+	_, err := runner.runStep(rootCtx, store, StepConfig{Model: "test-model", SystemPrompt: "test-system"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runStep() error = %v, want wrapped %v", err, context.Canceled)
+	}
+
+	records, readErr := store.ReadAll()
+	if readErr != nil {
+		t.Fatalf("ReadAll() error = %v", readErr)
+	}
+	wantRecords := []contextstore.TextRecord{
+		contextstore.NewAssistantTextRecord("done"),
+	}
+	if !reflect.DeepEqual(records, wantRecords) {
+		t.Fatalf("history records = %#v, want %#v", records, wantRecords)
+	}
+}
+
+func TestRunnerRunReturnsInterruptedAfterShieldedToolFailurePersistence(t *testing.T) {
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	runner := NewWithToolExecutor(staticEngine{}, failingToolExecutor{err: errors.New("tool executor failed")}, Config{MaxStepsPerRun: 1})
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	shieldCalls := 0
+	runner.shieldContextWriteFn = func(ctx context.Context, write func() error) error {
+		shieldCalls++
+		if err := write(); err != nil {
+			return err
+		}
+		if shieldCalls == 2 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+	runner.runStepFn = func(ctx context.Context, store contextstore.Context, cfg StepConfig) (StepResult, error) {
+		return StepResult{
+			Status:        StepStatusIncomplete,
+			Kind:          StepKindToolCalls,
+			AssistantText: "I will run bash",
+			ToolCalls: []ToolCall{
+				{ID: "call_bash", Name: "bash", Arguments: `{"command":"pwd"}`},
+			},
+		}, nil
+	}
+
+	result, err := runner.Run(rootCtx, store, Input{Prompt: "hello"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, context.Canceled)
+	}
+	if result.Status != RunStatusInterrupted {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
+	}
+
+	records, readErr := store.ReadAll()
+	if readErr != nil {
+		t.Fatalf("ReadAll() error = %v", readErr)
+	}
+	if len(records) != 3 {
+		t.Fatalf("len(history records) = %d, want 3", len(records))
+	}
+	if records[2].Role != contextstore.RoleTool {
+		t.Fatalf("records[2].Role = %q, want %q", records[2].Role, contextstore.RoleTool)
+	}
+	if records[2].ToolCallID != "call_bash" {
+		t.Fatalf("records[2].ToolCallID = %q, want %q", records[2].ToolCallID, "call_bash")
+	}
+}
+
+func TestRunnerRunReturnsContextstoreErrorBeforeCancellation(t *testing.T) {
+	parentFile := filepath.Join(t.TempDir(), "history-parent")
+	if err := os.WriteFile(parentFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile(parentFile) error = %v", err)
+	}
+	store := contextstore.New(filepath.Join(parentFile, "history.jsonl"))
+	runner := New(staticEngine{}, Config{})
+
+	rootCtx, cancel := context.WithCancel(context.Background())
+	runner.shieldContextWriteFn = func(ctx context.Context, write func() error) error {
+		cancel()
+		if err := write(); err != nil {
+			return err
+		}
+		return ctx.Err()
+	}
+
+	result, err := runner.Run(rootCtx, store, Input{Prompt: "hello"})
+	if err == nil {
+		t.Fatal("Run() error = nil, want non-nil")
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want contextstore failure to win", err)
+	}
+	if !strings.Contains(err.Error(), "persist prompt boundary") {
+		t.Fatalf("Run() error = %v, want wrapped prompt-boundary write error", err)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusFailed)
 	}
 }
 
@@ -1863,6 +2026,70 @@ func TestRunnerDMailRollbackResetsStepCount(t *testing.T) {
 	}
 	if result.Status != RunStatusFinished {
 		t.Fatalf("Status = %q, want %q", result.Status, RunStatusFinished)
+	}
+}
+
+func TestRunnerDMailRollbackReturnsInterruptedAfterShieldedRollbackPersistence(t *testing.T) {
+	dir := t.TempDir()
+	store := contextstore.New(filepath.Join(dir, "history.jsonl"))
+
+	callCount := 0
+	engine := funcReplyFunc(func(input ReplyInput) (AssistantReply, error) {
+		callCount++
+		if callCount == 1 {
+			return AssistantReply{
+				Text: "sending dmail",
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Name: "send_dmail", Arguments: `{"message":"rewrite the plan","checkpoint_id":0}`},
+				},
+			}, nil
+		}
+		return AssistantReply{Text: "should not run after cancellation"}, nil
+	})
+	executor := funcToolExecutorFunc(func(ctx context.Context, call ToolCall) (ToolExecution, error) {
+		return ToolExecution{Call: call, Output: "D-Mail sent."}, nil
+	})
+	dmailer := &mockDMailer{
+		pending: &dmailEntry{message: "rewrite the plan", checkpointID: 0},
+	}
+
+	runner := NewWithToolExecutor(engine, executor, Config{})
+	runner = runner.WithDMailer(dmailer)
+	rootCtx, cancel := context.WithCancel(context.Background())
+	shieldCalls := 0
+	runner.shieldContextWriteFn = func(ctx context.Context, write func() error) error {
+		shieldCalls++
+		if err := write(); err != nil {
+			return err
+		}
+		if shieldCalls == 4 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	result, err := runner.Run(rootCtx, store, Input{Prompt: "search for X"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want wrapped %v", err, context.Canceled)
+	}
+	if result.Status != RunStatusInterrupted {
+		t.Fatalf("result.Status = %q, want %q", result.Status, RunStatusInterrupted)
+	}
+
+	records, readErr := store.ReadAll()
+	if readErr != nil {
+		t.Fatalf("ReadAll() error = %v", readErr)
+	}
+	if len(records) == 0 {
+		t.Fatal("history records = 0, want rollback state persisted")
+	}
+	last := records[len(records)-1]
+	if last.Role != contextstore.RoleUser {
+		t.Fatalf("last.Role = %q, want %q", last.Role, contextstore.RoleUser)
+	}
+	if !strings.Contains(last.Content, "D-Mail received: rewrite the plan") {
+		t.Fatalf("last.Content = %q, want persisted D-Mail message", last.Content)
 	}
 }
 
