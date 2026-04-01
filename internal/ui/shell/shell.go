@@ -107,6 +107,7 @@ type TaskManager interface {
 // Dependencies 描述 shell REPL 运行需要的最小装配输入。
 type Dependencies struct {
 	Runner         Runner
+	RunContext     context.Context
 	TaskManager    TaskManager
 	Store          contextstore.Context
 	Input          io.Reader
@@ -191,8 +192,12 @@ func Run(ctx context.Context, deps Dependencies) error {
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
-		fmt.Fprintf(output, "\nTo resume this session, run:\n  fimi -resume %s\n", shortID)
+		fmt.Fprintf(output, "\nTo continue in this work dir, run:\n  %s\n", resumeCommandText())
 	}
 
 	return runResult
+}
+
+func resumeCommandText() string {
+	return "fimi --continue"
 }

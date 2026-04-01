@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -146,6 +147,31 @@ func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
 	}
 	if last.Content != spec.CommandText {
 		t.Fatalf("last output content = %q, want %q", last.Content, spec.CommandText)
+	}
+}
+
+func TestStartRuntimeExecutionUsesDependenciesRunContext(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	runner := &contextAwareRunner{}
+	model := NewModel(Dependencies{
+		Runner:       runner,
+		ModelName:    "test-model",
+		SystemPrompt: "system",
+		RunContext:   runCtx,
+	}, nil)
+
+	msg := model.startRuntimeExecution(contextstore.New(filepath.Join(t.TempDir(), "history.jsonl")), "hello")()
+	complete, ok := msg.(RuntimeCompleteMsg)
+	if !ok {
+		t.Fatalf("cmd() message type = %T, want RuntimeCompleteMsg", msg)
+	}
+	if !errors.Is(complete.Err, context.Canceled) {
+		t.Fatalf("RuntimeCompleteMsg.Err = %v, want %v", complete.Err, context.Canceled)
+	}
+	if !errors.Is(runner.seenErr, context.Canceled) {
+		t.Fatalf("runner.seenErr = %v, want %v", runner.seenErr, context.Canceled)
 	}
 }
 
@@ -657,6 +683,10 @@ type stubTaskManager struct {
 	killed    []string
 }
 
+type contextAwareRunner struct {
+	seenErr error
+}
+
 func (m stubTaskManager) List() []tools.TaskResult {
 	return append([]tools.TaskResult(nil), m.tasks...)
 }
@@ -680,6 +710,16 @@ func (m *stubTaskManager) Kill(taskID string) error {
 	}
 	m.killed = append(m.killed, taskID)
 	return nil
+}
+
+func (r *contextAwareRunner) Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
+	r.seenErr = ctx.Err()
+	if r.seenErr == nil {
+		<-ctx.Done()
+		r.seenErr = ctx.Err()
+	}
+
+	return runtime.Result{Status: runtime.RunStatusInterrupted}, ctx.Err()
 }
 
 func ptrTextRecord(record contextstore.TextRecord) *contextstore.TextRecord {
