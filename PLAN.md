@@ -5,7 +5,7 @@
 This file tracks the migration gap between the Python reference snapshot in `temp/`
 and the current Go rewrite.
 
-Updated: 2026-03-31
+Updated: 2026-04-01
 
 ---
 
@@ -159,7 +159,7 @@ class AgentGlobals(NamedTuple):
 
 ## Current Go Snapshot
 
-Updated: 2026-03-31
+Updated: 2026-04-01
 
 ### Implemented Core
 
@@ -169,8 +169,9 @@ Updated: 2026-03-31
 - JSONL history persistence with sliding window reads
 - Checkpoint create / revert / list / backup rotation in `internal/contextstore`
 - Multi-step runtime loop with event sink and streaming
-- Tool-call execution loop with retry logic (retryable errors: 429/5xx)
+- Tool-call execution loop with retry logic, backoff/jitter, and retry status updates
 - Token usage persistence
+- Cancellation-safe shielding for runtime-owned contextstore writes
 - LLM engine boundary with streaming support
 - OpenAI-compatible (dual wire: Chat Completions + Responses) and Qwen-compatible providers
 - MCP integration via go-sdk (multi-server, tool discovery, tool calling)
@@ -264,7 +265,7 @@ Updated: 2026-03-31
 | Tool context tracking | `CustomToolset` + ContextVar | approval context propagation via `approval.WithContext` | `done` |
 | Runtime: steer input | no explicit mechanism | no | `same` |
 | Multi-step runtime | yes | yes | `done` |
-| Step retry | tenacity + jitter + connection recovery | retryable error classification | `partial` (no backoff/jitter) |
+| Step retry | tenacity + jitter + connection recovery | retryable error classification + backoff/jitter + status updates | `done` |
 | Streaming text/tool deltas | yes | yes | `done` |
 | Runtime events | 7 types + ApprovalRequest | 7 runtime event types + ApprovalRequest + ToastMessage via wire | `done+extra` |
 | Tool subtitle extraction | yes (per-tool logic) | yes (`toolsubtitle.go`) | `done` |
@@ -325,7 +326,7 @@ Updated: 2026-03-31
 - Python reference has **no separate `soul/event.py`**; event types are defined in `soul/wire.py`.
 - Python shell currently auto-approves `ApprovalRequest` in `ui/shell/__init__.py`; approval UI there is still a TODO stub.
 - Go shell parity has moved ahead in several places: toast notifications, prompt history, `@` completer, `/reload`, and live tool cards are implemented.
-- Main remaining Go parity gaps are runtime retry backoff/jitter, shield-like protection around context writes, shell mode toggle, and the Python auto-update system.
+- Main remaining Go parity gaps are shell mode toggle, background task management in ShellApp, and the Python auto-update system.
 
 ---
 
@@ -361,8 +362,8 @@ Updated: 2026-03-31
 
 ### Phase 14: Runtime Parity
 
-- [ ] Add exponential backoff with jitter for step retry
-- [ ] Add shield equivalent for context writes (prevent cancellation corruption)
+- [x] Add exponential backoff with jitter for step retry
+- [x] Add shield equivalent for context writes (prevent cancellation corruption)
 - [ ] Add background task management in ShellApp
 
 ### Phase 15: Auto-Update System
@@ -386,7 +387,7 @@ Python reference has this system (`ui/shell/update.py` + background check in `Sh
 
 Highest-impact remaining items in order:
 
-1. **Runtime parity** (Phase 14) -- backoff/jitter, shield for context writes
+1. **Runtime parity** (Phase 14) -- background task management in `ShellApp`
 2. **Auto-update** (Phase 15) -- background version check + install flow
 3. **Shell remaining polish** (Phase 12) -- mode toggle, external editor, clipboard paste, background task browser
 4. **Go-specific cleanup** (Phase 16) -- align tool defaults with Python
