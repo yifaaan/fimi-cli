@@ -16,6 +16,7 @@ import (
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"fimi-cli/internal/session"
+	"fimi-cli/internal/tools"
 	"fimi-cli/internal/ui/shell/completer"
 	"fimi-cli/internal/ui/shell/components"
 	"fimi-cli/internal/ui/shell/styles"
@@ -150,6 +151,7 @@ func availableCommands() []CommandInfo {
 		{Name: "/init", Description: "Generate AGENTS.md for the project"},
 		{Name: "/setup", Description: "Setup LLM provider and model"},
 		{Name: "/resume", Description: "List available sessions"},
+		{Name: "/task", Description: "Inspect background tasks"},
 		{Name: "/reload", Description: "Reload configuration"},
 	}
 }
@@ -929,47 +931,125 @@ func readAgentsMD(workDir string) string {
 
 // handleCommand 处理 slash 命令。
 func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
-	switch {
-	case cmd == "/exit" || cmd == "/quit":
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return m, nil
+	}
+
+	name := fields[0]
+	args := fields[1:]
+
+	switch name {
+	case "/exit", "/quit":
 		return m, tea.Quit
-	case cmd == "/help":
+	case "/help":
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeSystem,
 			Content: helpText(),
 		})
 		return m, nil
-	case cmd == "/clear":
+	case "/clear":
 		m.output = m.output.Clear()
 		return m, nil
-	case cmd == "/compact":
+	case "/compact":
 		return m.handleCompactCommand()
-	case cmd == "/init":
+	case "/init":
 		return m.handleInitCommand()
-	case cmd == "/rewind":
+	case "/rewind":
 		return m.handleRewindList()
-	case cmd == "/version":
+	case "/version":
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeSystem,
 			Content: versionText(m.deps.StartupInfo.AppVersion),
 		})
 		return m, nil
-	case cmd == "/release-notes":
+	case "/release-notes":
 		entries := changelog.ParseReleases(changelog.Content, 5)
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeSystem,
 			Content: releaseNotesText(entries),
 		})
 		return m, nil
-	case cmd == "/resume":
+	case "/resume":
+		if len(args) > 0 {
+			return m.handleResumeSwitch(args[0])
+		}
 		return m.handleResumeList()
-	case cmd == "/setup":
+	case "/task":
+		return m.handleTaskCommand(args)
+	case "/setup":
 		return m.enterSetupMode()
-	case cmd == "/reload":
+	case "/reload":
 		return m.handleReloadCommand()
 	default:
 		m.output = m.output.AppendLine(TranscriptLine{
 			Type:    LineTypeError,
 			Content: fmt.Sprintf("Unknown command: %s", cmd),
+		})
+		return m, nil
+	}
+}
+
+func (m Model) handleTaskCommand(args []string) (tea.Model, tea.Cmd) {
+	if m.deps.TaskManager == nil {
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeError,
+			Content: "error: background task manager not available",
+		})
+		return m, nil
+	}
+
+	switch {
+	case len(args) == 0 || (len(args) == 1 && args[0] == "list"):
+		tasks := m.deps.TaskManager.List()
+		content := "No background tasks for this session."
+		if len(tasks) > 0 {
+			content = formatTaskListOutput(tasks)
+		}
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: content,
+		})
+		return m, nil
+
+	case len(args) == 1:
+		task, err := m.deps.TaskManager.Status(args[0])
+		if err != nil {
+			m.output = m.output.AppendLine(TranscriptLine{
+				Type:    LineTypeError,
+				Content: fmt.Sprintf("error reading background task: %v", err),
+			})
+			return m, nil
+		}
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: formatTaskDetailOutput(task),
+		})
+		return m, nil
+
+	case len(args) == 2 && args[0] == "kill":
+		if err := m.deps.TaskManager.Kill(args[1]); err != nil {
+			m.output = m.output.AppendLine(TranscriptLine{
+				Type:    LineTypeError,
+				Content: fmt.Sprintf("error killing background task: %v", err),
+			})
+			return m, nil
+		}
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type:    LineTypeSystem,
+			Content: fmt.Sprintf("Killed background task %s", args[1]),
+		})
+		return m, nil
+
+	default:
+		m.output = m.output.AppendLine(TranscriptLine{
+			Type: LineTypeError,
+			Content: strings.Join([]string{
+				"usage:",
+				"  /task",
+				"  /task <id>",
+				"  /task kill <id>",
+			}, "\n"),
 		})
 		return m, nil
 	}
@@ -1411,7 +1491,7 @@ func (m Model) renderLiveStatusText() string {
 
 func formatRetryLiveStatusText(retry runtimeevents.RetryStatus) string {
 	seconds := math.Max(0, float64(retry.NextDelayMS)/1000)
-	return fmt.Sprintf("Retrying in %.1fs (attempt %d/%d)...", seconds, retry.Attempt, retry.MaxAttempts)
+	return fmt.Sprintf("Retrying in %.1fs (next attempt %d/%d)...", seconds, retry.Attempt+1, retry.MaxAttempts)
 }
 
 // handleResumeListResult 处理 session 列表查询结果。
@@ -2039,6 +2119,52 @@ func (m Model) handleResumeSwitch(sessionID string) (tea.Model, tea.Cmd) {
 			Err:     nil,
 		}
 	}
+}
+
+func formatTaskListOutput(tasks []tools.TaskResult) string {
+	lines := []string{"Background tasks:"}
+	for _, task := range tasks {
+		lines = append(lines, fmt.Sprintf(
+			"- %s [%s] %s (%s)",
+			task.ID,
+			task.Status,
+			truncateTaskCommand(task.Command),
+			task.Duration.Round(time.Millisecond),
+		))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatTaskDetailOutput(task tools.TaskResult) string {
+	lines := []string{
+		fmt.Sprintf("Task %s [%s]", task.ID, task.Status),
+		fmt.Sprintf("Command: %s", task.Command),
+		fmt.Sprintf("Duration: %s", task.Duration.Round(time.Millisecond)),
+	}
+	if task.ExitCode != 0 {
+		lines = append(lines, fmt.Sprintf("Exit code: %d", task.ExitCode))
+	}
+	if task.Stdout != "" {
+		lines = append(lines, "STDOUT:")
+		lines = append(lines, task.Stdout)
+	}
+	if task.Stderr != "" {
+		lines = append(lines, "STDERR:")
+		lines = append(lines, task.Stderr)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func truncateTaskCommand(command string) string {
+	command = strings.TrimSpace(command)
+	runes := []rune(command)
+	if len(runes) <= 40 {
+		return command
+	}
+
+	return string(runes[:37]) + "..."
 }
 
 // currentShortcutHint returns a context-appropriate keyboard hint.

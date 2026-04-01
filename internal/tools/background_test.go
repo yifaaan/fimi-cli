@@ -154,6 +154,30 @@ func TestBackgroundManagerKillTerminatesRunningTask(t *testing.T) {
 	}
 }
 
+func TestBackgroundManagerKillPreservesKilledStatusAfterProcessExit(t *testing.T) {
+	mgr := NewBackgroundManager()
+	defer mgr.Close()
+
+	id, err := mgr.Start("sleep 30", t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if err := mgr.Kill(id); err != nil {
+		t.Fatalf("Kill() error = %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	result, err := mgr.Status(id)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if result.Status != BGStatusKilled {
+		t.Fatalf("Status().Status = %q, want %q", result.Status, BGStatusKilled)
+	}
+}
+
 func TestBackgroundManagerCloseTerminatesAllRunningTasks(t *testing.T) {
 	mgr := NewBackgroundManager()
 
@@ -188,5 +212,30 @@ func TestBackgroundManagerSequentialIDs(t *testing.T) {
 	}
 	if id2 != "bg-2" {
 		t.Fatalf("second ID = %q, want %q", id2, "bg-2")
+	}
+}
+
+func TestBackgroundManagerListReturnsNewestTasksFirst(t *testing.T) {
+	mgr := NewBackgroundManager()
+	defer mgr.Close()
+
+	id1, err := mgr.Start("sleep 30", t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("Start(first) error = %v", err)
+	}
+	id2, err := mgr.Start("sleep 30", t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("Start(second) error = %v", err)
+	}
+
+	got := mgr.List()
+	if len(got) != 2 {
+		t.Fatalf("len(List()) = %d, want 2", len(got))
+	}
+	if got[0].ID != id2 {
+		t.Fatalf("List()[0].ID = %q, want %q", got[0].ID, id2)
+	}
+	if got[1].ID != id1 {
+		t.Fatalf("List()[1].ID = %q, want %q", got[1].ID, id1)
 	}
 }

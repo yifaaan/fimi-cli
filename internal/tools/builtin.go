@@ -219,7 +219,7 @@ func newBashHandler(workDir string, shaper OutputShaper, bgMgr *BackgroundManage
 
 		// Approval gate
 		if a := approval.FromContext(ctx); a != nil {
-			desc := args.Command
+			desc := bashApprovalDescription(args)
 			if len(desc) > 80 {
 				desc = desc[:77] + "..."
 			}
@@ -809,11 +809,29 @@ func decodeBashArguments(raw string) (bashArguments, error) {
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
 		return bashArguments{}, markRefused(fmt.Errorf("%w: decode bash arguments: %v", ErrToolArgumentsInvalid, err))
 	}
-	if strings.TrimSpace(args.Command) == "" {
+
+	args.Command = strings.TrimSpace(args.Command)
+	args.TaskID = strings.TrimSpace(args.TaskID)
+
+	if args.TaskID != "" {
+		return args, nil
+	}
+	if args.Command == "" {
 		return bashArguments{}, markRefused(ErrToolCommandRequired)
 	}
 
 	return args, nil
+}
+
+func bashApprovalDescription(args bashArguments) string {
+	if args.TaskID != "" {
+		return fmt.Sprintf("query background task %s", args.TaskID)
+	}
+	if args.Background {
+		return "background: " + args.Command
+	}
+
+	return args.Command
 }
 
 func decodeThinkArguments(raw string) (thinkArguments, error) {

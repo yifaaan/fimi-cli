@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 )
@@ -44,13 +45,14 @@ func (b *lockedBuffer) Snapshot() []byte {
 
 // backgroundTask 记录一个正在运行或已完成的后台进程。
 type backgroundTask struct {
-	id        string
-	command   string
-	status    BackgroundTaskStatus
-	exitCode  int
-	startedAt time.Time
+	id         string
+	seq        int
+	command    string
+	status     BackgroundTaskStatus
+	exitCode   int
+	startedAt  time.Time
 	finishedAt time.Time
-	mu        sync.Mutex // 保护 status, exitCode, finishedAt
+	mu         sync.Mutex // 保护 status, exitCode, finishedAt
 
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
@@ -62,14 +64,14 @@ type backgroundTask struct {
 
 // TaskResult 是查询后台任务状态的返回值。
 type TaskResult struct {
-	ID         string
-	Command    string
-	Status     BackgroundTaskStatus
-	ExitCode   int
-	Stdout     string
-	Stderr     string
-	StartedAt  time.Time
-	Duration   time.Duration
+	ID        string
+	Command   string
+	Status    BackgroundTaskStatus
+	ExitCode  int
+	Stdout    string
+	Stderr    string
+	StartedAt time.Time
+	Duration  time.Duration
 }
 
 // BackgroundManager 管理当前会话中的所有后台 bash 进程。
@@ -109,6 +111,7 @@ func (m *BackgroundManager) Start(command string, workDir string, timeout time.D
 
 	task := &backgroundTask{
 		id:        id,
+		seq:       m.seq,
 		command:   command,
 		status:    BGStatusRunning,
 		startedAt: time.Now(),
@@ -140,7 +143,9 @@ func (m *BackgroundManager) Start(command string, workDir string, timeout time.D
 
 		task.finishedAt = time.Now()
 
-		if ctx.Err() == context.DeadlineExceeded {
+		if task.status == BGStatusKilled || ctx.Err() == context.Canceled {
+			task.status = BGStatusKilled
+		} else if ctx.Err() == context.DeadlineExceeded {
 			task.status = BGStatusTimedOut
 		} else if waitErr != nil {
 			task.status = BGStatusFailed
@@ -154,6 +159,27 @@ func (m *BackgroundManager) Start(command string, workDir string, timeout time.D
 	return id, nil
 }
 
+// List 返回当前 manager 中所有后台任务的快照，按最新创建优先排序。
+func (m *BackgroundManager) List() []TaskResult {
+	m.mu.Lock()
+	tasks := make([]*backgroundTask, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		tasks = append(tasks, task)
+	}
+	m.mu.Unlock()
+
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].seq > tasks[j].seq
+	})
+
+	results := make([]TaskResult, 0, len(tasks))
+	for _, task := range tasks {
+		results = append(results, snapshotBackgroundTask(task))
+	}
+
+	return results
+}
+
 // Status 返回指定任务的当前快照。
 // 任务运行中也可以安全查询已捕获的输出。
 func (m *BackgroundManager) Status(taskID string) (TaskResult, error) {
@@ -165,26 +191,7 @@ func (m *BackgroundManager) Status(taskID string) (TaskResult, error) {
 		return TaskResult{}, fmt.Errorf("background task %q not found", taskID)
 	}
 
-	task.mu.Lock()
-	defer task.mu.Unlock()
-
-	result := TaskResult{
-		ID:        task.id,
-		Command:   task.command,
-		Status:    task.status,
-		ExitCode:  task.exitCode,
-		Stdout:    string(task.stdout.Snapshot()),
-		Stderr:    string(task.stderr.Snapshot()),
-		StartedAt: task.startedAt,
-	}
-
-	if !task.finishedAt.IsZero() {
-		result.Duration = task.finishedAt.Sub(task.startedAt)
-	} else {
-		result.Duration = time.Since(task.startedAt)
-	}
-
-	return result, nil
+	return snapshotBackgroundTask(task), nil
 }
 
 // Kill 终止指定的后台任务。
@@ -222,4 +229,27 @@ func (m *BackgroundManager) Close() {
 		}
 		task.mu.Unlock()
 	}
+}
+
+func snapshotBackgroundTask(task *backgroundTask) TaskResult {
+	task.mu.Lock()
+	defer task.mu.Unlock()
+
+	result := TaskResult{
+		ID:        task.id,
+		Command:   task.command,
+		Status:    task.status,
+		ExitCode:  task.exitCode,
+		Stdout:    string(task.stdout.Snapshot()),
+		Stderr:    string(task.stderr.Snapshot()),
+		StartedAt: task.startedAt,
+	}
+
+	if !task.finishedAt.IsZero() {
+		result.Duration = task.finishedAt.Sub(task.startedAt)
+	} else {
+		result.Duration = time.Since(task.startedAt)
+	}
+
+	return result
 }

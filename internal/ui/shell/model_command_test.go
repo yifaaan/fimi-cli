@@ -1,14 +1,17 @@
 package shell
 
 import (
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/tools"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -64,8 +67,8 @@ func TestRenderLiveStatusTextShowsRetryWaitWhenActive(t *testing.T) {
 		NextDelayMS: 1500,
 	}
 
-	if got := model.renderLiveStatusText(); got != "Retrying in 1.5s (attempt 2/4)..." {
-		t.Fatalf("renderLiveStatusText() = %q, want %q", got, "Retrying in 1.5s (attempt 2/4)...")
+	if got := model.renderLiveStatusText(); got != "Retrying in 1.5s (next attempt 3/4)..." {
+		t.Fatalf("renderLiveStatusText() = %q, want %q", got, "Retrying in 1.5s (next attempt 3/4)...")
 	}
 }
 
@@ -160,6 +163,98 @@ func TestHandleCommandRewindStartsCheckpointListing(t *testing.T) {
 	}
 	if len(gotModel.output.lines) != 0 {
 		t.Fatalf("output lines = %d, want 0 before async result", len(gotModel.output.lines))
+	}
+}
+
+func TestHandleCommandTaskListsBackgroundTasks(t *testing.T) {
+	model := NewModel(Dependencies{
+		TaskManager: &stubTaskManager{
+			tasks: []tools.TaskResult{
+				{ID: "bg-2", Status: tools.BGStatusRunning, Command: "sleep 30"},
+				{ID: "bg-1", Status: tools.BGStatusDone, Command: "go test ./...", Duration: 2 * time.Second},
+			},
+		},
+	}, nil)
+
+	updated, cmd := model.handleCommand("/task")
+	if cmd != nil {
+		t.Fatalf("handleCommand(/task) cmd = %#v, want nil", cmd)
+	}
+
+	gotModel := updated.(Model)
+	if len(gotModel.output.lines) != 1 {
+		t.Fatalf("output lines = %d, want 1", len(gotModel.output.lines))
+	}
+	got := gotModel.output.lines[0]
+	if got.Type != LineTypeSystem {
+		t.Fatalf("line type = %v, want %v", got.Type, LineTypeSystem)
+	}
+	if !strings.Contains(got.Content, "Background tasks:") {
+		t.Fatalf("line content = %q, want task list header", got.Content)
+	}
+	if !strings.Contains(got.Content, "bg-2 [running]") {
+		t.Fatalf("line content = %q, want bg-2 running entry", got.Content)
+	}
+}
+
+func TestHandleCommandTaskShowsBackgroundTaskStatus(t *testing.T) {
+	model := NewModel(Dependencies{
+		TaskManager: &stubTaskManager{
+			tasks: []tools.TaskResult{
+				{
+					ID:       "bg-7",
+					Status:   tools.BGStatusRunning,
+					Command:  "sleep 30",
+					Stdout:   "still running",
+					Duration: 1500 * time.Millisecond,
+				},
+			},
+		},
+	}, nil)
+
+	updated, cmd := model.handleCommand("/task bg-7")
+	if cmd != nil {
+		t.Fatalf("handleCommand(/task bg-7) cmd = %#v, want nil", cmd)
+	}
+
+	gotModel := updated.(Model)
+	if len(gotModel.output.lines) != 1 {
+		t.Fatalf("output lines = %d, want 1", len(gotModel.output.lines))
+	}
+	got := gotModel.output.lines[0]
+	if got.Type != LineTypeSystem {
+		t.Fatalf("line type = %v, want %v", got.Type, LineTypeSystem)
+	}
+	if !strings.Contains(got.Content, "Task bg-7 [running]") {
+		t.Fatalf("line content = %q, want task header", got.Content)
+	}
+	if !strings.Contains(got.Content, "STDOUT:\nstill running") {
+		t.Fatalf("line content = %q, want stdout section", got.Content)
+	}
+}
+
+func TestHandleCommandTaskKillsBackgroundTask(t *testing.T) {
+	manager := &stubTaskManager{
+		tasks: []tools.TaskResult{
+			{ID: "bg-3", Status: tools.BGStatusRunning, Command: "sleep 30"},
+		},
+	}
+	model := NewModel(Dependencies{TaskManager: manager}, nil)
+
+	updated, cmd := model.handleCommand("/task kill bg-3")
+	if cmd != nil {
+		t.Fatalf("handleCommand(/task kill bg-3) cmd = %#v, want nil", cmd)
+	}
+	if len(manager.killed) != 1 || manager.killed[0] != "bg-3" {
+		t.Fatalf("killed task IDs = %#v, want [bg-3]", manager.killed)
+	}
+
+	gotModel := updated.(Model)
+	if len(gotModel.output.lines) != 1 {
+		t.Fatalf("output lines = %d, want 1", len(gotModel.output.lines))
+	}
+	if gotModel.output.lines[0].Content != "Killed background task bg-3" {
+		t.Fatalf("line content = %q, want exact kill confirmation", gotModel.output.lines[0].Content)
 	}
 }
 
@@ -553,6 +648,38 @@ func TestInputViewUsesSingleLinePrompt(t *testing.T) {
 	if got := lipgloss.Height(input.View()); got != 1 {
 		t.Fatalf("input view height = %d, want 1", got)
 	}
+}
+
+type stubTaskManager struct {
+	tasks     []tools.TaskResult
+	statusErr error
+	killErr   error
+	killed    []string
+}
+
+func (m stubTaskManager) List() []tools.TaskResult {
+	return append([]tools.TaskResult(nil), m.tasks...)
+}
+
+func (m stubTaskManager) Status(taskID string) (tools.TaskResult, error) {
+	if m.statusErr != nil {
+		return tools.TaskResult{}, m.statusErr
+	}
+	for _, task := range m.tasks {
+		if task.ID == taskID {
+			return task, nil
+		}
+	}
+
+	return tools.TaskResult{}, errors.New("background task not found")
+}
+
+func (m *stubTaskManager) Kill(taskID string) error {
+	if m.killErr != nil {
+		return m.killErr
+	}
+	m.killed = append(m.killed, taskID)
+	return nil
 }
 
 func ptrTextRecord(record contextstore.TextRecord) *contextstore.TextRecord {

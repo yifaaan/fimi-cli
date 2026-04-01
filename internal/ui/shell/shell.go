@@ -10,6 +10,7 @@ import (
 	"fimi-cli/internal/changelog"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
+	"fimi-cli/internal/tools"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -28,6 +29,9 @@ func helpText() string {
 		"  /exit, /quit    Exit the shell",
 		"  /resume         List available sessions",
 		"  /resume <id>    Switch to a specific session",
+		"  /task           List background tasks",
+		"  /task <id>      Show background task status",
+		"  /task kill <id> Kill a background task",
 		"  /setup          Setup LLM provider and model",
 		"  /reload         Reload configuration",
 		"",
@@ -93,9 +97,17 @@ type Runner interface {
 	Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error)
 }
 
+// TaskManager exposes the minimum background-task operations shell needs.
+type TaskManager interface {
+	List() []tools.TaskResult
+	Status(taskID string) (tools.TaskResult, error)
+	Kill(taskID string) error
+}
+
 // Dependencies 描述 shell REPL 运行需要的最小装配输入。
 type Dependencies struct {
 	Runner         Runner
+	TaskManager    TaskManager
 	Store          contextstore.Context
 	Input          io.Reader
 	Output         io.Writer

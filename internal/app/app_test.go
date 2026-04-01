@@ -1027,6 +1027,9 @@ func TestDependenciesRunUsesInjectedProcessDependencies(t *testing.T) {
 	if shellDeps.Runner == nil {
 		t.Fatalf("shell deps runner = nil, want non-nil")
 	}
+	if shellDeps.TaskManager == nil {
+		t.Fatalf("shell deps task manager = nil, want non-nil")
+	}
 	if shellDeps.Store.Path() != historyFile {
 		t.Fatalf("shell deps store path = %q, want %q", shellDeps.Store.Path(), historyFile)
 	}
@@ -1910,6 +1913,83 @@ func TestDependenciesBuildRunnerForAgentRunsWithResolvedAgentTools(t *testing.T)
 	}
 }
 
+func TestDependenciesBuildRunnerForAgentKeepsBackgroundTasksAcrossRuns(t *testing.T) {
+	client := &backgroundTaskSessionClient{}
+	deps := dependencies{
+		buildLLMClient: func(cfg config.Config) (llm.Client, error) {
+			return client, nil
+		},
+	}
+	cfg := config.Config{
+		DefaultModel: "custom-model",
+		Models: map[string]config.ModelConfig{
+			"custom-model": {
+				Provider: config.ProviderTypePlaceholder,
+				Model:    "custom-model",
+			},
+		},
+	}
+	workDir := t.TempDir()
+	runner, err := deps.buildRunnerForAgent(cfg, loadedAgent{
+		Tools: []tools.Definition{{
+			Name: tools.ToolBash,
+			Kind: tools.KindCommand,
+		}},
+	}, workDir)
+	if err != nil {
+		t.Fatalf("buildRunnerForAgent() error = %v", err)
+	}
+	defer closeRuntimeRunner(runner)
+
+	store := contextstore.New(filepath.Join(t.TempDir(), "history.jsonl"))
+	firstResult, err := runner.Run(context.Background(), store, runtime.Input{
+		Prompt:       "start background task",
+		Model:        "custom-model",
+		SystemPrompt: "You are the configured agent.",
+	})
+	if err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if firstResult.Status != runtime.RunStatusFinished {
+		t.Fatalf("first result.Status = %q, want %q", firstResult.Status, runtime.RunStatusFinished)
+	}
+	if client.taskID == "" {
+		t.Fatal("background task ID = empty, want parsed task ID from first run")
+	}
+	managedRunner, ok := runner.(*mcpAwareRunner)
+	if !ok {
+		t.Fatalf("runner type = %T, want *mcpAwareRunner", runner)
+	}
+
+	status, err := managedRunner.bgMgr.Status(client.taskID)
+	if err != nil {
+		t.Fatalf("bgMgr.Status() after first run error = %v", err)
+	}
+	if status.Status != tools.BGStatusRunning {
+		t.Fatalf("background status after first run = %q, want %q", status.Status, tools.BGStatusRunning)
+	}
+
+	secondResult, err := runner.Run(context.Background(), store, runtime.Input{
+		Prompt:       "follow up prompt",
+		Model:        "custom-model",
+		SystemPrompt: "You are the configured agent.",
+	})
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if secondResult.Status != runtime.RunStatusFinished {
+		t.Fatalf("second result.Status = %q, want %q", secondResult.Status, runtime.RunStatusFinished)
+	}
+
+	status, err = managedRunner.bgMgr.Status(client.taskID)
+	if err != nil {
+		t.Fatalf("bgMgr.Status() after second run error = %v", err)
+	}
+	if status.Status != tools.BGStatusRunning {
+		t.Fatalf("background status after second run = %q, want %q", status.Status, tools.BGStatusRunning)
+	}
+}
+
 func TestDependenciesRunRuntimeStreamsPrintUIForEventfulRunner(t *testing.T) {
 	var out bytes.Buffer
 	deps := dependencies{
@@ -1937,6 +2017,42 @@ func TestDependenciesRunRuntimeStreamsPrintUIForEventfulRunner(t *testing.T) {
 	want := "[step 1]\nassistant reply\n"
 	if out.String() != want {
 		t.Fatalf("print ui output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestDependenciesRunShellClosesRunnerAfterShellExit(t *testing.T) {
+	historyFile := filepath.Join(t.TempDir(), "history.jsonl")
+	runner := &closableStubRunner{
+		stubRunner: stubRunner{
+			result: runtime.Result{Status: runtime.RunStatusFinished},
+		},
+	}
+	deps := dependencies{
+		loadAgent: testAgentLoader("You are the configured agent."),
+		createSession: func(workDir string) (session.Session, error) {
+			return session.Session{
+				ID:          "session-123",
+				WorkDir:     workDir,
+				HistoryFile: historyFile,
+			}, nil
+		},
+		buildRuntimeRunner: func(cfg config.Config) (runtimeRunner, error) {
+			return runner, nil
+		},
+		runShellUI: func(ctx context.Context, deps shell.Dependencies) error {
+			if runner.closed {
+				t.Fatal("runner closed before shell UI returned")
+			}
+			return nil
+		},
+	}
+
+	err := deps.runShell(context.Background(), config.Config{}, testLoadedAgent("You are the configured agent."), t.TempDir(), runInput{})
+	if err != nil {
+		t.Fatalf("runShell() error = %v", err)
+	}
+	if !runner.closed {
+		t.Fatal("runner closed = false, want close after shell exit")
 	}
 }
 
@@ -2031,6 +2147,99 @@ func (r *stubRunner) Run(_ context.Context, store contextstore.Context, input ru
 	}
 
 	return r.result, nil
+}
+
+type closableStubRunner struct {
+	stubRunner
+	closed bool
+}
+
+func (r *closableStubRunner) Close() {
+	r.closed = true
+}
+
+type backgroundTaskSessionClient struct {
+	taskID string
+}
+
+func (c *backgroundTaskSessionClient) Reply(request llm.Request) (llm.Response, error) {
+	prompt, _ := request.PrimaryUserPrompt()
+	toolMsg, hasToolMsg := lastToolResultMessageAfterLastUser(request.Messages)
+
+	switch prompt {
+	case "start background task":
+		if !hasToolMsg {
+			return llm.Response{
+				Text: "starting background task",
+				ToolCalls: []llm.ToolCall{{
+					ID:        "call_start",
+					Name:      tools.ToolBash,
+					Arguments: `{"command":"sleep 30","background":true}`,
+				}},
+			}, nil
+		}
+
+		c.taskID = extractBackgroundTaskID(toolMsg.Content)
+		if c.taskID == "" {
+			return llm.Response{}, fmt.Errorf("extract background task id from %q", toolMsg.Content)
+		}
+
+		return llm.Response{Text: "background task started"}, nil
+
+	case "check background task":
+		if c.taskID == "" {
+			return llm.Response{}, errors.New("background task id not set")
+		}
+		if !hasToolMsg {
+			return llm.Response{
+				Text: "checking background task",
+				ToolCalls: []llm.ToolCall{{
+					ID:        "call_query",
+					Name:      tools.ToolBash,
+					Arguments: fmt.Sprintf(`{"task_id":"%s"}`, c.taskID),
+				}},
+			}, nil
+		}
+
+		return llm.Response{Text: "background task checked"}, nil
+	}
+
+	return llm.Response{Text: "done"}, nil
+}
+
+func lastToolResultMessageAfterLastUser(messages []llm.Message) (llm.Message, bool) {
+	lastUserIndex := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llm.RoleUser {
+			lastUserIndex = i
+			break
+		}
+	}
+
+	for i := len(messages) - 1; i > lastUserIndex; i-- {
+		if messages[i].Role == llm.RoleTool {
+			return messages[i], true
+		}
+	}
+
+	return llm.Message{}, false
+}
+
+func extractBackgroundTaskID(content string) string {
+	const marker = `task_id="`
+
+	start := strings.Index(content, marker)
+	if start < 0 {
+		return ""
+	}
+	start += len(marker)
+
+	end := strings.Index(content[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+
+	return content[start : start+end]
 }
 
 type fakeToolCallClient struct {

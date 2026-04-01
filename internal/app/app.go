@@ -59,6 +59,14 @@ type runtimeRunner interface {
 	Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error)
 }
 
+type closeableRuntimeRunner interface {
+	Close()
+}
+
+type backgroundTaskManagingRunner interface {
+	BackgroundTaskManager() shell.TaskManager
+}
+
 // loadedAgent 表示 app 当前一次运行实际解析出的 agent 视图。
 // 这里保留最小字段，避免 app 过早持有 tools 等后续阶段才会消费的内容。
 type loadedAgent struct {
@@ -80,6 +88,32 @@ type dependencies struct {
 	buildVisualizer    runtimeVisualizerBuilder
 	runShellUI         shellUIRunner
 	buildMCPTools      mcpToolBuilder
+}
+
+func closeRuntimeRunner(runner runtimeRunner) {
+	if runner == nil {
+		return
+	}
+
+	closeable, ok := runner.(closeableRuntimeRunner)
+	if !ok {
+		return
+	}
+
+	closeable.Close()
+}
+
+func backgroundTaskManagerFromRunner(runner runtimeRunner) shell.TaskManager {
+	if runner == nil {
+		return nil
+	}
+
+	taskManaging, ok := runner.(backgroundTaskManagingRunner)
+	if !ok {
+		return nil
+	}
+
+	return taskManaging.BackgroundTaskManager()
 }
 
 // Run 是当前应用装配层的最小入口。
@@ -483,7 +517,7 @@ func (d dependencies) buildRunnerToolHandlers(cfg config.Config, agent loadedAge
 	return toolHandlers, nil
 }
 
-// mcpAwareRunner wraps a runtime.Runner to close resources after the run.
+// mcpAwareRunner wraps a runtime.Runner and owns the process-level resources it uses.
 type mcpAwareRunner struct {
 	runtime.Runner
 	mcpManager *mcp.Manager
@@ -491,19 +525,26 @@ type mcpAwareRunner struct {
 }
 
 func (r *mcpAwareRunner) Run(ctx context.Context, store contextstore.Context, input runtime.Input) (runtime.Result, error) {
-	defer func() {
-		if r.bgMgr != nil {
-			r.bgMgr.Close()
-		}
-		if r.mcpManager != nil {
-			_ = r.mcpManager.Close()
-		}
-	}()
 	return r.Runner.Run(ctx, store, input)
 }
 
 // Inner 返回内嵌的 runtime.Runner。
 func (r *mcpAwareRunner) Inner() runtime.Runner { return r.Runner }
+
+func (r *mcpAwareRunner) Close() {
+	if r.bgMgr != nil {
+		r.bgMgr.Close()
+		r.bgMgr = nil
+	}
+	if r.mcpManager != nil {
+		_ = r.mcpManager.Close()
+		r.mcpManager = nil
+	}
+}
+
+func (r *mcpAwareRunner) BackgroundTaskManager() shell.TaskManager {
+	return r.bgMgr
+}
 
 // buildMCPTools is a dependency injection point for testing.
 type mcpToolBuilder func(cfg config.MCPConfig) *mcp.Manager
@@ -665,6 +706,7 @@ func (d dependencies) runShell(
 	if err != nil {
 		return err
 	}
+	defer closeRuntimeRunner(runner)
 
 	historyFile, err := session.ShellHistoryFileForWorkDir(sess.WorkDir)
 	if err != nil {
@@ -710,6 +752,7 @@ func (d dependencies) runPrint(
 	if err != nil {
 		return err
 	}
+	defer closeRuntimeRunner(runner)
 
 	runtimeInput := buildRuntimePromptInput(cfg, agent, prompt)
 
@@ -775,6 +818,7 @@ func (d dependencies) runACP(ctx context.Context) error {
 		if err != nil {
 			return runtime.Result{}, fmt.Errorf("build ACP runner: %w", err)
 		}
+		defer closeRuntimeRunner(r)
 
 		return ui.Run(ctx, r.Run, store, input, visualize)
 	}
@@ -868,6 +912,7 @@ func (d dependencies) runDeclaredSubagent(
 	if err != nil {
 		return runtime.ToolExecution{}, fmt.Errorf("build subagent runner: %w", err)
 	}
+	defer closeRuntimeRunner(runner)
 
 	result, err := runSubagentOnce(ctx, runner, historyFile, buildRuntimePromptInput(cfg, subagent, args.Prompt))
 	if err != nil {

@@ -151,6 +151,7 @@ func buildShellDependencies(
 ) shell.Dependencies {
 	return shell.Dependencies{
 		Runner:         runner,
+		TaskManager:    backgroundTaskManagerFromRunner(runner),
 		Store:          store,
 		Input:          os.Stdin,
 		Output:         os.Stdout,

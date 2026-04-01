@@ -129,6 +129,65 @@ func TestNewBuiltinExecutorBashReturnsStructuredNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestNewBuiltinExecutorBashQueriesBackgroundTaskWithoutCommand(t *testing.T) {
+	ctx := context.Background()
+	workDir := t.TempDir()
+	bgMgr := NewBackgroundManager()
+	defer bgMgr.Close()
+
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolBash,
+			Kind: KindCommand,
+		},
+	}, workDir, bgMgr)
+
+	started, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolBash,
+		Arguments: `{"command":"sleep 30","background":true}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute(start background) error = %v", err)
+	}
+
+	taskID := extractBuiltinBackgroundTaskID(started.Output)
+	if taskID == "" {
+		t.Fatalf("extract background task ID from %q = empty", started.Output)
+	}
+
+	got, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolBash,
+		Arguments: `{"task_id":"` + taskID + `"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute(query background) error = %v", err)
+	}
+	if !strings.Contains(got.Output, "Task "+taskID+" [running]") {
+		t.Fatalf("Execute(query background).Output = %q, want running status for %q", got.Output, taskID)
+	}
+}
+
+func TestNewBuiltinExecutorBashRejectsMissingCommandWithoutTaskID(t *testing.T) {
+	ctx := context.Background()
+	executor := NewBuiltinExecutor([]Definition{
+		{
+			Name: ToolBash,
+			Kind: KindCommand,
+		},
+	}, t.TempDir(), nil)
+
+	_, err := executor.Execute(ctx, runtime.ToolCall{
+		Name:      ToolBash,
+		Arguments: `{"background":true}`,
+	})
+	if !errors.Is(err, ErrToolCommandRequired) {
+		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolCommandRequired)
+	}
+	if !runtime.IsRefused(err) {
+		t.Fatalf("runtime.IsRefused(error) = false, want true")
+	}
+}
+
 type stubWebSearcher struct {
 	gotQuery          string
 	gotLimit          int
@@ -783,4 +842,21 @@ func TestNewBuiltinExecutorReplaceFileRejectsPathOutsideWorkspace(t *testing.T) 
 	if !errors.Is(err, ErrToolPathOutsideWorkspace) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
 	}
+}
+
+func extractBuiltinBackgroundTaskID(output string) string {
+	const marker = `task_id="`
+
+	start := strings.Index(output, marker)
+	if start < 0 {
+		return ""
+	}
+	start += len(marker)
+
+	end := strings.Index(output[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+
+	return output[start : start+end]
 }
