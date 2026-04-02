@@ -84,11 +84,10 @@ func RunWithWire(ctx context.Context, run WireRunFunc, store contextstore.Contex
 	case visualizeErr := <-visualizeDone:
 		cancel()
 		bridgeCancel()
-		outcome := <-runDone
 		if visualizeErr != nil {
-			return outcome.result, fmt.Errorf("visualize ACP wire messages: %w", visualizeErr)
+			return runtime.Result{}, fmt.Errorf("visualize ACP wire messages: %w", visualizeErr)
 		}
-		return outcome.result, ErrWireVisualizerStoppedEarly
+		return runtime.Result{}, ErrWireVisualizerStoppedEarly
 	case <-ctx.Done():
 		cancel()
 		bridgeCancel()

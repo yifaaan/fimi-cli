@@ -136,3 +136,90 @@ func TestSessionVisualizeWireProjectsToolCallPartAndRichResult(t *testing.T) {
 		t.Fatalf("third update missing image data in %s", third.Params)
 	}
 }
+
+func TestBuildACPContentItemsFallsBackToTextForEmptyContent(t *testing.T) {
+	items := buildACPContentItems(nil, "preview")
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if items[0].Type != "text" {
+		t.Fatalf("items[0].Type = %q, want text", items[0].Type)
+	}
+	if items[0].Content.Text != "preview" {
+		t.Fatalf("items[0].Content.Text = %q, want preview", items[0].Content.Text)
+	}
+}
+
+func TestBuildACPContentItemsPrependsFallbackForNonTextContent(t *testing.T) {
+	items := buildACPContentItems([]runtimeevents.RichContent{{Type: "image", MIMEType: "image/png", Data: "aGVsbG8="}}, "preview")
+	if len(items) != 2 {
+		t.Fatalf("len(items) = %d, want 2", len(items))
+	}
+	if items[0].Type != "text" {
+		t.Fatalf("items[0].Type = %q, want text", items[0].Type)
+	}
+	if items[0].Content.Text != "preview" {
+		t.Fatalf("items[0].Content.Text = %q, want preview", items[0].Content.Text)
+	}
+	if items[1].Type != "image" {
+		t.Fatalf("items[1].Type = %q, want image", items[1].Type)
+	}
+	if items[1].Content.MIMEType != "image/png" {
+		t.Fatalf("items[1].Content.MIMEType = %q, want image/png", items[1].Content.MIMEType)
+	}
+}
+
+func TestBuildACPContentItemsDoesNotDuplicateFallbackForTextContent(t *testing.T) {
+	items := buildACPContentItems([]runtimeevents.RichContent{{Type: "text", Text: "hello"}}, "preview")
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if items[0].Type != "text" {
+		t.Fatalf("items[0].Type = %q, want text", items[0].Type)
+	}
+	if items[0].Content.Text != "hello" {
+		t.Fatalf("items[0].Content.Text = %q, want hello", items[0].Content.Text)
+	}
+}
+
+func TestFirstNonEmptyToolOutputPrefersDisplayOutputAndTruncatesLongOutput(t *testing.T) {
+	longOutput := strings.Repeat("x", 10001)
+
+	got := firstNonEmptyToolOutput("preview", longOutput)
+	if got != "preview" {
+		t.Fatalf("firstNonEmptyToolOutput() = %q, want preview", got)
+	}
+
+	got = firstNonEmptyToolOutput("  ", longOutput)
+	if !strings.HasSuffix(got, "\n... (truncated)") {
+		t.Fatalf("firstNonEmptyToolOutput() suffix = %q, want truncation marker", got)
+	}
+	if len(got) != 10016 {
+		t.Fatalf("len(firstNonEmptyToolOutput()) = %d, want 10016", len(got))
+	}
+}
+
+func TestSessionAccessorsAndCancellation(t *testing.T) {
+	acpSession, _ := newTestACPSession(t)
+
+	if acpSession.CurrentModelID() != "test-model" {
+		t.Fatalf("CurrentModelID() = %q, want test-model", acpSession.CurrentModelID())
+	}
+
+	acpSession.SetModelID("other-model")
+	if acpSession.CurrentModelID() != "other-model" {
+		t.Fatalf("CurrentModelID() after SetModelID = %q, want other-model", acpSession.CurrentModelID())
+	}
+
+	cancelled := 0
+	acpSession.SetCancel(func() { cancelled++ })
+	acpSession.Cancel()
+	acpSession.Cancel()
+	if cancelled != 1 {
+		t.Fatalf("cancelled = %d, want 1", cancelled)
+	}
+
+	if !strings.HasSuffix(acpSession.HistoryFile(), ".jsonl") {
+		t.Fatalf("HistoryFile() = %q, want .jsonl suffix", acpSession.HistoryFile())
+	}
+}

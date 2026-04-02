@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -78,18 +79,23 @@ func TestNewBuiltinExecutorBashRunsCommandInsideWorkDir(t *testing.T) {
 
 	got, err := executor.Execute(ctx, runtime.ToolCall{
 		Name:      ToolBash,
-		Arguments: `{"command":"printf '%s' \"$PWD\" && printf '\n' && ls marker.txt && printf 'warn' >&2"}`,
+		Arguments: `{"command":"pwd -W 2>/dev/null || printf '%s\\n' \"$PWD\"; ls marker.txt; printf 'warn' >&2"}`,
 	})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
+	}
+
+	expectedWorkDir := workDir
+	if goruntime.GOOS == "windows" {
+		expectedWorkDir = filepath.ToSlash(workDir)
 	}
 
 	lines := strings.Split(strings.TrimSpace(got.Stdout), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("len(stdout lines) = %d, want %d, stdout=%q", len(lines), 2, got.Stdout)
 	}
-	if lines[0] != workDir {
-		t.Fatalf("stdout workDir line = %q, want %q", lines[0], workDir)
+	if lines[0] != expectedWorkDir {
+		t.Fatalf("stdout workDir line = %q, want %q", lines[0], expectedWorkDir)
 	}
 	if lines[1] != "marker.txt" {
 		t.Fatalf("stdout file line = %q, want %q", lines[1], "marker.txt")
@@ -749,8 +755,13 @@ func TestNewBuiltinExecutorReplaceFileReplacesSingleOccurrence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(notes.txt) error = %v", err)
 	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("notes.txt mode = %#o, want %#o", info.Mode().Perm(), 0o640)
+
+	expectedMode := os.FileMode(0o640)
+	if goruntime.GOOS == "windows" {
+		expectedMode = 0o666
+	}
+	if info.Mode().Perm() != expectedMode {
+		t.Fatalf("notes.txt mode = %#o, want %#o", info.Mode().Perm(), expectedMode)
 	}
 }
 

@@ -131,6 +131,19 @@ func (m *BackgroundManager) Start(command string, workDir string, timeout time.D
 		return "", fmt.Errorf("start background command: %w", err)
 	}
 
+	go func() {
+		<-ctx.Done()
+		if ctx.Err() != context.DeadlineExceeded {
+			return
+		}
+
+		task.mu.Lock()
+		if task.status == BGStatusRunning {
+			task.status = BGStatusTimedOut
+		}
+		task.mu.Unlock()
+	}()
+
 	// 进程结束后异步更新状态
 	go func() {
 		defer close(task.done)

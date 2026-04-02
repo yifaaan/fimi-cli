@@ -6,6 +6,29 @@ import (
 	"time"
 )
 
+func waitForBackgroundStatus(t *testing.T, mgr *BackgroundManager, id string, want BackgroundTaskStatus) TaskResult {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		result, err := mgr.Status(id)
+		if err != nil {
+			t.Fatalf("Status() error = %v", err)
+		}
+		if result.Status == want {
+			return result
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	result, err := mgr.Status(id)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	t.Fatalf("Status().Status = %q, want %q", result.Status, want)
+	return TaskResult{}
+}
+
 func TestBackgroundManagerStartReturnsTaskID(t *testing.T) {
 	mgr := NewBackgroundManager()
 	id, err := mgr.Start("echo hello", t.TempDir(), 0)
@@ -55,16 +78,7 @@ func TestBackgroundManagerStatusReturnsCompletedTask(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	// 等待进程结束
-	time.Sleep(500 * time.Millisecond)
-
-	result, err := mgr.Status(id)
-	if err != nil {
-		t.Fatalf("Status() error = %v", err)
-	}
-	if result.Status != BGStatusDone {
-		t.Fatalf("Status().Status = %q, want %q", result.Status, BGStatusDone)
-	}
+	result := waitForBackgroundStatus(t, mgr, id, BGStatusDone)
 	if !strings.Contains(result.Stdout, "output data") {
 		t.Fatalf("Status().Stdout = %q, want to contain %q", result.Stdout, "output data")
 	}
@@ -82,16 +96,7 @@ func TestBackgroundManagerStatusReturnsFailedTask(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	// 等待进程结束
-	time.Sleep(500 * time.Millisecond)
-
-	result, err := mgr.Status(id)
-	if err != nil {
-		t.Fatalf("Status() error = %v", err)
-	}
-	if result.Status != BGStatusFailed {
-		t.Fatalf("Status().Status = %q, want %q", result.Status, BGStatusFailed)
-	}
+	result := waitForBackgroundStatus(t, mgr, id, BGStatusFailed)
 	if result.ExitCode != 42 {
 		t.Fatalf("Status().ExitCode = %d, want 42", result.ExitCode)
 	}
@@ -106,16 +111,7 @@ func TestBackgroundManagerStatusReturnsTimedOutTask(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	// 等待超时触发
-	time.Sleep(200 * time.Millisecond)
-
-	result, err := mgr.Status(id)
-	if err != nil {
-		t.Fatalf("Status() error = %v", err)
-	}
-	if result.Status != BGStatusTimedOut {
-		t.Fatalf("Status().Status = %q, want %q", result.Status, BGStatusTimedOut)
-	}
+	_ = waitForBackgroundStatus(t, mgr, id, BGStatusTimedOut)
 }
 
 func TestBackgroundManagerStatusRejectsUnknownTaskID(t *testing.T) {
