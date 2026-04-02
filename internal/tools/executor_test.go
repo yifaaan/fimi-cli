@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"fimi-cli/internal/approval"
 	"fimi-cli/internal/runtime"
 )
 
@@ -176,4 +177,24 @@ func (e temporaryHandlerError) Unwrap() error {
 
 func (temporaryHandlerError) Temporary() bool {
 	return true
+}
+
+func TestExecutorExecuteInjectsToolCallIDIntoApprovalContext(t *testing.T) {
+	ctx := context.Background()
+	executor := NewExecutor([]Definition{{
+		Name: ToolBash,
+		Kind: KindCommand,
+	}}, map[string]HandlerFunc{
+		ToolBash: func(ctx context.Context, call runtime.ToolCall, definition Definition) (runtime.ToolExecution, error) {
+			if got := approval.ToolCallIDFromContext(ctx); got != "call-1" {
+				t.Fatalf("approval.ToolCallIDFromContext(ctx) = %q, want %q", got, "call-1")
+			}
+			return runtime.ToolExecution{Call: call, Output: "ok"}, nil
+		},
+	})
+
+	_, err := executor.Execute(ctx, runtime.ToolCall{ID: "call-1", Name: ToolBash})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
 }
