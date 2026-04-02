@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -237,6 +238,9 @@ func TestPatchFile_ApplyPatchStyleUpdateFile(t *testing.T) {
 	if got, want := result.Output, "Edited a.cpp (+9 -1)"; got != want {
 		t.Fatalf("result.Output = %q, want %q", got, want)
 	}
+	if !strings.Contains(result.DisplayOutput, "@@ -3,1 +3,9 @@") {
+		t.Fatalf("result.DisplayOutput = %q, want resolved unified hunk header", result.DisplayOutput)
+	}
 
 	data, err := os.ReadFile(testFile)
 	if err != nil {
@@ -252,6 +256,44 @@ func TestPatchFile_ApplyPatchStyleUpdateFile(t *testing.T) {
 		if !strings.Contains(got, fragment) {
 			t.Fatalf("patched file = %q, want fragment %q", got, fragment)
 		}
+	}
+}
+
+func TestPatchFile_ApplyPatchStyleDisplayOutputUsesResolvedLineNumbers(t *testing.T) {
+	workDir := t.TempDir()
+	testFile := filepath.Join(workDir, "a.cpp")
+	lines := make([]string, 0, 80)
+	for i := 1; i <= 80; i++ {
+		lines = append(lines, "line "+strconv.Itoa(i))
+	}
+	if err := os.WriteFile(testFile, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	patch := `*** Begin Patch
+*** Update File: a.cpp
+@@
+ line 72
+ line 73
++bool isSorted(const std::vector<int>& arr) {
++    return true;
++}
+ line 74
+ line 75
+*** End Patch
+`
+
+	handler := newPatchFileHandler(workDir)
+	result, err := handler(context.Background(), runtime.ToolCall{
+		Name:      "patch_file",
+		Arguments: `{"path": ` + jsonString("a.cpp") + `, "diff": ` + jsonString(patch) + `}`,
+	}, Definition{})
+	if err != nil {
+		t.Fatalf("patch_file failed: %v", err)
+	}
+
+	if !strings.Contains(result.DisplayOutput, "@@ -72,4 +72,7 @@") {
+		t.Fatalf("result.DisplayOutput = %q, want resolved hunk lines near actual file location", result.DisplayOutput)
 	}
 }
 

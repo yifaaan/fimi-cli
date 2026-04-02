@@ -71,7 +71,7 @@ func newPatchFileHandler(workDir string) HandlerFunc {
 		return runtime.ToolExecution{
 			Call:          call,
 			Output:        summary,
-			DisplayOutput: buildPatchDisplayOutput(summary, args.Diff),
+			DisplayOutput: buildPatchDisplayOutput(summary, string(originalData), args.Diff),
 		}, nil
 	}
 }
@@ -395,9 +395,9 @@ func buildPatchSummary(path string, added int, removed int, hunksApplied int) st
 	return fmt.Sprintf("Edited %s (+%d -%d)", path, added, removed)
 }
 
-func buildPatchDisplayOutput(summary string, diff string) string {
+func buildPatchDisplayOutput(summary string, original string, diff string) string {
 	summary = strings.TrimSpace(summary)
-	lines := normalizedPatchLines(diff)
+	lines := resolvedPatchDisplayLines(original, diff)
 	if len(lines) == 0 {
 		return summary
 	}
@@ -407,6 +407,101 @@ func buildPatchDisplayOutput(summary string, diff string) string {
 	b.WriteByte('\n')
 	b.WriteString(strings.Join(lines, "\n"))
 	return b.String()
+}
+
+func resolvedPatchDisplayLines(original string, diff string) []string {
+	hunks, err := parseUnifiedDiff(diff)
+	if err != nil || len(hunks) == 0 {
+		return normalizedPatchLines(diff)
+	}
+
+	lines := splitLinesKeepEnds(original)
+	resolved := make([]string, 0, len(hunks)*4)
+	lineDelta := 0
+
+	for _, hunk := range hunks {
+		startIdx, err := resolveDisplayHunkStart(lines, hunk)
+		if err != nil {
+			return normalizedPatchLines(diff)
+		}
+
+		oldCount := resolvedOldHunkLineCount(hunk)
+		newCount := resolvedNewHunkLineCount(hunk)
+		oldStart := hunk.oldStart
+		newStart := hunk.newStart
+		if !hunk.hasLineNumbers {
+			oldStart = startIdx + 1 - lineDelta
+			newStart = startIdx + 1
+		}
+
+		resolved = append(resolved, formatDisplayHunkHeader(oldStart, oldCount, newStart, newCount))
+		resolved = append(resolved, hunk.lines...)
+
+		applyHunkSpec := hunk
+		if len(oldHunkLines(hunk)) > 0 {
+			applyHunkSpec.hasLineNumbers = false
+		}
+		lines, err = applyHunk(lines, applyHunkSpec)
+		if err != nil {
+			return normalizedPatchLines(diff)
+		}
+		lineDelta += newCount - oldCount
+	}
+
+	return resolved
+}
+
+func resolveDisplayHunkStart(lines []string, hunk unifiedHunk) (int, error) {
+	if len(oldHunkLines(hunk)) > 0 {
+		hunk.hasLineNumbers = false
+	}
+	return locateHunkStart(lines, hunk)
+}
+
+func resolvedOldHunkLineCount(hunk unifiedHunk) int {
+	if hunk.oldCount > 0 {
+		return hunk.oldCount
+	}
+
+	count := 0
+	for _, line := range hunk.lines {
+		if len(line) == 0 {
+			continue
+		}
+		switch line[0] {
+		case ' ', '-':
+			count++
+		}
+	}
+	return count
+}
+
+func resolvedNewHunkLineCount(hunk unifiedHunk) int {
+	if hunk.newCount > 0 {
+		return hunk.newCount
+	}
+
+	count := 0
+	for _, line := range hunk.lines {
+		if len(line) == 0 {
+			continue
+		}
+		switch line[0] {
+		case ' ', '+':
+			count++
+		}
+	}
+	return count
+}
+
+func formatDisplayHunkHeader(oldStart int, oldCount int, newStart int, newCount int) string {
+	if oldStart < 0 {
+		oldStart = 0
+	}
+	if newStart < 0 {
+		newStart = 0
+	}
+	return fmt.Sprintf("@@ -%d,%d +%d,%d @@", oldStart, oldCount, newStart, newCount)
 }
 
 func normalizedPatchLines(diff string) []string {
