@@ -275,6 +275,39 @@ func TestRuntimeModelGroupsExplorationToolsAndSkipsThoughtLoggedResult(t *testin
 	}
 }
 
+func TestRuntimeModelPrefersFullReadFileOutputOverClippedDisplayPreview(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "read-1",
+		Name:      "read_file",
+		Subtitle:  "Read a.cpp",
+		Arguments: `{"path":"a.cpp"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID:    "read-1",
+		ToolName:      "read_file",
+		Output:        "#include <iostream>\n#include <vector>\n#include <utility>\n\nint partition(std::vector<int>& arr, int left, int right) {",
+		DisplayOutput: "#include <iostream>\n#include <vector>\n#include <utility>\nint partition(std::vector<int>& arr, int left, int right) {\n... +31 lines",
+	})
+
+	blocks := model.ToBlocks()
+	if len(blocks) != 1 {
+		t.Fatalf("len(ToBlocks()) = %d, want 1", len(blocks))
+	}
+	if blocks[0].Kind != BlockKindActivityGroup {
+		t.Fatalf("blocks[0].Kind = %v, want activity group", blocks[0].Kind)
+	}
+
+	preview := blocks[0].Activity.Preview.Text
+	if strings.Contains(preview, "... +31 lines") {
+		t.Fatalf("preview = %q, want clipped display marker removed", preview)
+	}
+	if !strings.Contains(preview, "#include <utility>\n\nint partition") {
+		t.Fatalf("preview = %q, want blank line preserved between include and function", preview)
+	}
+}
+
 func TestOutputModelToggleExpandTargetsLatestCollapsiblePreview(t *testing.T) {
 	longText := strings.Join([]string{
 		"line 1", "line 2", "line 3", "line 4", "line 5",
@@ -335,6 +368,33 @@ func TestOutputModelToggleExpandTargetsLatestCollapsiblePreview(t *testing.T) {
 	}
 }
 
+func TestRenderPreviewBodyExpandedShowsAllToolOutputLines(t *testing.T) {
+	lines := make([]string, 0, 50)
+	for i := 1; i <= 50; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+
+	model := NewOutputModel()
+	model.width = 80
+	model.expanded["tool-1"] = true
+
+	rendered := ansi.Strip(model.renderPreviewBody("tool-1", "Ran long command", PreviewBody{
+		Text:        strings.Join(lines, "\n"),
+		Kind:        PreviewKindText,
+		Collapsible: true,
+	}))
+
+	if !strings.Contains(rendered, "line 50") {
+		t.Fatalf("expanded preview missing tail content:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "... +") {
+		t.Fatalf("expanded preview unexpectedly contains inline truncation marker:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Ctrl+O collapse") {
+		t.Fatalf("expanded preview missing collapse hint:\n%s", rendered)
+	}
+}
+
 func TestRenderEditDiffPreviewBodyKeepsRealHunkContext(t *testing.T) {
 	summary := "Edited main.go (+2 -1)"
 	content := strings.Join([]string{
@@ -385,6 +445,25 @@ func TestRenderEditDiffPreviewBodyKeepsRealHunkContext(t *testing.T) {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded diff missing %q in:\n%s", want, expanded)
 		}
+	}
+}
+
+func TestRenderEditDiffPreviewBodyExpandedShowsAllDiffLines(t *testing.T) {
+	summary := "Edited main.go (+45 -0)"
+	body := []string{"@@ -1,0 +1,45 @@"}
+	for i := 1; i <= 45; i++ {
+		body = append(body, fmt.Sprintf("+line %d", i))
+	}
+
+	rendered, ok := renderEditDiffPreviewBody(summary, strings.Join(body, "\n"), true)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBody() = false, want diff preview rendered")
+	}
+	if !strings.Contains(rendered, "line 45") {
+		t.Fatalf("expanded diff missing tail content:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Ctrl+O collapse") {
+		t.Fatalf("expanded diff missing collapse hint:\n%s", rendered)
 	}
 }
 
@@ -493,6 +572,28 @@ func TestRenderEditDiffPreviewBodyWrapsLongLinesWithAlignedGutter(t *testing.T) 
 	}, "\n")
 	if !strings.Contains(rendered, want) {
 		t.Fatalf("rendered diff missing wrapped Codex-style gutter alignment in:\n%s", rendered)
+	}
+}
+
+func TestRenderEditDiffPreviewBodyWithoutAbsoluteHeaderDoesNotInventLineNumbers(t *testing.T) {
+	summary := "Edited a.cpp (+3 -0)"
+	content := strings.Join([]string{
+		"@@",
+		" void printArray(const std::vector<int>& arr) {",
+		"+bool isSorted(const std::vector<int>& arr) {",
+		"+    return true;",
+		"+}",
+	}, "\n")
+
+	rendered, ok := renderEditDiffPreviewBody(summary, content, true)
+	if !ok {
+		t.Fatal("renderEditDiffPreviewBody() = false, want diff preview rendered")
+	}
+	if strings.Contains(rendered, "1 +bool isSorted") {
+		t.Fatalf("rendered diff = %q, want no fabricated line numbers for headerless hunk", rendered)
+	}
+	if !strings.Contains(rendered, "+bool isSorted") {
+		t.Fatalf("rendered diff = %q, want diff body rendered", rendered)
 	}
 }
 

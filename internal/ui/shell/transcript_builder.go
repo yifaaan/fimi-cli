@@ -13,9 +13,8 @@ import (
 )
 
 const (
-	defaultPreviewLineLimit  = 8
-	diffPreviewLineLimit     = 14
-	expandedPreviewLineLimit = 40
+	defaultPreviewLineLimit = 8
+	diffPreviewLineLimit    = 14
 )
 
 type activityRef struct {
@@ -258,7 +257,7 @@ func (b *transcriptBuilder) applyToolResult(result runtimeevents.ToolResult) {
 		block.Activity.Title = title
 	}
 
-	previewText := normalizePreviewText(block.Activity.Title, toolResultDisplayOutput(result.Output, result.DisplayOutput))
+	previewText := normalizePreviewText(block.Activity.Title, toolResultPreviewOutput(toolName, result.Output, result.DisplayOutput))
 	if strings.TrimSpace(previewText) == "" {
 		return
 	}

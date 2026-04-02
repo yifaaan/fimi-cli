@@ -57,45 +57,71 @@ func parseEditDiffPreview(content string) (editDiffPreview, bool) {
 
 	var oldLine int
 	var newLine int
+	var hasLineNumbers bool
 	hasDiff := false
 
 	for _, raw := range rawLines[1:] {
 		switch {
 		case strings.HasPrefix(raw, "@@"):
-			oldLine, newLine = parseEditDiffHunkHeader(raw)
+			oldLine, newLine, hasLineNumbers = parseEditDiffHunkHeader(raw)
 			preview.Lines = append(preview.Lines, editDiffLine{
 				Kind: editDiffLineHunk,
 				Raw:  raw,
 			})
 			hasDiff = true
 		case strings.HasPrefix(raw, " "):
+			line := editDiffLine{
+				Kind: editDiffLineContext,
+				Raw:  raw,
+				Text: raw[1:],
+			}
+			if hasLineNumbers {
+				line.OldLine = oldLine
+				line.NewLine = newLine
+				oldLine++
+				newLine++
+			}
 			preview.Lines = append(preview.Lines, editDiffLine{
-				Kind:    editDiffLineContext,
-				Raw:     raw,
-				Text:    raw[1:],
-				OldLine: oldLine,
-				NewLine: newLine,
+				Kind:    line.Kind,
+				Raw:     line.Raw,
+				Text:    line.Text,
+				OldLine: line.OldLine,
+				NewLine: line.NewLine,
 			})
-			oldLine++
-			newLine++
 			hasDiff = true
 		case strings.HasPrefix(raw, "-"):
+			line := editDiffLine{
+				Kind: editDiffLineRemove,
+				Raw:  raw,
+				Text: raw[1:],
+			}
+			if hasLineNumbers {
+				line.OldLine = oldLine
+				oldLine++
+			}
 			preview.Lines = append(preview.Lines, editDiffLine{
-				Kind:    editDiffLineRemove,
-				Raw:     raw,
-				Text:    raw[1:],
-				OldLine: oldLine,
+				Kind:    line.Kind,
+				Raw:     line.Raw,
+				Text:    line.Text,
+				OldLine: line.OldLine,
 			})
-			oldLine++
 			hasDiff = true
 		case strings.HasPrefix(raw, "+"):
+			line := editDiffLine{
+				Kind: editDiffLineAdd,
+				Raw:  raw,
+				Text: raw[1:],
+			}
+			if hasLineNumbers {
+				line.NewLine = newLine
+				newLine++
+			}
 			preview.Lines = append(preview.Lines, editDiffLine{
-				Kind:    editDiffLineAdd,
-				Raw:     raw,
-				Text:    raw[1:],
-				NewLine: newLine,
+				Kind:    line.Kind,
+				Raw:     line.Raw,
+				Text:    line.Text,
+				NewLine: line.NewLine,
 			})
-			newLine++
 			hasDiff = true
 		}
 	}
@@ -103,15 +129,15 @@ func parseEditDiffPreview(content string) (editDiffPreview, bool) {
 	return preview, hasDiff
 }
 
-func parseEditDiffHunkHeader(raw string) (oldLine int, newLine int) {
+func parseEditDiffHunkHeader(raw string) (oldLine int, newLine int, ok bool) {
 	matches := editDiffHunkHeaderRE.FindStringSubmatch(raw)
 	if matches == nil {
-		return 0, 0
+		return 0, 0, false
 	}
 
 	oldLine, _ = strconv.Atoi(matches[1])
 	newLine, _ = strconv.Atoi(matches[2])
-	return oldLine, newLine
+	return oldLine, newLine, true
 }
 
 func renderEditDiffPreviewBody(summary string, content string, expanded bool) (string, bool) {
@@ -276,11 +302,12 @@ func editDiffLineNumberWidth(lines []editDiffLine) int {
 }
 
 func truncateEditDiffLines(lines []editDiffLine, expanded bool) ([]editDiffLine, int) {
+	if expanded {
+		return append([]editDiffLine(nil), lines...), 0
+	}
+
 	totalVisible := countVisibleEditDiffLines(lines)
 	limit := diffPreviewLineLimit
-	if expanded {
-		limit = expandedPreviewLineLimit
-	}
 	if totalVisible <= limit {
 		return append([]editDiffLine(nil), lines...), 0
 	}

@@ -339,13 +339,10 @@ func (m OutputModel) renderPreviewBody(blockID string, title string, preview Pre
 	}
 	limit := previewDefaultLimit(preview.Kind)
 	hint := previewToggleHint(expanded)
-	if expanded {
-		limit = expandedPreviewLineLimit
-	}
 
 	lines := strings.Split(strings.TrimRight(preview.Text, "\n"), "\n")
 	hidden := 0
-	if preview.Collapsible && len(lines) > limit {
+	if preview.Collapsible && !expanded && len(lines) > limit {
 		hidden = len(lines) - limit
 		lines = lines[:limit]
 	}
@@ -681,7 +678,7 @@ func (m OutputModel) AppendCommittedRuntimeEvent(event runtimeevents.Event) Outp
 		})
 	case runtimeevents.ToolResult:
 		title := summarizeActivityTitle(e.ToolName, e.Output, e.DisplayOutput)
-		previewText := normalizePreviewText(title, toolResultDisplayOutput(e.Output, e.DisplayOutput))
+		previewText := normalizePreviewText(title, toolResultPreviewOutput(e.ToolName, e.Output, e.DisplayOutput))
 		return m.AppendBlock(TranscriptBlock{
 			Kind: BlockKindActivityGroup,
 			Activity: ActivityGroupBlock{

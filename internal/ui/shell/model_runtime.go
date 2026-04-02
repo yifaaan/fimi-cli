@@ -293,6 +293,16 @@ func toolResultDisplayOutput(output string, displayOutput string) string {
 	return output
 }
 
+func toolResultPreviewOutput(toolName string, output string, displayOutput string) string {
+	switch toolName {
+	case "read_file", "glob", "grep", "search_web", "fetch_url":
+		if strings.TrimSpace(output) != "" {
+			return output
+		}
+	}
+	return toolResultDisplayOutput(output, displayOutput)
+}
+
 func (m RuntimeModel) SpinnerCmd() tea.Cmd {
 	return m.spinner.Tick
 }
