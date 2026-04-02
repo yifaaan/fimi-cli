@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fimi-cli/internal/approval"
 	"fimi-cli/internal/runtime"
 )
 
@@ -93,6 +94,7 @@ func (e Executor) Execute(ctx context.Context, call runtime.ToolCall) (runtime.T
 		}, nil
 	}
 
+	ctx = approval.WithToolCallID(ctx, call.ID)
 	execution, err := handler(ctx, call, definition)
 	if err != nil {
 		return runtime.ToolExecution{}, fmt.Errorf("execute tool %q: %w", name, err)

@@ -66,6 +66,40 @@ func TestApproveReturnsNil(t *testing.T) {
 	}
 }
 
+func TestRequestIncludesToolCallIDFromContext(t *testing.T) {
+	a := New(false)
+	w := wire.New(0)
+	ctx := wire.WithCurrent(context.Background(), w)
+	ctx = WithToolCallID(ctx, "call-123")
+
+	reqCh := make(chan *wire.ApprovalRequest, 1)
+	go func() {
+		msg, err := w.Receive(context.Background())
+		if err != nil {
+			return
+		}
+		req, ok := msg.(*wire.ApprovalRequest)
+		if !ok {
+			return
+		}
+		reqCh <- req
+		req.Resolve(wire.ApprovalApprove)
+	}()
+
+	if err := a.Request(ctx, "bash", "ls"); err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.ToolCallID != "call-123" {
+			t.Fatalf("ApprovalRequest.ToolCallID = %q, want %q", req.ToolCallID, "call-123")
+		}
+	default:
+		t.Fatal("expected approval request to be received")
+	}
+}
+
 func TestApproveForSessionAddsToAutoApprove(t *testing.T) {
 	a := New(false)
 	w := wire.New(0)
@@ -108,6 +142,13 @@ func TestWithContextRoundTrip(t *testing.T) {
 	got := FromContext(ctx)
 	if got != a {
 		t.Fatal("expected to get the same Approval back from context")
+	}
+}
+
+func TestWithToolCallIDRoundTrip(t *testing.T) {
+	ctx := WithToolCallID(context.Background(), "call-456")
+	if got := ToolCallIDFromContext(ctx); got != "call-456" {
+		t.Fatalf("ToolCallIDFromContext() = %q, want %q", got, "call-456")
 	}
 }
 

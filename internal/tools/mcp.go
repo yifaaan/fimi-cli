@@ -2,11 +2,13 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
 	"fimi-cli/internal/mcp"
 	"fimi-cli/internal/runtime"
+	runtimeevents "fimi-cli/internal/runtime/events"
 )
 
 // NewMCPToolHandler creates a HandlerFunc that delegates to an MCP tool.
@@ -27,12 +29,14 @@ func NewMCPToolHandler(client *mcp.Client, tool mcp.Tool) HandlerFunc {
 			return runtime.ToolExecution{}, markTemporary(err)
 		}
 
-		// Convert result to string output
 		output := convertMCPResultToString(result)
+		content := convertMCPResultToRichContent(result)
 
 		return runtime.ToolExecution{
-			Call:   call,
-			Output: output,
+			Call:          call,
+			Output:        output,
+			DisplayOutput: output,
+			Content:       content,
 		}, nil
 	}
 }
@@ -56,4 +60,35 @@ func convertMCPResultToString(result *mcp.ToolResult) string {
 		return "[Tool Error] " + sb
 	}
 	return sb
+}
+
+func convertMCPResultToRichContent(result *mcp.ToolResult) []runtimeevents.RichContent {
+	if result == nil || len(result.Content) == 0 {
+		return nil
+	}
+
+	content := make([]runtimeevents.RichContent, 0, len(result.Content))
+	for _, item := range result.Content {
+		switch c := item.(type) {
+		case mcp.TextContent:
+			content = append(content, runtimeevents.RichContent{
+				Type: "text",
+				Text: c.Text,
+			})
+		case mcp.ImageContent:
+			content = append(content, runtimeevents.RichContent{
+				Type:     "image",
+				MIMEType: c.MIMEType,
+				Data:     base64.StdEncoding.EncodeToString(c.Data),
+			})
+		case mcp.AudioContent:
+			content = append(content, runtimeevents.RichContent{
+				Type:     "audio",
+				MIMEType: c.MIMEType,
+				Data:     base64.StdEncoding.EncodeToString(c.Data),
+			})
+		}
+	}
+
+	return content
 }

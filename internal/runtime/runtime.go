@@ -120,6 +120,7 @@ type ToolExecution struct {
 	Call          ToolCall
 	Output        string
 	DisplayOutput string
+	Content       []runtimeevents.RichContent
 	Stdout        string
 	Stderr        string
 	ExitCode      int
@@ -765,6 +766,7 @@ func (r Runner) emitStepEvents(
 			ToolName:      exec.Call.Name,
 			Output:        exec.Output,
 			DisplayOutput: firstNonEmptyDisplay(exec.DisplayOutput, exec.Output),
+			Content:       exec.Content,
 			IsError:       false,
 		}); err != nil {
 			return err

@@ -103,6 +103,7 @@ type ToolResult struct {
 	ToolName      string
 	Output        string
 	DisplayOutput string
+	Content       []RichContent
 	IsError       bool
 }
 

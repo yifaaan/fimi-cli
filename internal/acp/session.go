@@ -3,59 +3,66 @@ package acp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	runtimeevents "fimi-cli/internal/runtime/events"
 	sessionpkg "fimi-cli/internal/session"
+	"fimi-cli/internal/wire"
 )
 
-// Session 封装一个 ACP 客户端的 session 状态。
+// Session wraps the ACP-facing state for a single runtime session.
 type Session struct {
 	session sessionpkg.Session
 	conn    *FramedConn
 	mu      sync.Mutex
 	modelID string
 
-	// 运行中的 prompt 上下文
+	// cancelFn cancels the currently-running prompt, if any.
 	cancelFn context.CancelFunc
+
+	pendingApprovals map[string]*wire.ApprovalRequest
+	startedToolCalls map[string]bool
 }
 
-// NewSession 创建一个新的 ACP session。
+// NewSession creates a new ACP session wrapper.
 func NewSession(sess sessionpkg.Session, conn *FramedConn, modelID string) *Session {
 	return &Session{
-		session: sess,
-		conn:    conn,
-		modelID: modelID,
+		session:          sess,
+		conn:             conn,
+		modelID:          modelID,
+		pendingApprovals: make(map[string]*wire.ApprovalRequest),
+		startedToolCalls: make(map[string]bool),
 	}
 }
 
-// HistoryFile 返回 session 的历史文件路径。
+// HistoryFile returns the backing session history path.
 func (s *Session) HistoryFile() string {
 	return s.session.HistoryFile
 }
 
-// CurrentModelID 返回 session 当前使用的模型。
+// CurrentModelID returns the session's current model selection.
 func (s *Session) CurrentModelID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.modelID
 }
 
-// SetModelID 设置 session 当前使用的模型。
+// SetModelID updates the session's current model selection.
 func (s *Session) SetModelID(modelID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.modelID = modelID
 }
 
-// SetCancel 设置用于取消运行中 prompt 的函数。
+// SetCancel stores the cancel func for the currently-running prompt.
 func (s *Session) SetCancel(fn context.CancelFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cancelFn = fn
 }
 
-// Cancel 取消运行中的 prompt。
+// Cancel cancels the currently-running prompt, if any.
 func (s *Session) Cancel() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,12 +72,11 @@ func (s *Session) Cancel() {
 	}
 }
 
-// Visualize 返回一个 ui.VisualizeFunc，将 runtime 事件转换为 ACP session_update 通知。
-// 这是 ACP 服务端流式架构的核心：runtime 事件 → ACP 通知。
-func (s *Session) Visualize() func(ctx context.Context, events <-chan runtimeevents.Event) error {
-	return func(ctx context.Context, events <-chan runtimeevents.Event) error {
-		for event := range events {
-			if err := s.translateAndSend(event); err != nil {
+// VisualizeWire converts wire messages into ACP session/update notifications.
+func (s *Session) VisualizeWire() func(ctx context.Context, messages <-chan wire.Message) error {
+	return func(ctx context.Context, messages <-chan wire.Message) error {
+		for msg := range messages {
+			if err := s.translateAndSendMessage(msg); err != nil {
 				return err
 			}
 		}
@@ -78,17 +84,29 @@ func (s *Session) Visualize() func(ctx context.Context, events <-chan runtimeeve
 	}
 }
 
-// translateAndSend 将单个 runtime 事件翻译成 ACP 通知并发送。
-func (s *Session) translateAndSend(event runtimeevents.Event) error {
+func (s *Session) translateAndSendMessage(msg wire.Message) error {
+	switch m := msg.(type) {
+	case wire.EventMessage:
+		return s.translateAndSendEvent(m.Event)
+	case *wire.ApprovalRequest:
+		return s.sendApprovalRequest(m)
+	default:
+		return nil
+	}
+}
+
+func (s *Session) translateAndSendEvent(event runtimeevents.Event) error {
 	switch e := event.(type) {
 	case runtimeevents.TextPart:
 		return s.sendAgentMessageChunk(e.Text)
+	case runtimeevents.ToolCallPart:
+		return s.sendToolCallPart(e)
 	case runtimeevents.ToolCall:
 		return s.sendToolCallStart(e)
 	case runtimeevents.ToolResult:
 		return s.sendToolCallProgress(e)
 	default:
-		// StepBegin, StepInterrupted, StatusUpdate, ToolCallPart 暂不发送给 ACP 客户端
+		// StepBegin, StepInterrupted, and StatusUpdate are not projected yet.
 		return nil
 	}
 }
@@ -103,17 +121,61 @@ func (s *Session) sendAgentMessageChunk(text string) error {
 	})
 }
 
-func (s *Session) sendToolCallStart(tc runtimeevents.ToolCall) error {
-	content := []ToolCallContentItem{
-		{
-			Type:    "text",
-			Content: TextContentBlock{Type: "text", Text: tc.Arguments},
-		},
+func (s *Session) sendToolCallPart(part runtimeevents.ToolCallPart) error {
+	if strings.TrimSpace(part.Delta) == "" {
+		return nil
 	}
 
+	s.mu.Lock()
+	firstChunk := !s.startedToolCalls[part.ToolCallID]
+	s.startedToolCalls[part.ToolCallID] = true
+	s.mu.Unlock()
+
+	if firstChunk {
+		return s.conn.SendNotification("session/update", SessionUpdateNotification{
+			SessionID: s.session.ID,
+			Update: ToolCallStart{
+				SessionUpdate: "tool_call_start",
+				ToolCallID:    part.ToolCallID,
+				Title:         "Tool call",
+				Status:        "in_progress",
+				Content:       buildACPContentItems([]runtimeevents.RichContent{{Type: "text", Text: part.Delta}}, ""),
+			},
+		})
+	}
+
+	return s.conn.SendNotification("session/update", SessionUpdateNotification{
+		SessionID: s.session.ID,
+		Update: ToolCallProgress{
+			SessionUpdate: "tool_call_progress",
+			ToolCallID:    part.ToolCallID,
+			Status:        "in_progress",
+			Content:       buildACPContentItems([]runtimeevents.RichContent{{Type: "text", Text: part.Delta}}, ""),
+		},
+	})
+}
+
+func (s *Session) sendToolCallStart(tc runtimeevents.ToolCall) error {
 	title := tc.Name
 	if tc.Subtitle != "" {
 		title = fmt.Sprintf("%s(%s)", tc.Name, tc.Subtitle)
+	}
+
+	s.mu.Lock()
+	started := s.startedToolCalls[tc.ID]
+	s.startedToolCalls[tc.ID] = true
+	s.mu.Unlock()
+
+	if started {
+		return s.conn.SendNotification("session/update", SessionUpdateNotification{
+			SessionID: s.session.ID,
+			Update: ToolCallProgress{
+				SessionUpdate: "tool_call_progress",
+				ToolCallID:    tc.ID,
+				Title:         title,
+				Status:        "in_progress",
+			},
+		})
 	}
 
 	return s.conn.SendNotification("session/update", SessionUpdateNotification{
@@ -123,7 +185,7 @@ func (s *Session) sendToolCallStart(tc runtimeevents.ToolCall) error {
 			ToolCallID:    tc.ID,
 			Title:         title,
 			Status:        "in_progress",
-			Content:       content,
+			Content:       buildACPContentItems(nil, tc.Arguments),
 		},
 	})
 }
@@ -134,22 +196,9 @@ func (s *Session) sendToolCallProgress(tr runtimeevents.ToolResult) error {
 		status = "failed"
 	}
 
-	// 截断过长的工具输出
-	output := tr.DisplayOutput
-	if output == "" {
-		output = tr.Output
-	}
-	const maxOutputLen = 10000
-	if len(output) > maxOutputLen {
-		output = output[:maxOutputLen] + "\n... (truncated)"
-	}
-
-	content := []ToolCallContentItem{
-		{
-			Type:    "text",
-			Content: TextContentBlock{Type: "text", Text: output},
-		},
-	}
+	s.mu.Lock()
+	delete(s.startedToolCalls, tr.ToolCallID)
+	s.mu.Unlock()
 
 	return s.conn.SendNotification("session/update", SessionUpdateNotification{
 		SessionID: s.session.ID,
@@ -158,7 +207,122 @@ func (s *Session) sendToolCallProgress(tr runtimeevents.ToolResult) error {
 			ToolCallID:    tr.ToolCallID,
 			Title:         tr.ToolName,
 			Status:        status,
-			Content:       content,
+			Content:       buildACPContentItems(tr.Content, firstNonEmptyToolOutput(tr.DisplayOutput, tr.Output)),
 		},
 	})
+}
+
+func (s *Session) sendApprovalRequest(req *wire.ApprovalRequest) error {
+	if req == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	s.pendingApprovals[req.ID] = req
+	s.mu.Unlock()
+
+	return s.conn.SendNotification("session/update", SessionUpdateNotification{
+		SessionID: s.session.ID,
+		Update: ApprovalRequestUpdate{
+			SessionUpdate: "approval_request",
+			ApprovalID:    req.ID,
+			ToolCallID:    req.ToolCallID,
+			Action:        req.Action,
+			Description:   req.Description,
+		},
+	})
+}
+
+// ResolveApproval applies an ACP client's approval decision to a pending request.
+func (s *Session) ResolveApproval(id string, resp wire.ApprovalResponse) error {
+	s.mu.Lock()
+	req, ok := s.pendingApprovals[id]
+	if ok {
+		delete(s.pendingApprovals, id)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("approval not found: %s", id)
+	}
+
+	return req.Resolve(resp)
+}
+
+// ClearPendingApprovals rejects any approvals that are still tracked by the ACP
+// session, typically after a prompt exits or is cancelled.
+func (s *Session) ClearPendingApprovals() {
+	s.mu.Lock()
+	pending := make([]*wire.ApprovalRequest, 0, len(s.pendingApprovals))
+	for id, req := range s.pendingApprovals {
+		pending = append(pending, req)
+		delete(s.pendingApprovals, id)
+	}
+	s.mu.Unlock()
+
+	for _, req := range pending {
+		_ = req.Resolve(wire.ApprovalReject)
+	}
+}
+
+func buildACPContentItems(content []runtimeevents.RichContent, fallbackText string) []ToolCallContentItem {
+	if len(content) == 0 {
+		return buildTextContentItems(fallbackText)
+	}
+
+	items := make([]ToolCallContentItem, 0, len(content)+1)
+	if fallbackText != "" && hasNonTextContent(content) {
+		items = append(items, ToolCallContentItem{
+			Type:    "text",
+			Content: ContentBlock{Type: "text", Text: fallbackText},
+		})
+	}
+
+	for _, item := range content {
+		block := ContentBlock{Type: item.Type, Text: item.Text, MIMEType: item.MIMEType, Data: item.Data}
+		itemType := item.Type
+		if itemType == "" {
+			itemType = "text"
+			block.Type = "text"
+		}
+		items = append(items, ToolCallContentItem{
+			Type:    itemType,
+			Content: block,
+		})
+	}
+
+	return items
+}
+
+func buildTextContentItems(text string) []ToolCallContentItem {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	return []ToolCallContentItem{{
+		Type:    "text",
+		Content: ContentBlock{Type: "text", Text: text},
+	}}
+}
+
+func hasNonTextContent(content []runtimeevents.RichContent) bool {
+	for _, item := range content {
+		if item.Type != "" && item.Type != "text" {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmptyToolOutput(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			const maxOutputLen = 10000
+			if len(value) > maxOutputLen {
+				return value[:maxOutputLen] + "\n... (truncated)"
+			}
+			return value
+		}
+	}
+	return ""
 }

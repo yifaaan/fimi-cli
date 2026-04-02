@@ -11,15 +11,14 @@ import (
 	"fimi-cli/internal/config"
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
-	"fimi-cli/internal/ui"
 )
 
 type rpcEnvelope struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      any              `json:"id,omitempty"`
-	Method  string           `json:"method,omitempty"`
-	Result  json.RawMessage  `json:"result,omitempty"`
-	Error   *RPCError        `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      any             `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *RPCError       `json:"error,omitempty"`
 }
 
 func TestFramedConnServeSendsSyncHandlerResponse(t *testing.T) {
@@ -86,7 +85,7 @@ func TestHandlePromptReturnsNilAndSendsAsyncResponse(t *testing.T) {
 	server.sessions[sess.ID] = NewSession(sess, server.conn, config.Default().DefaultModel)
 
 	runCalled := make(chan struct{}, 1)
-	server.runFn = func(ctx context.Context, store contextstore.Context, input runtime.Input, visualize ui.VisualizeFunc) (runtime.Result, error) {
+	server.runFn = func(ctx context.Context, store contextstore.Context, input runtime.Input, acpSession *Session) (runtime.Result, error) {
 		runCalled <- struct{}{}
 		return runtime.Result{Status: runtime.RunStatusFinished}, nil
 	}
@@ -113,10 +112,19 @@ func TestHandlePromptReturnsNilAndSendsAsyncResponse(t *testing.T) {
 		t.Fatal("runFn was not called")
 	}
 
-	lines := bytes.Split(bytes.TrimSpace(out.Bytes()), []byte("\n"))
-	if len(lines) == 0 {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if out.Len() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	trimmed := bytes.TrimSpace(out.Bytes())
+	if len(trimmed) == 0 {
 		t.Fatal("no async response written")
 	}
+	lines := bytes.Split(trimmed, []byte("\n"))
 
 	var msg rpcEnvelope
 	if err := json.Unmarshal(lines[len(lines)-1], &msg); err != nil {
@@ -183,7 +191,7 @@ func TestHandlePromptSendsAsyncError(t *testing.T) {
 	server.sessions[sess.ID] = NewSession(sess, server.conn, config.Default().DefaultModel)
 
 	wantErr := "prompt failed"
-	server.runFn = func(ctx context.Context, store contextstore.Context, input runtime.Input, visualize ui.VisualizeFunc) (runtime.Result, error) {
+	server.runFn = func(ctx context.Context, store contextstore.Context, input runtime.Input, acpSession *Session) (runtime.Result, error) {
 		return runtime.Result{}, errors.New(wantErr)
 	}
 

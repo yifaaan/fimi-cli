@@ -11,12 +11,12 @@ import (
 	"fimi-cli/internal/contextstore"
 	"fimi-cli/internal/runtime"
 	"fimi-cli/internal/session"
-	"fimi-cli/internal/ui"
+	"fimi-cli/internal/wire"
 )
 
 // RunFunc 是 ACP server 用来执行一次 agent prompt 的函数签名。
 // 调用方提供 store（持久化）和 visualize（事件流）。
-type RunFunc func(ctx context.Context, store contextstore.Context, input runtime.Input, visualize ui.VisualizeFunc) (runtime.Result, error)
+type RunFunc func(ctx context.Context, store contextstore.Context, input runtime.Input, acpSession *Session) (runtime.Result, error)
 
 // Server 是 ACP JSON-RPC 服务器。
 // 它在 stdio 上监听 JSON-RPC 请求，并分发到注册的 handler。
@@ -55,6 +55,7 @@ func (s *Server) registerHandlers() {
 	s.conn.Register("set_session_mode", s.handleSetSessionMode)
 	s.conn.Register("set_session_model", s.handleSetSessionModel)
 	s.conn.RegisterAsync("prompt", s.handlePrompt)
+	s.conn.Register("resolve_approval", s.handleResolveApproval)
 	s.conn.Register("cancel", s.handleCancel)
 }
 
@@ -245,6 +246,7 @@ func (s *Server) handlePrompt(id any, params json.RawMessage) (any, error) {
 	go func() {
 		// 一次prompt请求对应一个ctx，执行完后ctx对应的cancel也清除
 		defer acpSess.SetCancel(nil)
+		defer acpSess.ClearPendingApprovals()
 
 		store := contextstore.New(acpSess.HistoryFile())
 
@@ -254,7 +256,7 @@ func (s *Server) handlePrompt(id any, params json.RawMessage) (any, error) {
 			SystemPrompt: "",
 		}
 
-		result, err := s.runFn(ctx, store, input, acpSess.Visualize())
+		result, err := s.runFn(ctx, store, input, acpSess)
 
 		if err != nil {
 			_ = s.conn.SendError(id, CodeInternalError, err.Error())
@@ -264,6 +266,30 @@ func (s *Server) handlePrompt(id any, params json.RawMessage) (any, error) {
 		stopReason := mapStopReason(result.Status)
 		_ = s.conn.SendResponse(id, PromptResult{StopReason: stopReason})
 	}()
+
+	return nil, nil
+}
+
+func (s *Server) handleResolveApproval(id any, params json.RawMessage) (any, error) {
+	var p ResolveApprovalParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse resolve_approval params: %w", err)
+	}
+
+	s.mu.Lock()
+	acpSess, ok := s.sessions[p.SessionID]
+	s.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", p.SessionID)
+	}
+
+	resp, err := parseApprovalResponse(p.Response)
+	if err != nil {
+		return nil, err
+	}
+	if err := acpSess.ResolveApproval(p.ApprovalID, resp); err != nil {
+		return nil, err
+	}
 
 	return nil, nil
 }
@@ -283,6 +309,19 @@ func (s *Server) handleCancel(id any, params json.RawMessage) (any, error) {
 
 	acpSess.Cancel()
 	return nil, nil
+}
+
+func parseApprovalResponse(raw string) (wire.ApprovalResponse, error) {
+	switch raw {
+	case string(wire.ApprovalApprove):
+		return wire.ApprovalApprove, nil
+	case string(wire.ApprovalApproveForSession):
+		return wire.ApprovalApproveForSession, nil
+	case string(wire.ApprovalReject):
+		return wire.ApprovalReject, nil
+	default:
+		return wire.ApprovalReject, fmt.Errorf("unsupported approval response: %s", raw)
+	}
 }
 
 // buildSessionModels 从配置中构建可用模型列表。
@@ -374,9 +413,7 @@ func mapStopReason(status runtime.RunStatus) string {
 	}
 }
 
-// Ensure FramedConn satisfies nothing extra -- it's a standalone type.
-// Session's Visualize method returns a function matching ui.VisualizeFunc.
-// The actual ACP run closure is assembled at the app boundary.
-var _ RunFunc = func(context.Context, contextstore.Context, runtime.Input, ui.VisualizeFunc) (runtime.Result, error) {
+// Ensure the app boundary provides the expected ACP run closure shape.
+var _ RunFunc = func(context.Context, contextstore.Context, runtime.Input, *Session) (runtime.Result, error) {
 	return runtime.Result{}, nil
 }

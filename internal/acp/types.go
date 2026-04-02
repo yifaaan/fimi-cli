@@ -14,9 +14,9 @@ type Request struct {
 
 // Response 是 JSON-RPC 2.0 响应。
 type Response struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
+	JSONRPC string    `json:"jsonrpc"`
+	ID      any       `json:"id"`
+	Result  any       `json:"result,omitempty"`
 	Error   *RPCError `json:"error,omitempty"`
 }
 
@@ -56,9 +56,9 @@ type Implementation struct {
 
 // InitializeParams 是 initialize 方法的参数。
 type InitializeParams struct {
-	ProtocolVersion   int                `json:"protocol_version"`
+	ProtocolVersion    int                 `json:"protocol_version"`
 	ClientCapabilities *ClientCapabilities `json:"client_capabilities,omitempty"`
-	ClientInfo        *Implementation     `json:"client_info,omitempty"`
+	ClientInfo         *Implementation     `json:"client_info,omitempty"`
 }
 
 // InitializeResult 是 initialize 方法的返回值。
@@ -71,8 +71,8 @@ type InitializeResult struct {
 
 // ClientCapabilities 描述 client 支持的能力。
 type ClientCapabilities struct {
-	Fs        *FsCapabilities        `json:"fs,omitempty"`
-	Terminal  *TerminalCapabilities  `json:"terminal,omitempty"`
+	Fs       *FsCapabilities       `json:"fs,omitempty"`
+	Terminal *TerminalCapabilities `json:"terminal,omitempty"`
 }
 
 // FsCapabilities 描述 client 的文件系统能力。
@@ -83,17 +83,17 @@ type FsCapabilities struct {
 
 // TerminalCapabilities 描述 client 的终端能力。
 type TerminalCapabilities struct {
-	Create     bool `json:"create,omitempty"`
-	Output     bool `json:"output,omitempty"`
+	Create      bool `json:"create,omitempty"`
+	Output      bool `json:"output,omitempty"`
 	WaitForExit bool `json:"wait_for_exit,omitempty"`
-	Kill       bool `json:"kill,omitempty"`
+	Kill        bool `json:"kill,omitempty"`
 }
 
 // AgentCapabilities 描述 agent 支持的能力。
 type AgentCapabilities struct {
-	LoadSession        bool               `json:"load_session"`
-	PromptCapabilities PromptCapabilities `json:"prompt_capabilities"`
-	MCPCapabilities    MCPCapabilities    `json:"mcp_capabilities,omitempty"`
+	LoadSession         bool                `json:"load_session"`
+	PromptCapabilities  PromptCapabilities  `json:"prompt_capabilities"`
+	MCPCapabilities     MCPCapabilities     `json:"mcp_capabilities,omitempty"`
 	SessionCapabilities SessionCapabilities `json:"session_capabilities,omitempty"`
 }
 
@@ -134,7 +134,7 @@ type AuthMethod struct {
 
 // NewSessionParams 是 new_session 方法的参数。
 type NewSessionParams struct {
-	CWD        string     `json:"cwd"`
+	CWD        string      `json:"cwd"`
 	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 }
 
@@ -170,8 +170,8 @@ type SessionMode struct {
 
 // SessionModelState 描述 session 的 model 状态。
 type SessionModelState struct {
-	AvailableModels []ModelInfo    `json:"available_models"`
-	CurrentModelID  string         `json:"current_model_id"`
+	AvailableModels []ModelInfo `json:"available_models"`
+	CurrentModelID  string      `json:"current_model_id"`
 }
 
 // ModelInfo 描述一个可用的模型。
@@ -244,13 +244,23 @@ type PromptParams struct {
 
 // ContentBlock 是 prompt 内容的多态边界。
 type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Data     string `json:"data,omitempty"`
 }
 
 // PromptResult 是 prompt 方法的返回值。
 type PromptResult struct {
 	StopReason string `json:"stop_reason"`
+}
+
+// ResolveApprovalParams carries an ACP client's decision for a pending
+// approval request surfaced through session/update.
+type ResolveApprovalParams struct {
+	SessionID  string `json:"session_id"`
+	ApprovalID string `json:"approval_id"`
+	Response   string `json:"response"`
 }
 
 // --- Session Update 通知类型 ---
@@ -263,38 +273,38 @@ type SessionUpdateNotification struct {
 
 // AgentMessageChunk 是 agent 文本流通知。
 type AgentMessageChunk struct {
-	SessionUpdate string          `json:"session_update"`
+	SessionUpdate string           `json:"session_update"`
 	Content       TextContentBlock `json:"content"`
 }
 
 // AgentThoughtChunk 是 agent 思考流通知。
 type AgentThoughtChunk struct {
-	SessionUpdate string          `json:"session_update"`
+	SessionUpdate string           `json:"session_update"`
 	Content       TextContentBlock `json:"content"`
 }
 
 // ToolCallStart 是工具调用开始通知。
 type ToolCallStart struct {
-	SessionUpdate string               `json:"session_update"`
-	ToolCallID    string               `json:"tool_call_id"`
-	Title         string               `json:"title"`
-	Status        string               `json:"status"` // "in_progress"
+	SessionUpdate string                `json:"session_update"`
+	ToolCallID    string                `json:"tool_call_id"`
+	Title         string                `json:"title"`
+	Status        string                `json:"status"` // "in_progress"
 	Content       []ToolCallContentItem `json:"content,omitempty"`
 }
 
 // ToolCallProgress 是工具调用进度/结果通知。
 type ToolCallProgress struct {
-	SessionUpdate string               `json:"session_update"`
-	ToolCallID    string               `json:"tool_call_id"`
-	Title         string               `json:"title,omitempty"`
-	Status        string               `json:"status"` // "completed", "failed"
+	SessionUpdate string                `json:"session_update"`
+	ToolCallID    string                `json:"tool_call_id"`
+	Title         string                `json:"title,omitempty"`
+	Status        string                `json:"status"` // "in_progress", "completed", "failed"
 	Content       []ToolCallContentItem `json:"content,omitempty"`
 }
 
 // ToolCallContentItem 是工具调用内容项。
 type ToolCallContentItem struct {
-	Type    string          `json:"type"`
-	Content TextContentBlock `json:"content"`
+	Type    string       `json:"type"`
+	Content ContentBlock `json:"content"`
 }
 
 // TextContentBlock 是文本内容块。
@@ -303,10 +313,19 @@ type TextContentBlock struct {
 	Text string `json:"text"`
 }
 
+// ApprovalRequestUpdate surfaces a tool approval gate to ACP clients.
+type ApprovalRequestUpdate struct {
+	SessionUpdate string `json:"session_update"`
+	ApprovalID    string `json:"approval_id"`
+	ToolCallID    string `json:"tool_call_id,omitempty"`
+	Action        string `json:"action"`
+	Description   string `json:"description"`
+}
+
 // AvailableCommandsUpdate 是可用命令更新通知。
 type AvailableCommandsUpdate struct {
-	SessionUpdate      string              `json:"session_update"`
-	AvailableCommands  []AvailableCommand  `json:"available_commands"`
+	SessionUpdate     string             `json:"session_update"`
+	AvailableCommands []AvailableCommand `json:"available_commands"`
 }
 
 // AvailableCommand 描述一个可用命令。

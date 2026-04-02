@@ -12,6 +12,7 @@ import (
 var ErrRejected = errors.New("tool execution rejected by user")
 
 type approvalKey struct{}
+type toolCallIDKey struct{}
 
 // Approval manages tool approval decisions.
 type Approval struct {
@@ -49,6 +50,7 @@ func (a *Approval) Request(ctx context.Context, action, description string) erro
 
 	req := &wire.ApprovalRequest{
 		ID:          fmt.Sprintf("%s:%s", action, description),
+		ToolCallID:  ToolCallIDFromContext(ctx),
 		Action:      action,
 		Description: description,
 	}
@@ -81,4 +83,16 @@ func WithContext(ctx context.Context, a *Approval) context.Context {
 func FromContext(ctx context.Context) *Approval {
 	a, _ := ctx.Value(approvalKey{}).(*Approval)
 	return a
+}
+
+// WithToolCallID stores the active tool call ID in ctx so approval requests
+// can be correlated with the originating tool invocation.
+func WithToolCallID(ctx context.Context, toolCallID string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey{}, toolCallID)
+}
+
+// ToolCallIDFromContext retrieves the active tool call ID from ctx.
+func ToolCallIDFromContext(ctx context.Context) string {
+	toolCallID, _ := ctx.Value(toolCallIDKey{}).(string)
+	return toolCallID
 }
