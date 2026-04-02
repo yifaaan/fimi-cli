@@ -87,6 +87,7 @@ func (e Executor) Execute(ctx context.Context, call runtime.ToolCall) (runtime.T
 	}
 
 	call.Name = name
+	ctx = approval.WithToolCallID(ctx, call.ID)
 	handler, ok := e.handlers[name]
 	if !ok {
 		return runtime.ToolExecution{
@@ -94,7 +95,6 @@ func (e Executor) Execute(ctx context.Context, call runtime.ToolCall) (runtime.T
 		}, nil
 	}
 
-	ctx = approval.WithToolCallID(ctx, call.ID)
 	execution, err := handler(ctx, call, definition)
 	if err != nil {
 		return runtime.ToolExecution{}, fmt.Errorf("execute tool %q: %w", name, err)

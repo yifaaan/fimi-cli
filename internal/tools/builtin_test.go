@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"fimi-cli/internal/approval"
 	"fimi-cli/internal/runtime"
+	"fimi-cli/internal/wire"
 )
 
 func TestNewBuiltinExecutorReadFileReadsWorkspaceFile(t *testing.T) {
@@ -852,6 +854,186 @@ func TestNewBuiltinExecutorReplaceFileRejectsPathOutsideWorkspace(t *testing.T) 
 	})
 	if !errors.Is(err, ErrToolPathOutsideWorkspace) {
 		t.Fatalf("Execute() error = %v, want wrapped %v", err, ErrToolPathOutsideWorkspace)
+	}
+}
+
+func TestNewBuiltinExecutorBashApprovalRequestUsesToolCallIDAndDescription(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	workDir := t.TempDir()
+	executor := NewBuiltinExecutor([]Definition{{
+		Name: ToolBash,
+		Kind: KindCommand,
+	}}, workDir, nil)
+
+	a := approval.New(false)
+	w := wire.New(1)
+	ctx = approval.WithContext(ctx, a)
+	ctx = wire.WithCurrent(ctx, w)
+
+	reqCh := make(chan *wire.ApprovalRequest, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		msg, err := w.Receive(ctx)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, wire.ErrWireClosed) {
+				t.Errorf("Receive() error = %v", err)
+			}
+			return
+		}
+
+		req, ok := msg.(*wire.ApprovalRequest)
+		if !ok {
+			t.Errorf("Receive() got %T, want *wire.ApprovalRequest", msg)
+			return
+		}
+		reqCh <- req
+
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			err := req.Resolve(wire.ApprovalApprove)
+			if err == nil {
+				return
+			}
+			if !errors.Is(err, wire.ErrApprovalRequestNotWaiting) {
+				t.Errorf("Resolve() error = %v", err)
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				t.Errorf("Resolve() did not succeed before timeout: %v", ctx.Err())
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		w.Shutdown()
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+			t.Error("approval helper goroutine did not exit")
+		}
+	})
+
+	_, err := executor.Execute(ctx, runtime.ToolCall{
+		ID:        "call-123",
+		Name:      ToolBash,
+		Arguments: `{"command":"printf 'ok'"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.Action != "bash" {
+			t.Fatalf("ApprovalRequest.Action = %q, want %q", req.Action, "bash")
+		}
+		if req.Description != "printf 'ok'" {
+			t.Fatalf("ApprovalRequest.Description = %q, want %q", req.Description, "printf 'ok'")
+		}
+		if req.ToolCallID != "call-123" {
+			t.Fatalf("ApprovalRequest.ToolCallID = %q, want %q", req.ToolCallID, "call-123")
+		}
+	case <-ctx.Done():
+		t.Fatalf("expected approval request to be received before timeout: %v", ctx.Err())
+	}
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("approval helper goroutine did not finish before timeout: %v", ctx.Err())
+	}
+}
+
+func TestNewBuiltinExecutorBashReturnsRejectedOutputWhenApprovalDenied(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	executor := NewBuiltinExecutor([]Definition{{
+		Name: ToolBash,
+		Kind: KindCommand,
+	}}, t.TempDir(), nil)
+
+	a := approval.New(false)
+	w := wire.New(1)
+	ctx = approval.WithContext(ctx, a)
+	ctx = wire.WithCurrent(ctx, w)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		msg, err := w.Receive(ctx)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, wire.ErrWireClosed) {
+				t.Errorf("Receive() error = %v", err)
+			}
+			return
+		}
+
+		req, ok := msg.(*wire.ApprovalRequest)
+		if !ok {
+			t.Errorf("Receive() got %T, want *wire.ApprovalRequest", msg)
+			return
+		}
+
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			err := req.Resolve(wire.ApprovalReject)
+			if err == nil {
+				return
+			}
+			if !errors.Is(err, wire.ErrApprovalRequestNotWaiting) {
+				t.Errorf("Resolve() error = %v", err)
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				t.Errorf("Resolve() did not succeed before timeout: %v", ctx.Err())
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		w.Shutdown()
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+			t.Error("approval helper goroutine did not exit")
+		}
+	})
+
+	got, err := executor.Execute(ctx, runtime.ToolCall{
+		ID:        "call-456",
+		Name:      ToolBash,
+		Arguments: `{"command":"printf 'blocked'"}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
+	}
+	if got.Output != "Tool execution rejected by user" {
+		t.Fatalf("Execute().Output = %q, want %q", got.Output, "Tool execution rejected by user")
+	}
+	if got.Call.Name != ToolBash {
+		t.Fatalf("Execute().Call.Name = %q, want %q", got.Call.Name, ToolBash)
+	}
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("approval helper goroutine did not finish before timeout: %v", ctx.Err())
 	}
 }
 
