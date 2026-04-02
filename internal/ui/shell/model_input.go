@@ -207,7 +207,7 @@ func (m InputModel) View() string {
 	if width < 32 {
 		width = 32
 	}
-	bodyWidth := messageBodyWidth(width)
+	bodyWidth := panelWidthForRenderWidth(width)
 
 	before := styles.ComposerTextStyle.Render(m.value[:m.cursorPos])
 	after := styles.ComposerTextStyle.Render(m.value[m.cursorPos:])
@@ -239,5 +239,5 @@ func (m InputModel) View() string {
 
 	body := lipgloss.JoinVertical(lipgloss.Left, content, footer)
 
-	return transcriptBodyIndent() + styles.ComposerBoxStyle.Width(bodyWidth).Render(body)
+	return styles.ComposerBoxStyle.Width(bodyWidth).Render(body)
 }

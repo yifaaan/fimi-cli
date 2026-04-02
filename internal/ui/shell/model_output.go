@@ -236,7 +236,7 @@ func renderUserPromptBlock(text string, width int) string {
 	if text == "" {
 		return ""
 	}
-	return renderLabeledMessage("You", styles.UserLabelStyle, styles.UserBubbleStyle.Width(messageBodyWidth(width)).Render(text))
+	return styles.UserBubbleStyle.Width(width).Render(text)
 }
 
 func renderAssistantNoteBlock(note string, width int) string {
@@ -245,7 +245,7 @@ func renderAssistantNoteBlock(note string, width int) string {
 		return ""
 	}
 	body := strings.Join(paragraphs, "\n\n")
-	return renderLabeledMessage("fimi", styles.AssistantLabelStyle, styles.AssistantBubbleStyle.Width(messageBodyWidth(width)).Render(body))
+	return styles.AssistantBubbleStyle.Width(width).Render(body)
 }
 
 func splitParagraphs(text string) []string {
@@ -764,11 +764,7 @@ func (m OutputModel) renderWidth() int {
 }
 
 func (m OutputModel) panelWidth() int {
-	width := m.renderWidth() - 2
-	if width < 20 {
-		return 20
-	}
-	return width
+	return panelWidthForRenderWidth(m.renderWidth())
 }
 
 func (m OutputModel) activityPreviewWidth() int {
@@ -874,8 +870,22 @@ func messageBodyWidth(totalWidth int) int {
 	return width
 }
 
+func panelWidthForRenderWidth(totalWidth int) int {
+	width := totalWidth - 2
+	if width < 20 {
+		return 20
+	}
+	return width
+}
+
 func transcriptBodyIndent() string {
 	return strings.Repeat(" ", messageLabelWidth+1)
+}
+
+func renderTranscriptBodyBlock(block string) string {
+	return lipgloss.NewStyle().
+		MarginLeft(messageLabelWidth + 1).
+		Render(block)
 }
 
 func renderApprovalHeader(title string) string {

@@ -139,6 +139,28 @@ func TestRenderBlockUserPromptUsesFallbackWidthWhenWindowSizeUnknown(t *testing.
 	}
 }
 
+func TestRenderUserPromptBlockOmitsLegacyYouLabel(t *testing.T) {
+	rendered := ansi.Strip(renderUserPromptBlock("what is your name?", 40))
+
+	if strings.Contains(rendered, "You") {
+		t.Fatalf("renderUserPromptBlock() = %q, want no legacy You label", rendered)
+	}
+	if !strings.Contains(rendered, "what is your name?") {
+		t.Fatalf("renderUserPromptBlock() = %q, want prompt text", rendered)
+	}
+}
+
+func TestRenderAssistantNoteBlockOmitsLegacyAssistantLabel(t *testing.T) {
+	rendered := ansi.Strip(renderAssistantNoteBlock("I'm fimi.", 40))
+
+	if strings.Contains(rendered, "\nfimi") || strings.HasPrefix(strings.TrimSpace(rendered), "fimi") {
+		t.Fatalf("renderAssistantNoteBlock() = %q, want no legacy assistant label", rendered)
+	}
+	if !strings.Contains(rendered, "I'm fimi.") {
+		t.Fatalf("renderAssistantNoteBlock() = %q, want assistant text", rendered)
+	}
+}
+
 func TestWrapStringPreservesStyledCJKContent(t *testing.T) {
 	rendered := styles.UserBubbleStyle.Width(12).Render("发送消息后显示错乱")
 

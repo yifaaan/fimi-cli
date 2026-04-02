@@ -342,7 +342,7 @@ func (m Model) renderLiveStatus() string {
 	if statusText == "" {
 		return ""
 	}
-	return transcriptBodyIndent() + styles.LiveStatusStyle.Render(m.runtime.SpinnerView()+" "+statusText)
+	return styles.LiveStatusStyle.Render(m.runtime.SpinnerView() + " " + statusText)
 }
 
 func (m Model) renderLiveStatusText() string {

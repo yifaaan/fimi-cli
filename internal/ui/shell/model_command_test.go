@@ -13,6 +13,7 @@ import (
 	runtimeevents "fimi-cli/internal/runtime/events"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestRuntimeModelApplyStatusUpdateDoesNotChangeTranscriptBlocks(t *testing.T) {
@@ -351,6 +352,39 @@ func TestRenderLiveStatusTextUsesWorkingElapsed(t *testing.T) {
 	}
 	if !strings.Contains(got, "11s") && !strings.Contains(got, "10s") && !strings.Contains(got, "12s") {
 		t.Fatalf("renderLiveStatusText() = %q, want elapsed seconds", got)
+	}
+}
+
+func TestRenderLiveStatusKeepsLeftAlignedAcrossLines(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.mode = ModeThinking
+	model.runtimeStartedAt = time.Now().Add(-11 * time.Second)
+
+	lines := nonEmptyLines(ansi.Strip(model.renderLiveStatus()))
+	if len(lines) < 3 {
+		t.Fatalf("len(lines) = %d, want multi-line live-status box", len(lines))
+	}
+
+	for i, line := range lines {
+		if got := leadingSpaces(line); got != 0 {
+			t.Fatalf("line %d leading spaces = %d, want 0; line=%q", i, got, line)
+		}
+	}
+}
+
+func TestRenderDropdownKeepsLeftAlignedAcrossLines(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.width = 80
+
+	lines := nonEmptyLines(ansi.Strip(model.renderDropdown("Commands", []string{"/help", "/clear"}, 0, 1)))
+	if len(lines) < 3 {
+		t.Fatalf("len(lines) = %d, want multi-line dropdown box", len(lines))
+	}
+
+	for i, line := range lines {
+		if got := leadingSpaces(line); got != 0 {
+			t.Fatalf("line %d leading spaces = %d, want 0; line=%q", i, got, line)
+		}
 	}
 }
 

@@ -648,7 +648,7 @@ func (m Model) renderDropdown(title string, items []string, selected int, remain
 		lines = append(lines, styles.DropdownMetaStyle.Render(fmt.Sprintf("  +%d more", remaining)))
 	}
 
-	return transcriptBodyIndent() + styles.DropdownBoxStyle.Width(m.dropdownWidth()).Render(strings.Join(lines, "\n"))
+	return styles.DropdownBoxStyle.Width(m.dropdownWidth()).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) dropdownWidth() int {
@@ -659,7 +659,7 @@ func (m Model) dropdownWidth() int {
 	if width < 32 {
 		width = 32
 	}
-	return messageBodyWidth(width)
+	return panelWidthForRenderWidth(width)
 }
 
 // handleSubmit processes a submitted prompt.
