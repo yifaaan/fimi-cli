@@ -151,13 +151,30 @@ func TestRenderUserPromptBlockOmitsLegacyYouLabel(t *testing.T) {
 }
 
 func TestRenderAssistantNoteBlockOmitsLegacyAssistantLabel(t *testing.T) {
-	rendered := ansi.Strip(renderAssistantNoteBlock("I'm fimi.", 40))
+	model := NewOutputModel()
+	model.width = 40
+	rendered := ansi.Strip(model.renderAssistantNoteBlock("I'm fimi."))
 
 	if strings.Contains(rendered, "\nfimi") || strings.HasPrefix(strings.TrimSpace(rendered), "fimi") {
 		t.Fatalf("renderAssistantNoteBlock() = %q, want no legacy assistant label", rendered)
 	}
 	if !strings.Contains(rendered, "I'm fimi.") {
 		t.Fatalf("renderAssistantNoteBlock() = %q, want assistant text", rendered)
+	}
+}
+
+func TestRenderAssistantNoteBlockRendersMarkdownStructure(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+	rendered := ansi.Strip(model.renderAssistantNoteBlock("# Title\n\n- item one\n- item two\n\n```go\nfmt.Println(\"hi\")\n```"))
+
+	for _, want := range []string{"Title", "item one", "item two", "fmt.Println(\"hi\")"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("renderAssistantNoteBlock() missing %q in:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "```") {
+		t.Fatalf("renderAssistantNoteBlock() = %q, want fenced code markers rendered away", rendered)
 	}
 }
 

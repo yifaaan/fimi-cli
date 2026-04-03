@@ -7,6 +7,7 @@ import (
 
 	"fimi-cli/internal/contextstore"
 	runtimeevents "fimi-cli/internal/runtime/events"
+	"fimi-cli/internal/ui/shell/renderers"
 	"fimi-cli/internal/ui/shell/styles"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -213,7 +214,7 @@ func (m OutputModel) renderBlock(block TranscriptBlock) string {
 	case BlockKindUserPrompt:
 		return renderUserPromptBlock(block.UserText, m.panelWidth())
 	case BlockKindAssistantNote:
-		return renderAssistantNoteBlock(block.NoteText, m.panelWidth())
+		return m.renderAssistantNoteBlock(block.NoteText)
 	case BlockKindActivityGroup:
 		return m.renderActivityGroupBlock(block)
 	case BlockKindApproval:
@@ -239,42 +240,21 @@ func renderUserPromptBlock(text string, width int) string {
 	return styles.UserBubbleStyle.Width(width).Render(text)
 }
 
-func renderAssistantNoteBlock(note string, width int) string {
-	paragraphs := splitParagraphs(note)
-	if len(paragraphs) == 0 {
+func (m OutputModel) renderAssistantNoteBlock(note string) string {
+	note = strings.ReplaceAll(note, "\r\n", "\n")
+	if strings.TrimSpace(note) == "" {
 		return ""
 	}
-	body := strings.Join(paragraphs, "\n\n")
-	return styles.AssistantBubbleStyle.Width(width).Render(body)
-}
-
-func splitParagraphs(text string) []string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	parts := strings.Split(text, "\n\n")
-	paragraphs := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			paragraphs = append(paragraphs, normalizeAssistantParagraph(part))
-		}
+	contentWidth := m.assistantContentWidth()
+	renderer, err := renderers.NewMarkdownRenderer(contentWidth)
+	if err != nil {
+		return styles.AssistantBubbleStyle.Width(m.panelWidth()).Render(strings.TrimSpace(note))
 	}
-	if len(paragraphs) == 0 && strings.TrimSpace(text) != "" {
-		return []string{normalizeAssistantParagraph(text)}
+	body := renderer.Render(note)
+	if strings.TrimSpace(body) == "" {
+		body = strings.TrimSpace(note)
 	}
-	return paragraphs
-}
-
-func normalizeAssistantParagraph(part string) string {
-	lines := strings.Split(part, "\n")
-	normalized := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		normalized = append(normalized, trimmed)
-	}
-	return strings.Join(normalized, "\n")
+	return styles.AssistantBubbleStyle.Width(m.panelWidth()).Render(body)
 }
 
 func (m OutputModel) renderActivityGroupBlock(block TranscriptBlock) string {
@@ -834,6 +814,14 @@ func (m OutputModel) panelWidth() int {
 
 func (m OutputModel) activityPreviewWidth() int {
 	width := m.panelWidth() - styles.ActivityCardStyle.GetHorizontalFrameSize()
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func (m OutputModel) assistantContentWidth() int {
+	width := m.panelWidth() - styles.AssistantBubbleStyle.GetHorizontalFrameSize()
 	if width < 1 {
 		return 1
 	}

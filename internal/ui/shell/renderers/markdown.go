@@ -16,6 +16,9 @@ type MarkdownRenderer struct {
 
 // NewMarkdownRenderer 创建一个新的 Markdown 渲染器。
 func NewMarkdownRenderer(width int) (*MarkdownRenderer, error) {
+	if width < 1 {
+		width = 1
+	}
 	// 使用 dark 主题作为基础
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
@@ -43,8 +46,7 @@ func (r *MarkdownRenderer) Render(markdown string) string {
 		return markdown
 	}
 
-	// glamour 会在末尾添加换行符，需要去除
-	return strings.TrimSpace(rendered)
+	return strings.TrimRight(rendered, "\r\n")
 }
 
 // SetWidth 更新渲染器宽度。
