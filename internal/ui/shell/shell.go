@@ -39,7 +39,6 @@ func helpText() string {
 		"  Ctrl+C/Ctrl+D   Exit (when idle)",
 		"  Ctrl+L          Clear screen",
 		"  Ctrl+O          Toggle tool result expansion",
-		"  Mouse wheel     Scroll transcript history",
 	}
 	return strings.Join(lines, "\n")
 }
