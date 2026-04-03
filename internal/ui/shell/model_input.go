@@ -107,6 +107,11 @@ func (m *InputModel) AppendHistory(entry string) {
 	m.history = append(m.history, entry)
 }
 
+func (m *InputModel) ClearHistory() {
+	m.history = nil
+	m.historyIdx = -1
+}
+
 // Update 处理消息并更新状态。
 func (m InputModel) Update(msg tea.Msg, width int) (InputModel, tea.Cmd) {
 	m.width = width
@@ -218,7 +223,6 @@ func (m InputModel) View() string {
 		content = lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			styles.PromptStyle.Render("> "),
-			styles.ComposerPlaceholderStyle.Render("Ask fimi to do anything"),
 			cursor,
 		)
 	} else {

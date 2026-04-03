@@ -433,6 +433,7 @@ func (m OutputModel) renderPreviewBody(blockID string, title string, preview Pre
 }
 
 func renderPreviewLine(kind PreviewKind, line string) string {
+	line = ansi.Strip(line)
 	prefix := "    "
 	switch {
 	case kind == PreviewKindDiff && strings.HasPrefix(line, "@@"):
@@ -845,8 +846,8 @@ func activityCardStyle(accent string) lipgloss.Style {
 
 func renderActivityBadge(accent string) string {
 	style := styles.ActivityBadgeBaseStyle.Copy().
-		Background(activityAccentColor(accent)).
-		Foreground(activityBadgeForeground(accent))
+		Foreground(activityAccentColor(accent)).
+		Underline(true)
 	return style.Render(activityBadgeLabel(accent))
 }
 
@@ -954,8 +955,8 @@ func renderTranscriptBodyBlock(block string) string {
 
 func renderApprovalHeader(title string) string {
 	badge := styles.ActivityBadgeBaseStyle.Copy().
-		Foreground(styles.ColorBlack).
-		Background(styles.ColorWarning).
+		Foreground(styles.ColorWarning).
+		Underline(true).
 		Render("APPROVAL")
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,

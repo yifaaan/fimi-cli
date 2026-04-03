@@ -535,7 +535,7 @@ func normalizePreviewText(title string, preview string) string {
 	}
 	lines := strings.Split(preview, "\n")
 	if len(lines) > 1 && strings.TrimSpace(lines[0]) == strings.TrimSpace(title) {
-		return strings.Join(lines[1:], "\n")
+		return strings.TrimLeft(strings.Join(lines[1:], "\n"), "\n")
 	}
 	return preview
 }

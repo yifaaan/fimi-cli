@@ -255,8 +255,7 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		)
 
 	case ClearMsg:
-		m.output = m.output.Clear()
-		m.commitLateRuntimeEvents = false
+		m = m.clearScreenState()
 		return m, nil
 
 	case ErrorMsg:
@@ -380,7 +379,7 @@ func (m Model) renderBanner() string {
 
 func (m Model) renderOutputForLayout(before, after []string) string {
 	output := m.output.WithViewportHeight(m.outputHeightForLayout(before, after))
-	return output.View()
+	return output.InteractiveView()
 }
 
 func (m Model) outputHeightForLayout(before, after []string) int {
@@ -416,7 +415,21 @@ func joinedSectionHeight(sections []string) int {
 }
 
 func (m Model) consumeTranscriptPrintCmd() (Model, tea.Cmd) {
-	return m, nil
+	var rendered []string
+	markUntil := m.output.printedCount
+	if len(m.output.pending) > 0 {
+		rendered = m.output.RenderUnprintedCommitted()
+		markUntil = len(m.output.blocks)
+	} else {
+		rendered = m.output.RenderUnprintedLines()
+		markUntil = m.output.stablePrintedTarget()
+	}
+	joined := joinTranscriptForTeaPrint(rendered)
+	if strings.TrimSpace(joined) == "" {
+		return m, nil
+	}
+	m.output = m.output.MarkPrintedUntil(markUntil)
+	return m, tea.Printf("%s", joined)
 }
 
 func joinTranscriptForTeaPrint(rendered []string) string {
@@ -851,6 +864,18 @@ func (m Model) finishCompactRuntime(msg RuntimeCompleteMsg) Model {
 		})
 		return m
 	}
+
+	if m.history != nil {
+		if err := m.history.Clear(); err != nil {
+			m.err = err
+			m.output = m.output.AppendLine(TranscriptLine{
+				Type:    LineTypeError,
+				Content: fmt.Sprintf("Error: clear shell history: %v", err),
+			})
+			return m
+		}
+	}
+	m.input.ClearHistory()
 
 	m = m.rebuildOutputFromRecords(records)
 	m.output = m.output.AppendLine(TranscriptLine{

@@ -24,6 +24,9 @@ import (
 
 // handleCommand 处理 slash 命令。
 func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
+	cmd = strings.TrimSpace(cmd)
+	m = m.resetComposerState()
+
 	fields := strings.Fields(cmd)
 	if len(fields) == 0 {
 		return m, nil
@@ -42,7 +45,7 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		})
 		return m, nil
 	case "/clear":
-		m.output = m.output.Clear()
+		m = m.clearScreenState()
 		return m, nil
 	case "/compact":
 		return m.handleCompactCommand()
@@ -81,6 +84,23 @@ func (m Model) handleCommand(cmd string) (tea.Model, tea.Cmd) {
 		})
 		return m, nil
 	}
+}
+
+func (m Model) resetComposerState() Model {
+	m.input = m.input.Clear()
+	m.showCommandSuggestions = false
+	m.selectedSuggestion = 0
+	m.resetFileCompletion()
+	return m
+}
+
+func (m Model) clearScreenState() Model {
+	m = m.resetComposerState()
+	m.output = m.output.Clear()
+	m.toasts = NewToastModel().SetWidth(m.width)
+	m.showBanner = false
+	m.commitLateRuntimeEvents = false
+	return m
 }
 
 func (m Model) handleTaskCommand(args []string) (tea.Model, tea.Cmd) {

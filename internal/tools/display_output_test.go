@@ -24,6 +24,19 @@ func TestBuildInlinePreviewClipsLongBodies(t *testing.T) {
 	}
 }
 
+func TestBuildInlinePreviewStripsANSISequences(t *testing.T) {
+	preview := buildInlinePreview("", "\x1b[48;5;236mSTDOUT:\x1b[0m\n\x1b[48;5;236mvalue\x1b[0m")
+
+	if strings.Contains(preview, "\x1b[") {
+		t.Fatalf("preview = %q, want ANSI sequences removed", preview)
+	}
+	for _, want := range []string{"STDOUT:", "value"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("preview = %q, want %q preserved", preview, want)
+		}
+	}
+}
+
 func TestNewWriteFileHandlerSetsDisplayOutput(t *testing.T) {
 	workDir := t.TempDir()
 	handler := newWriteFileHandler(workDir)

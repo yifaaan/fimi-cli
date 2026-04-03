@@ -68,7 +68,6 @@ func TestApprovalRequestRendersInlineTranscriptBlock(t *testing.T) {
 		"run go test ./internal/ui/shell",
 		"Approve for session",
 		"Message",
-		"Ask fimi to do anything",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q in:\n%s", want, view)

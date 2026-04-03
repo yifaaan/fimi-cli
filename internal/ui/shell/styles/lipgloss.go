@@ -48,7 +48,6 @@ var (
 
 	SystemNoticeStyle = lipgloss.NewStyle().
 				Foreground(ColorWhite).
-				Background(ColorPanelBg).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorBorder).
 				Padding(0, 1)
@@ -60,7 +59,6 @@ var (
 
 	ErrorNoticeStyle = lipgloss.NewStyle().
 				Foreground(ColorBrightWhite).
-				Background(ColorErrorBg).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorError).
 				Padding(0, 1)
@@ -81,7 +79,6 @@ var (
 				Foreground(ColorWhite)
 
 	ActivityCardStyle = lipgloss.NewStyle().
-				Background(ColorSubtleBg).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorBorder).
 				Padding(0, 1)
@@ -99,7 +96,6 @@ var (
 
 	PreviewHintStyle = lipgloss.NewStyle().
 				Foreground(ColorWhite).
-				Background(ColorPanelBg).
 				Padding(0, 1)
 
 	ActivityPendingStyle = lipgloss.NewStyle().
@@ -149,7 +145,6 @@ var (
 			Bold(true)
 
 	ComposerBoxStyle = lipgloss.NewStyle().
-				Background(ColorPanelBg).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorBorder).
 				Padding(0, 1)
@@ -172,7 +167,6 @@ var (
 				Foreground(ColorWhite)
 
 	DropdownBoxStyle = lipgloss.NewStyle().
-				Background(ColorSubtleBg).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorBorder).
 				Padding(0, 1)
@@ -182,8 +176,9 @@ var (
 				Bold(true)
 
 	DropdownSelectedStyle = lipgloss.NewStyle().
-				Foreground(ColorBlack).
-				Background(ColorPrimary).
+				Foreground(ColorPrimary).
+				Bold(true).
+				Underline(true).
 				Padding(0, 1)
 
 	DropdownOptionStyle = lipgloss.NewStyle().
@@ -219,20 +214,16 @@ var (
 				Bold(true)
 
 	ToolDiffContextStyle = lipgloss.NewStyle().
-				Foreground(ColorWhite).
-				Background(ColorToolBg)
+				Foreground(ColorWhite)
 
 	ToolDiffAddedStyle = lipgloss.NewStyle().
-				Foreground(ColorBrightWhite).
-				Background(Color("22"))
+				Foreground(ColorBrightGreen)
 
 	ToolDiffRemovedStyle = lipgloss.NewStyle().
-				Foreground(ColorBrightWhite).
-				Background(ColorErrorBg)
+				Foreground(ColorBrightRed)
 
 	ToolDiffHunkStyle = lipgloss.NewStyle().
-				Foreground(ColorBrightWhite).
-				Background(Color("24")).
+				Foreground(ColorBrightBlue).
 				Bold(true)
 
 	ApprovalTitleStyle = lipgloss.NewStyle().
@@ -240,15 +231,14 @@ var (
 				Bold(true)
 
 	ApprovalSelectedStyle = lipgloss.NewStyle().
-				Foreground(ColorBlack).
-				Background(ColorInfo).
-				Bold(true)
+				Foreground(ColorInfo).
+				Bold(true).
+				Underline(true)
 
 	ApprovalOptionStyle = lipgloss.NewStyle().
 				Foreground(ColorMuted)
 
 	ApprovalCardStyle = lipgloss.NewStyle().
-				Background(ColorSubtleBg).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorWarning).
 				Padding(0, 1)
@@ -256,7 +246,6 @@ var (
 	// 状态栏样式
 	StatusBarStyle = lipgloss.NewStyle().
 			Foreground(ColorWhite).
-			Background(ColorSubtleBg).
 			Padding(0, 1)
 
 	// 帮助文本样式
@@ -269,7 +258,6 @@ var (
 			Bold(true)
 
 	BannerBoxStyle = lipgloss.NewStyle().
-			Background(ColorPanelBg).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder).
 			Padding(0, 1)
@@ -279,13 +267,11 @@ var (
 
 	BannerMetaChipStyle = lipgloss.NewStyle().
 				Foreground(ColorWhite).
-				Background(ColorSubtleBg).
 				Padding(0, 1).
 				MarginRight(1)
 
 	BannerSummaryStyle = lipgloss.NewStyle().
 				Foreground(ColorWhite).
-				Background(ColorSubtleBg).
 				Padding(0, 1)
 
 	BannerHintStyle = lipgloss.NewStyle().
@@ -301,7 +287,6 @@ var (
 
 	LiveStatusStyle = lipgloss.NewStyle().
 			Foreground(ColorWhite).
-			Background(ColorSubtleBg).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder).
 			Padding(0, 1)

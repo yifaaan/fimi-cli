@@ -300,6 +300,9 @@ func TestRuntimeModelPrefersFullReadFileOutputOverClippedDisplayPreview(t *testi
 	}
 
 	preview := blocks[0].Activity.Preview.Text
+	if preview == "" && len(blocks[0].Activity.Items) > 0 {
+		preview = blocks[0].Activity.Items[0].Preview.Text
+	}
 	if strings.Contains(preview, "... +31 lines") {
 		t.Fatalf("preview = %q, want clipped display marker removed", preview)
 	}
@@ -497,6 +500,25 @@ func TestRenderPreviewBodyExpandedShowsAllToolOutputLines(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "Ctrl+O collapse") {
 		t.Fatalf("expanded preview missing collapse hint:\n%s", rendered)
+	}
+}
+
+func TestRenderPreviewBodyStripsEmbeddedANSIBackground(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+
+	rendered := model.renderPreviewBody("tool-1", "Ran ls -la", PreviewBody{
+		Text:        "STDOUT:\n\x1b[48;5;236mtotal 64\x1b[0m",
+		Kind:        PreviewKindText,
+		Collapsible: false,
+	})
+
+	if strings.Contains(rendered, "\x1b[48;5;236m") {
+		t.Fatalf("rendered preview still contains embedded background ANSI: %q", rendered)
+	}
+	stripped := ansi.Strip(rendered)
+	if !strings.Contains(stripped, "total 64") {
+		t.Fatalf("rendered preview missing text content:\n%s", stripped)
 	}
 }
 

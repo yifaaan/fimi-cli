@@ -3,6 +3,8 @@ package tools
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 const toolPreviewLineLimit = 8
@@ -76,6 +78,7 @@ func clipPreviewLines(text string, limit int) ([]string, int) {
 }
 
 func previewLines(text string) []string {
+	text = ansi.Strip(text)
 	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
 	if text == "" {
 		return nil

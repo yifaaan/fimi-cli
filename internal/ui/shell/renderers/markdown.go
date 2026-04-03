@@ -77,8 +77,8 @@ func (r *MarkdownRenderer) RenderCodeBlock(code, language string) string {
 func RenderInlineCode(code string) string {
 	// 使用 lipgloss 创建行内代码样式
 	style := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
 		Foreground(lipgloss.Color("252")).
+		Underline(true).
 		Padding(0, 1)
 
 	return style.Render(code)

@@ -90,7 +90,7 @@ func TestSpinnerTickKeepsSubmittedUserPromptPending(t *testing.T) {
 	}
 }
 
-func TestRenderOutputForLayoutShowsFullTranscript(t *testing.T) {
+func TestRenderOutputForLayoutShowsOnlyInteractiveTail(t *testing.T) {
 	model := NewModel(Dependencies{}, nil)
 	model.width = 80
 	model.height = 20
@@ -98,19 +98,83 @@ func TestRenderOutputForLayoutShowsFullTranscript(t *testing.T) {
 	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: "first answer"})
 	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindUserPrompt, UserText: "second question"})
 	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: "second answer"})
+	model.output = model.output.MarkPrintedUntil(model.output.stablePrintedTarget())
 
 	before, after := model.mainViewLayoutSections()
 	got := model.renderOutputForLayout(before, after)
 
-	for _, want := range []string{"first question", "first answer", "second question", "second answer"} {
+	for _, want := range []string{"second question", "second answer"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("renderOutputForLayout() missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"first question", "first answer"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("renderOutputForLayout() unexpectedly contains %q in:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestConsumeTranscriptPrintCmdPrintsOlderCommittedTurns(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindUserPrompt, UserText: "first question"})
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: "first answer"})
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindUserPrompt, UserText: "second question"})
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: "second answer"})
+
+	updated, cmd := model.consumeTranscriptPrintCmd()
+	if cmd == nil {
+		t.Fatal("consumeTranscriptPrintCmd() cmd = nil, want print cmd")
+	}
+	_ = cmd()
+	updated.output = updated.output.WithViewportHeight(10)
+	if updated.output.printedCount != updated.output.stablePrintedTarget() {
+		t.Fatalf("printedCount = %d, want %d", updated.output.printedCount, updated.output.stablePrintedTarget())
+	}
+	remaining := updated.output.InteractiveView()
+	for _, want := range []string{"second question", "second answer"} {
+		if !strings.Contains(remaining, want) {
+			t.Fatalf("interactive tail missing %q in:\n%s", want, remaining)
+		}
+	}
+	for _, unwanted := range []string{"first question", "first answer"} {
+		if strings.Contains(remaining, unwanted) {
+			t.Fatalf("interactive tail unexpectedly contains %q in:\n%s", unwanted, remaining)
+		}
+	}
+}
+
+func TestConsumeTranscriptPrintCmdPrintsCommittedHistoryBeforePendingTail(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindUserPrompt, UserText: "older question"})
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindAssistantNote, NoteText: "older answer"})
+	model.output = model.output.SetPending([]TranscriptBlock{{Kind: BlockKindUserPrompt, UserText: "current question"}})
+
+	updated, cmd := model.consumeTranscriptPrintCmd()
+	if cmd == nil {
+		t.Fatal("consumeTranscriptPrintCmd() cmd = nil, want print cmd")
+	}
+	_ = cmd()
+	updated.output = updated.output.WithViewportHeight(10)
+	if updated.output.printedCount != len(updated.output.blocks) {
+		t.Fatalf("printedCount = %d, want %d", updated.output.printedCount, len(updated.output.blocks))
+	}
+	remaining := updated.output.InteractiveView()
+	if !strings.Contains(remaining, "current question") {
+		t.Fatalf("interactive tail missing pending question in:\n%s", remaining)
+	}
+	for _, unwanted := range []string{"older question", "older answer"} {
+		if strings.Contains(remaining, unwanted) {
+			t.Fatalf("interactive tail unexpectedly contains %q in:\n%s", unwanted, remaining)
 		}
 	}
 }
 
 func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
-	model := NewModel(Dependencies{ModelName: "test-model", SystemPrompt: "system"}, nil)
+	history := historyStore{}
+	model := NewModel(Dependencies{ModelName: "test-model", SystemPrompt: "system"}, &history)
+	model.input.value = "/compact"
+	model.input.cursorPos = len(model.input.value)
 	model.output = model.output.SetPending([]TranscriptBlock{{
 		ID:       "pending-note",
 		Kind:     BlockKindAssistantNote,
@@ -128,6 +192,9 @@ func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
 	gotModel := updated.(Model)
 	if gotModel.mode != ModeThinking {
 		t.Fatalf("mode = %v, want %v", gotModel.mode, ModeThinking)
+	}
+	if gotModel.input.value != "" || gotModel.input.cursorPos != 0 {
+		t.Fatalf("input = %#v, want cleared composer after slash command", gotModel.input)
 	}
 	if gotModel.wire == nil {
 		t.Fatal("wire = nil, want initialized wire")
@@ -156,6 +223,146 @@ func TestHandleCommandCompactStartsRuntimeExecution(t *testing.T) {
 	last := gotModel.output.pending[len(gotModel.output.pending)-1]
 	if last.Kind != BlockKindUserPrompt || last.UserText != spec.CommandText {
 		t.Fatalf("last pending block = %#v, want user shell command prompt", last)
+	}
+	if len(gotModel.input.history) != 1 || gotModel.input.history[0] != spec.CommandText {
+		t.Fatalf("input history = %#v, want compact command recorded", gotModel.input.history)
+	}
+	if len(history.entries) != 1 || history.entries[0] != spec.CommandText {
+		t.Fatalf("persistent history = %#v, want compact command recorded", history.entries)
+	}
+}
+
+func TestHandleCommandResumeClearsComposer(t *testing.T) {
+	model := NewModel(Dependencies{WorkDir: t.TempDir()}, nil)
+	model.input.value = "/resume"
+	model.input.cursorPos = len(model.input.value)
+	model.showCommandSuggestions = true
+	model.selectedSuggestion = 1
+	model.showFileCompletion = true
+	model.fileCompletionItems = []string{"a.go"}
+	model.selectedFileCompletion = 0
+	model.fileCompletionAtPos = 3
+
+	updated, cmd := model.handleCommand("/resume")
+	if cmd == nil {
+		t.Fatal("handleCommand(/resume) cmd = nil, want non-nil")
+	}
+	gotModel := updated.(Model)
+	if gotModel.input.value != "" || gotModel.input.cursorPos != 0 {
+		t.Fatalf("input = %#v, want cleared composer after /resume", gotModel.input)
+	}
+	if gotModel.showCommandSuggestions || gotModel.selectedSuggestion != 0 {
+		t.Fatalf("command suggestion state = %#v/%d, want cleared", gotModel.showCommandSuggestions, gotModel.selectedSuggestion)
+	}
+	if gotModel.showFileCompletion || len(gotModel.fileCompletionItems) != 0 || gotModel.selectedFileCompletion != 0 || gotModel.fileCompletionAtPos != 0 {
+		t.Fatalf("file completion state not cleared: %#v", gotModel)
+	}
+}
+
+func TestHandleCommandQuitClearsComposerBeforeExit(t *testing.T) {
+	model := NewModel(Dependencies{}, nil)
+	model.input.value = "/quit"
+	model.input.cursorPos = len(model.input.value)
+	model.showCommandSuggestions = true
+	model.selectedSuggestion = 1
+	model.showFileCompletion = true
+	model.fileCompletionItems = []string{"a.go"}
+	model.selectedFileCompletion = 0
+	model.fileCompletionAtPos = 2
+
+	updated, cmd := model.handleCommand("/quit")
+	if cmd == nil {
+		t.Fatal("handleCommand(/quit) cmd = nil, want tea.Quit")
+	}
+	gotModel := updated.(Model)
+	if gotModel.input.value != "" || gotModel.input.cursorPos != 0 {
+		t.Fatalf("input = %#v, want cleared composer before quit", gotModel.input)
+	}
+	if gotModel.showCommandSuggestions || gotModel.selectedSuggestion != 0 {
+		t.Fatalf("command suggestion state = %#v/%d, want cleared", gotModel.showCommandSuggestions, gotModel.selectedSuggestion)
+	}
+	if gotModel.showFileCompletion || len(gotModel.fileCompletionItems) != 0 || gotModel.selectedFileCompletion != 0 || gotModel.fileCompletionAtPos != 0 {
+		t.Fatalf("file completion state not cleared: %#v", gotModel)
+	}
+}
+
+func TestHandleCommandClearResetsBannerToastsAndViewportState(t *testing.T) {
+	model := NewModel(Dependencies{
+		StartupInfo: StartupInfo{SessionID: "session-1"},
+		WorkDir:     t.TempDir(),
+	}, nil)
+	model.width = 80
+	model.input.value = "/clear"
+	model.input.cursorPos = len(model.input.value)
+	model.showCommandSuggestions = true
+	model.selectedSuggestion = 1
+	model.showFileCompletion = true
+	model.fileCompletionItems = []string{"a.go"}
+	model.selectedFileCompletion = 0
+	model.fileCompletionAtPos = 2
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindUserPrompt, UserText: "older question"})
+	model.output = model.output.SetPending([]TranscriptBlock{{Kind: BlockKindAssistantNote, NoteText: "pending answer"}})
+	model.output.scrollOffset = 4
+	model.output.atBottom = false
+	model.output.printedCount = 1
+	model.toasts, _ = model.toasts.Update(ToastAddMsg{Toast: Toast{Level: ToastInfo, Message: "hello"}})
+
+	updated, cmd := model.handleCommand("/clear")
+	if cmd != nil {
+		t.Fatalf("handleCommand(/clear) cmd = %#v, want nil", cmd)
+	}
+	gotModel := updated.(Model)
+	if gotModel.showBanner {
+		t.Fatal("showBanner = true, want banner hidden after /clear")
+	}
+	if gotModel.input.value != "" || gotModel.input.cursorPos != 0 {
+		t.Fatalf("input = %#v, want cleared composer after /clear", gotModel.input)
+	}
+	if gotModel.showCommandSuggestions || gotModel.selectedSuggestion != 0 {
+		t.Fatalf("command suggestion state = %#v/%d, want cleared", gotModel.showCommandSuggestions, gotModel.selectedSuggestion)
+	}
+	if gotModel.showFileCompletion || len(gotModel.fileCompletionItems) != 0 || gotModel.selectedFileCompletion != 0 || gotModel.fileCompletionAtPos != 0 {
+		t.Fatalf("file completion state not cleared: %#v", gotModel)
+	}
+	if len(gotModel.output.blocks) != 0 || len(gotModel.output.pending) != 0 || gotModel.output.printedCount != 0 {
+		t.Fatalf("output = %#v, want cleared transcript state", gotModel.output)
+	}
+	if gotModel.output.scrollOffset != 0 || !gotModel.output.atBottom {
+		t.Fatalf("viewport state = offset %d atBottom %v, want reset", gotModel.output.scrollOffset, gotModel.output.atBottom)
+	}
+	if len(gotModel.toasts.toasts) != 0 || gotModel.toasts.width != model.width {
+		t.Fatalf("toasts = %#v, want cleared stack with preserved width", gotModel.toasts)
+	}
+	if gotModel.commitLateRuntimeEvents {
+		t.Fatal("commitLateRuntimeEvents = true, want reset after /clear")
+	}
+}
+
+func TestUpdateClearMsgResetsShellScreenState(t *testing.T) {
+	model := NewModel(Dependencies{StartupInfo: StartupInfo{SessionID: "session-1"}}, nil)
+	model.width = 72
+	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindUserPrompt, UserText: "older question"})
+	model.output.scrollOffset = 3
+	model.output.atBottom = false
+	model.toasts, _ = model.toasts.Update(ToastAddMsg{Toast: Toast{Level: ToastInfo, Message: "hello"}})
+	model.commitLateRuntimeEvents = true
+
+	updatedModel, cmd := model.Update(ClearMsg{})
+	if cmd != nil {
+		t.Fatalf("Update(ClearMsg) cmd = %#v, want nil", cmd)
+	}
+	updated := updatedModel.(Model)
+	if updated.showBanner {
+		t.Fatal("showBanner = true, want banner hidden after ClearMsg")
+	}
+	if len(updated.output.blocks) != 0 || updated.output.scrollOffset != 0 || !updated.output.atBottom {
+		t.Fatalf("output = %#v, want cleared viewport state", updated.output)
+	}
+	if len(updated.toasts.toasts) != 0 || updated.toasts.width != model.width {
+		t.Fatalf("toasts = %#v, want cleared stack with preserved width", updated.toasts)
+	}
+	if updated.commitLateRuntimeEvents {
+		t.Fatal("commitLateRuntimeEvents = true, want reset after ClearMsg")
 	}
 }
 
@@ -235,13 +442,26 @@ func TestFinishRuntimeCompactsSessionHistoryIntoBlocks(t *testing.T) {
 			t.Fatalf("Append(%#v) error = %v", record, err)
 		}
 	}
+	commandHistoryPath := filepath.Join(t.TempDir(), "shell-history.txt")
+	history, err := loadHistoryStore(commandHistoryPath)
+	if err != nil {
+		t.Fatalf("loadHistoryStore() error = %v", err)
+	}
+	if err := history.Append("hello"); err != nil {
+		t.Fatalf("history.Append(hello) error = %v", err)
+	}
+	if err := history.Append("/compact"); err != nil {
+		t.Fatalf("history.Append(/compact) error = %v", err)
+	}
 
-	model := NewModel(Dependencies{Store: store}, nil)
+	model := NewModel(Dependencies{Store: store}, &history)
 	model.mode = ModeThinking
 	model.activeShellActionCommand = "/compact"
 	model.output = model.output.AppendBlock(TranscriptBlock{Kind: BlockKindSystemNotice, Text: "Compacting..."})
 	model.output = model.output.SetPending([]TranscriptBlock{{Kind: BlockKindAssistantNote, NoteText: "draft compact output"}})
 	model.runtime.AssistantText = "draft compact output"
+	model.input.AppendHistory("hello")
+	model.input.AppendHistory("/compact")
 
 	updated := model.finishRuntime(RuntimeCompleteMsg{Result: runtime.Result{
 		Steps: []runtime.StepResult{{
@@ -265,6 +485,16 @@ func TestFinishRuntimeCompactsSessionHistoryIntoBlocks(t *testing.T) {
 		if gotRecords[i].Role != want.Role || gotRecords[i].Content != want.Content {
 			t.Fatalf("record %d = %#v, want %#v", i, gotRecords[i], want)
 		}
+	}
+	if len(updated.input.history) != 0 {
+		t.Fatalf("input history = %#v, want cleared after compact", updated.input.history)
+	}
+	persistedHistory, err := loadHistoryStore(commandHistoryPath)
+	if err != nil {
+		t.Fatalf("loadHistoryStore(compacted) error = %v", err)
+	}
+	if len(persistedHistory.entries) != 0 {
+		t.Fatalf("persistent history = %#v, want cleared after compact", persistedHistory.entries)
 	}
 
 	if len(updated.output.blocks) != 3 {

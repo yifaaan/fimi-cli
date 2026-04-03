@@ -68,7 +68,6 @@ func RenderStatusBar(bar StatusBar) string {
 	// 状态栏背景
 	statusBarStyle := lipgloss.NewStyle().
 		Foreground(styles.ColorWhite).
-		Background(styles.ColorPrimary).
 		Padding(0, 1).
 		Width(bar.Width)
 

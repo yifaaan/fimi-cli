@@ -72,6 +72,20 @@ func (s *historyStore) Append(entry string) error {
 	return nil
 }
 
+func (s *historyStore) Clear() error {
+	s.entries = nil
+	if strings.TrimSpace(s.path) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return fmt.Errorf("create shell history dir for %q: %w", s.path, err)
+	}
+	if err := os.WriteFile(s.path, nil, 0o644); err != nil {
+		return fmt.Errorf("clear shell history %q: %w", s.path, err)
+	}
+	return nil
+}
+
 func (s historyStore) Entries() []string {
 	return append([]string(nil), s.entries...)
 }

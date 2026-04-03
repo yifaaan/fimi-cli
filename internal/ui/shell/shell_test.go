@@ -53,6 +53,12 @@ func TestNewShellProgramDoesNotEnableMouseCapture(t *testing.T) {
 	}
 }
 
+func TestJoinTranscriptForTeaPrintSkipsEmptyInput(t *testing.T) {
+	if got := joinTranscriptForTeaPrint(nil); got != "" {
+		t.Fatalf("joinTranscriptForTeaPrint(nil) = %q, want empty", got)
+	}
+}
+
 type shellProgramTestModel struct{}
 
 func (shellProgramTestModel) Init() tea.Cmd {

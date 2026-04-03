@@ -174,7 +174,12 @@ func Run(ctx context.Context, deps Dependencies) error {
 	// 在 goroutine 中运行，以便处理 context 取消
 	done := make(chan error, 1)
 	go func() {
-		_, runErr := p.Run()
+		finalModel, runErr := p.Run()
+		if shellModel, ok := finalModel.(Model); ok {
+			if trailing := joinTranscriptForTeaPrint(shellModel.output.RenderUnprintedCommitted()); strings.TrimSpace(trailing) != "" {
+				fmt.Fprintln(output, trailing)
+			}
+		}
 		done <- runErr
 	}()
 
