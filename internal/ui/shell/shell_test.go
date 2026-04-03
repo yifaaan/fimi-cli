@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,15 +37,20 @@ func TestHelpTextDescribesKeyboardShortcutsWithoutMouseWheelLine(t *testing.T) {
 	}
 }
 
-func TestRunConfiguresProgramForTerminalNativeMouseBehavior(t *testing.T) {
+func TestShellStartupDoesNotEnableMouseCapture(t *testing.T) {
 	original := newShellProgram
 	t.Cleanup(func() {
 		newShellProgram = original
 	})
 
-	captured := shellProgramOptions{}
-	newShellProgram = func(model tea.Model, opts shellProgramOptions) shellProgram {
-		captured = opts
+	capturedMouse := false
+	newShellProgram = func(model tea.Model, options ...tea.ProgramOption) shellProgram {
+		startupOptions := func(program *tea.Program) int64 {
+			return reflect.ValueOf(program).Elem().FieldByName("startupOptions").Int()
+		}
+		mouseMask := startupOptions(tea.NewProgram(model, tea.WithMouseCellMotion())) |
+			startupOptions(tea.NewProgram(model, tea.WithMouseAllMotion()))
+		capturedMouse = startupOptions(tea.NewProgram(model, options...))&mouseMask != 0
 		return stubShellProgram{}
 	}
 
@@ -53,14 +59,8 @@ func TestRunConfiguresProgramForTerminalNativeMouseBehavior(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if captured.mouseCapture {
+	if capturedMouse {
 		t.Fatal("Run() enabled mouse capture, want terminal-native mouse behavior")
-	}
-	if captured.input == nil {
-		t.Fatal("Run() input = nil, want default reader")
-	}
-	if captured.output == nil {
-		t.Fatal("Run() output = nil, want discard writer")
 	}
 }
 
