@@ -23,6 +23,7 @@ type PreviewKind int
 const (
 	PreviewKindText PreviewKind = iota
 	PreviewKindDiff
+	PreviewKindMarkdown
 )
 
 type ActivityItemStatus int

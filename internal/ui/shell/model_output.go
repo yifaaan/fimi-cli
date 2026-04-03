@@ -241,18 +241,22 @@ func renderUserPromptBlock(text string, width int) string {
 }
 
 func (m OutputModel) renderAssistantNoteBlock(note string) string {
-	note = strings.ReplaceAll(note, "\r\n", "\n")
-	if strings.TrimSpace(note) == "" {
+	note = renderers.SanitizeMarkdown(note)
+	note = strings.TrimSpace(note)
+	if note == "" {
 		return ""
+	}
+	if !looksLikeMarkdownPreview(note) {
+		return styles.AssistantBubbleStyle.Width(m.panelWidth()).Render(note)
 	}
 	contentWidth := m.assistantContentWidth()
 	renderer, err := renderers.NewMarkdownRenderer(contentWidth)
 	if err != nil {
-		return styles.AssistantBubbleStyle.Width(m.panelWidth()).Render(strings.TrimSpace(note))
+		return styles.AssistantBubbleStyle.Width(m.panelWidth()).Render(note)
 	}
 	body := renderer.Render(note)
 	if strings.TrimSpace(body) == "" {
-		body = strings.TrimSpace(note)
+		body = note
 	}
 	return styles.AssistantBubbleStyle.Width(m.panelWidth()).Render(body)
 }
@@ -356,6 +360,12 @@ func (m OutputModel) renderGroupedExplorationPreviews(blockID string, group Acti
 		if label != "" {
 			sections = append(sections, styles.ActivityDetailStyle.Render("    "+label))
 		}
+		if item.Preview.Kind == PreviewKindMarkdown {
+			if body := m.renderMarkdownPreviewBody(item.Preview.Text); body != "" {
+				sections = append(sections, body)
+			}
+			continue
+		}
 		for _, line := range strings.Split(strings.TrimRight(item.Preview.Text, "\n"), "\n") {
 			sections = append(sections, renderPreviewLine(item.Preview.Kind, line))
 		}
@@ -383,6 +393,9 @@ func (m OutputModel) renderPreviewBody(blockID string, title string, preview Pre
 		if rendered, ok := renderEditDiffPreviewBodyWithWidth(title, preview.Text, expanded, m.activityPreviewWidth()); ok {
 			return rendered
 		}
+	}
+	if preview.Kind == PreviewKindMarkdown {
+		return m.renderMarkdownPreviewBody(preview.Text)
 	}
 	limit := previewDefaultLimit(preview.Kind)
 	hint := previewToggleHint(expanded)
@@ -818,6 +831,22 @@ func (m OutputModel) activityPreviewWidth() int {
 		return 1
 	}
 	return width
+}
+
+func (m OutputModel) renderMarkdownPreviewBody(text string) string {
+	text = renderers.SanitizeMarkdown(text)
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	renderer, err := renderers.NewMarkdownRenderer(m.activityPreviewWidth())
+	if err != nil {
+		return styles.ActivityPreviewStyle.Render("    " + strings.TrimSpace(text))
+	}
+	body := renderer.Render(text)
+	if strings.TrimSpace(body) == "" {
+		body = strings.TrimSpace(text)
+	}
+	return lipgloss.NewStyle().PaddingLeft(4).Render(body)
 }
 
 func (m OutputModel) assistantContentWidth() int {

@@ -545,6 +545,9 @@ func classifyPreviewKind(toolName string, preview string) PreviewKind {
 	case "replace_file", "patch_file":
 		return PreviewKindDiff
 	}
+	if looksLikeMarkdownPreview(preview) {
+		return PreviewKindMarkdown
+	}
 	lines := strings.Split(preview, "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
@@ -552,6 +555,38 @@ func classifyPreviewKind(toolName string, preview string) PreviewKind {
 		}
 	}
 	return PreviewKindText
+}
+
+func looksLikeMarkdownPreview(preview string) bool {
+	preview = strings.TrimSpace(preview)
+	if preview == "" {
+		return false
+	}
+	for _, line := range strings.Split(preview, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "#"):
+			return true
+		case strings.HasPrefix(trimmed, ">"):
+			return true
+		case strings.HasPrefix(trimmed, "```"):
+			return true
+		case strings.HasPrefix(trimmed, "- "):
+			return true
+		case strings.HasPrefix(trimmed, "* "):
+			return true
+		case strings.HasPrefix(trimmed, "1. "):
+			return true
+		case strings.Contains(trimmed, "`"):
+			return true
+		case strings.Contains(trimmed, "[") && strings.Contains(trimmed, "]("):
+			return true
+		}
+	}
+	return false
 }
 
 func previewDefaultLimit(kind PreviewKind) int {

@@ -328,6 +328,13 @@ func TestRuntimeModelPrefersFullReadFileOutputOverClippedDisplayPreview(t *testi
 	}
 }
 
+func TestClassifyPreviewKindPrefersMarkdownBeforeDiffHeuristics(t *testing.T) {
+	preview := "# Title\n\n- item one\n- item two"
+	if got := classifyPreviewKind("read_file", preview); got != PreviewKindMarkdown {
+		t.Fatalf("classifyPreviewKind() = %v, want %v", got, PreviewKindMarkdown)
+	}
+}
+
 func TestRuntimeModelStoresPreviewOnEachExploredItem(t *testing.T) {
 	model := NewRuntimeModel()
 	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
@@ -536,6 +543,62 @@ func TestRenderPreviewBodyStripsEmbeddedANSIBackground(t *testing.T) {
 	stripped := ansi.Strip(rendered)
 	if !strings.Contains(stripped, "total 64") {
 		t.Fatalf("rendered preview missing text content:\n%s", stripped)
+	}
+}
+
+func TestRenderPreviewBodyRendersMarkdownPreview(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+
+	rendered := ansi.Strip(model.renderPreviewBody("tool-1", "Read README.md", PreviewBody{
+		Text:        "# Title\n\n- item one\n- item two\n\n```go\nfmt.Println(\"hi\")\n```",
+		Kind:        PreviewKindMarkdown,
+		Collapsible: false,
+	}))
+
+	for _, want := range []string{"Title", "item one", "item two", "fmt.Println(\"hi\")"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("renderPreviewBody() missing %q in:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "```") {
+		t.Fatalf("renderPreviewBody() = %q, want fenced code markers removed", rendered)
+	}
+}
+
+func TestRenderAssistantNoteBlockDoesNotLeakOSCProbeSequence(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+
+	rendered := model.renderAssistantNoteBlock("# Title\n\n\x1b]11;?\abg\n\n- item")
+	if strings.Contains(rendered, "]11;?") || strings.Contains(rendered, "\x1b]11;") {
+		t.Fatalf("renderAssistantNoteBlock() leaked OSC probe sequence: %q", rendered)
+	}
+	stripped := ansi.Strip(rendered)
+	for _, want := range []string{"Title", "bg", "item"} {
+		if !strings.Contains(stripped, want) {
+			t.Fatalf("renderAssistantNoteBlock() missing %q in:\n%s", want, stripped)
+		}
+	}
+}
+
+func TestRenderPreviewBodyMarkdownDoesNotLeakOSCProbeSequence(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 80
+
+	rendered := model.renderPreviewBody("tool-1", "Read README.md", PreviewBody{
+		Text:        "# Title\n\n\x1b]11;?\abg\n\n- item",
+		Kind:        PreviewKindMarkdown,
+		Collapsible: false,
+	})
+	if strings.Contains(rendered, "]11;?") || strings.Contains(rendered, "\x1b]11;") {
+		t.Fatalf("renderPreviewBody() leaked OSC probe sequence: %q", rendered)
+	}
+	stripped := ansi.Strip(rendered)
+	for _, want := range []string{"Title", "bg", "item"} {
+		if !strings.Contains(stripped, want) {
+			t.Fatalf("renderPreviewBody() missing %q in:\n%s", want, stripped)
+		}
 	}
 }
 

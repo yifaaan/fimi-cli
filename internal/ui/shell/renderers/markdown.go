@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+const markdownStyle = "dark"
+
 // MarkdownRenderer 包装 glamour 渲染器，用于渲染 Markdown 内容。
 type MarkdownRenderer struct {
 	renderer *glamour.TermRenderer
@@ -19,9 +21,8 @@ func NewMarkdownRenderer(width int) (*MarkdownRenderer, error) {
 	if width < 1 {
 		width = 1
 	}
-	// 使用 dark 主题作为基础
 	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(markdownStyle),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
@@ -36,13 +37,16 @@ func NewMarkdownRenderer(width int) (*MarkdownRenderer, error) {
 
 // Render 渲染 Markdown 文本为 ANSI 格式化文本。
 func (r *MarkdownRenderer) Render(markdown string) string {
+	markdown = sanitizeMarkdown(markdown)
+	if markdown == "" {
+		return ""
+	}
 	if r.renderer == nil {
 		return markdown
 	}
 
 	rendered, err := r.renderer.Render(markdown)
 	if err != nil {
-		// 渲染失败时返回原始文本
 		return markdown
 	}
 
@@ -51,12 +55,15 @@ func (r *MarkdownRenderer) Render(markdown string) string {
 
 // SetWidth 更新渲染器宽度。
 func (r *MarkdownRenderer) SetWidth(width int) error {
+	if width < 1 {
+		width = 1
+	}
 	if r.width == width {
 		return nil
 	}
 
 	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(markdownStyle),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
@@ -66,6 +73,65 @@ func (r *MarkdownRenderer) SetWidth(width int) error {
 	r.renderer = renderer
 	r.width = width
 	return nil
+}
+
+func SanitizeMarkdown(markdown string) string {
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
+	markdown = strings.ReplaceAll(markdown, "\r", "\n")
+	markdown = stripANSI(markdown)
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, markdown)
+}
+
+func sanitizeMarkdown(markdown string) string {
+	return strings.TrimSpace(SanitizeMarkdown(markdown))
+}
+
+func stripANSI(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); i++ {
+		if text[i] != 0x1b {
+			b.WriteByte(text[i])
+			continue
+		}
+		if i+1 >= len(text) {
+			break
+		}
+		switch text[i+1] {
+		case '[':
+			i += 2
+			for i < len(text) {
+				c := text[i]
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+				i++
+			}
+		case ']':
+			i += 2
+			for i < len(text) {
+				if text[i] == 0x07 {
+					break
+				}
+				if text[i] == 0x1b && i+1 < len(text) && text[i+1] == '\\' {
+					i++
+					break
+				}
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return b.String()
 }
 
 // RenderCodeBlock 渲染代码块，带语法高亮。
