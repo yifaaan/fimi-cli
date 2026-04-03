@@ -877,11 +877,15 @@ func (m Model) finishCompactRuntime(msg RuntimeCompleteMsg) Model {
 	}
 	m.input.ClearHistory()
 
-	m = m.rebuildOutputFromRecords(records)
+	m.output = NewOutputModel()
 	m.output = m.output.AppendLine(TranscriptLine{
 		Type:    LineTypeSystem,
 		Content: compactedNoticeText(),
 	})
+	if last, ok, err := m.deps.Store.Last(); err == nil && ok {
+		m.deps.StartupInfo.LastRole = last.Role
+		m.deps.StartupInfo.LastSummary = strings.TrimSpace(last.Content)
+	}
 	return m
 }
 

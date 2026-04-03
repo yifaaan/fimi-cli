@@ -497,17 +497,11 @@ func TestFinishRuntimeCompactsSessionHistoryIntoBlocks(t *testing.T) {
 		t.Fatalf("persistent history = %#v, want cleared after compact", persistedHistory.entries)
 	}
 
-	if len(updated.output.blocks) != 3 {
-		t.Fatalf("output blocks = %d, want 3", len(updated.output.blocks))
+	if len(updated.output.blocks) != 1 {
+		t.Fatalf("output blocks = %d, want 1", len(updated.output.blocks))
 	}
-	if updated.output.blocks[0].Kind != BlockKindUserPrompt || updated.output.blocks[0].UserText != "old task" {
-		t.Fatalf("first block = %#v, want original user goal", updated.output.blocks[0])
-	}
-	if updated.output.blocks[1].Kind != BlockKindAssistantNote || updated.output.blocks[1].NoteText != "Current goal\n- finish compact" {
-		t.Fatalf("second block = %#v, want compacted assistant summary", updated.output.blocks[1])
-	}
-	if updated.output.blocks[2].Kind != BlockKindSystemNotice || updated.output.blocks[2].Text != compactedNoticeText() {
-		t.Fatalf("third block = %#v, want compact completion notice", updated.output.blocks[2])
+	if updated.output.blocks[0].Kind != BlockKindSystemNotice || updated.output.blocks[0].Text != compactedNoticeText() {
+		t.Fatalf("only output block = %#v, want compact completion notice", updated.output.blocks[0])
 	}
 }
 
