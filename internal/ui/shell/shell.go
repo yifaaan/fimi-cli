@@ -39,7 +39,6 @@ func helpText() string {
 		"  Ctrl+C/Ctrl+D   Exit (when idle)",
 		"  Ctrl+L          Clear screen",
 		"  Ctrl+O          Toggle tool result expansion",
-		"  Mouse wheel     Scroll transcript history",
 	}
 	return strings.Join(lines, "\n")
 }
@@ -135,6 +134,14 @@ type StartupInfo struct {
 	LastSummary    string
 }
 
+func newShellProgram(model tea.Model, input io.Reader, output io.Writer) *tea.Program {
+	return tea.NewProgram(
+		model,
+		tea.WithInput(input),
+		tea.WithOutput(output),
+	)
+}
+
 // Run 启动交互式 shell（仅 Bubble Tea 模式）。
 func Run(ctx context.Context, deps Dependencies) error {
 	if deps.Runner == nil {
@@ -161,13 +168,8 @@ func Run(ctx context.Context, deps Dependencies) error {
 	model := NewModel(deps, &history)
 
 	// 创建 Bubble Tea 程序
-	// 不使用 alt screen 和鼠标捕获，这样终端原生的文本选择和滚轮翻页都可以正常工作。
-	p := tea.NewProgram(
-		model,
-		tea.WithInput(input),
-		tea.WithOutput(output),
-		tea.WithMouseCellMotion(),
-	)
+	// 保持普通屏幕且不捕获鼠标，让终端原生的文本选择和滚轮滚动继续工作。
+	p := newShellProgram(model, input, output)
 
 	// 在 goroutine 中运行，以便处理 context 取消
 	done := make(chan error, 1)

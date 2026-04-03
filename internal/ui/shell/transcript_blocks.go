@@ -1,6 +1,9 @@
 package shell
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type TranscriptBlockKind int
 
@@ -51,7 +54,7 @@ type ActivityItem struct {
 	Verb       string
 	Text       string
 	Status     ActivityItemStatus
-	PreviewRef string
+	Preview    PreviewBody
 }
 
 type ActivityGroupBlock struct {
@@ -86,7 +89,29 @@ type TranscriptBlock struct {
 func (b TranscriptBlock) IsCollapsible() bool {
 	switch b.Kind {
 	case BlockKindActivityGroup:
-		return b.Activity.Collapsible && b.Activity.Preview.Text != ""
+		if strings.TrimSpace(b.Activity.GroupKind) == "explored" && len(b.Activity.Items) > 0 {
+			if strings.TrimSpace(b.Activity.Preview.Text) != "" {
+				return true
+			}
+			for _, item := range b.Activity.Items {
+				if strings.TrimSpace(item.Preview.Text) != "" {
+					return true
+				}
+			}
+			return false
+		}
+		if !b.Activity.Collapsible {
+			return false
+		}
+		if strings.TrimSpace(b.Activity.Preview.Text) != "" {
+			return true
+		}
+		for _, item := range b.Activity.Items {
+			if strings.TrimSpace(item.Preview.Text) != "" {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}

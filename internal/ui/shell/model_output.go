@@ -283,6 +283,23 @@ func (m OutputModel) renderActivityGroupBlock(block TranscriptBlock) string {
 	for _, item := range group.Items {
 		lines = append(lines, renderActivityItem(item))
 	}
+
+	if isGroupedExplorationCard(group) {
+		if m.expanded[block.ID] {
+			if previews := m.renderGroupedExplorationPreviews(block.ID, group); len(previews) > 0 {
+				lines = append(lines, previews...)
+			}
+			lines = append(lines, renderPreviewFooter("    ", PreviewKindText, 0, "", previewToggleHint(true)))
+			return activityCardStyle(group.Accent).Width(m.panelWidth()).Render(strings.Join(lines, "\n"))
+		}
+
+		hidden := groupedExplorationHiddenLineCount(group)
+		if hidden > 0 {
+			lines = append(lines, renderPreviewFooter("    ", PreviewKindText, hidden, "lines", previewToggleHint(false)))
+		}
+		return activityCardStyle(group.Accent).Width(m.panelWidth()).Render(strings.Join(lines, "\n"))
+	}
+
 	if preview := m.renderPreviewBody(block.ID, group.Title, group.Preview); preview != "" {
 		lines = append(lines, preview)
 	}
@@ -324,6 +341,56 @@ func renderActivityItem(item ActivityItem) string {
 		style = styles.ActivityFailedStyle
 	}
 	return style.Render(prefix + line)
+}
+
+func isGroupedExplorationCard(group ActivityGroupBlock) bool {
+	return strings.TrimSpace(group.GroupKind) == "explored" && len(group.Items) > 0
+}
+
+func activityItemLabel(item ActivityItem) string {
+	return strings.TrimSpace(strings.Join([]string{item.Verb, item.Text}, " "))
+}
+
+func groupedExplorationHiddenLineCount(group ActivityGroupBlock) int {
+	hidden := 0
+	for _, item := range group.Items {
+		text := strings.TrimSpace(item.Preview.Text)
+		if text == "" {
+			continue
+		}
+		hidden += previewLineCount(text)
+	}
+	if hidden > 0 {
+		return hidden
+	}
+	return previewLineCount(group.Preview.Text)
+}
+
+func (m OutputModel) renderGroupedExplorationPreviews(blockID string, group ActivityGroupBlock) []string {
+	var sections []string
+	for _, item := range group.Items {
+		if strings.TrimSpace(item.Preview.Text) == "" {
+			continue
+		}
+		label := activityItemLabel(item)
+		if label != "" {
+			sections = append(sections, styles.ActivityDetailStyle.Render("    "+label))
+		}
+		for _, line := range strings.Split(strings.TrimRight(item.Preview.Text, "\n"), "\n") {
+			sections = append(sections, renderPreviewLine(item.Preview.Kind, line))
+		}
+	}
+	if len(sections) > 0 {
+		return sections
+	}
+	if body := m.renderPreviewBody(blockID, group.Title, PreviewBody{
+		Text:        group.Preview.Text,
+		Kind:        group.Preview.Kind,
+		Collapsible: false,
+	}); body != "" {
+		return []string{body}
+	}
+	return nil
 }
 
 func (m OutputModel) renderPreviewBody(blockID string, title string, preview PreviewBody) string {
