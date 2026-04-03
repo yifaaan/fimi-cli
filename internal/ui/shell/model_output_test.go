@@ -253,6 +253,111 @@ func TestRuntimeModelGroupsExplorationToolsAndSkipsThoughtLoggedResult(t *testin
 	}
 }
 
+func TestRuntimeModelStoresPreviewOnEachExploredItem(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "read-1",
+		Name:      "read_file",
+		Subtitle:  "Read internal/tools/builtin.go",
+		Arguments: `{"path":"internal/tools/builtin.go"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID:    "read-1",
+		ToolName:      "read_file",
+		Output:        "package tools\nfunc Builtin() {}",
+		DisplayOutput: "package tools\nfunc Builtin() {}",
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "read-2",
+		Name:      "read_file",
+		Subtitle:  "Read internal/tools/builtin_readonly.go",
+		Arguments: `{"path":"internal/tools/builtin_readonly.go"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID:    "read-2",
+		ToolName:      "read_file",
+		Output:        "package tools\nfunc Readonly() {}",
+		DisplayOutput: "package tools\nfunc Readonly() {}",
+	})
+
+	blocks := model.ToBlocks()
+	if len(blocks) != 1 {
+		t.Fatalf("len(ToBlocks()) = %d, want 1", len(blocks))
+	}
+
+	explored := blocks[0]
+	if len(explored.Activity.Items) != 2 {
+		t.Fatalf("len(explored.Activity.Items) = %d, want 2", len(explored.Activity.Items))
+	}
+	if explored.Activity.Items[0].Preview.Text == "" {
+		t.Fatal("items[0].Preview.Text is empty, want first read preview preserved")
+	}
+	if explored.Activity.Items[1].Preview.Text == "" {
+		t.Fatal("items[1].Preview.Text is empty, want second read preview preserved")
+	}
+	if strings.Contains(explored.Activity.Items[0].Preview.Text, "Readonly") {
+		t.Fatalf("items[0].Preview.Text = %q, want first item to keep first preview", explored.Activity.Items[0].Preview.Text)
+	}
+	if !strings.Contains(explored.Activity.Items[1].Preview.Text, "Readonly") {
+		t.Fatalf("items[1].Preview.Text = %q, want second item to keep second preview", explored.Activity.Items[1].Preview.Text)
+	}
+}
+
+func TestRuntimeModelMixedExplorationItemsEachKeepTheirOwnPreview(t *testing.T) {
+	model := NewRuntimeModel()
+	model = model.ApplyEvent(runtimeevents.StepBegin{Number: 1})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "read-1",
+		Name:      "read_file",
+		Subtitle:  "Read internal/ui/shell/model.go",
+		Arguments: `{"path":"internal/ui/shell/model.go"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID:    "read-1",
+		ToolName:      "read_file",
+		Output:        "package shell",
+		DisplayOutput: "package shell",
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "glob-1",
+		Name:      "glob",
+		Subtitle:  "Matched internal/ui/shell/*.go",
+		Arguments: `{"pattern":"internal/ui/shell/*.go"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID:    "glob-1",
+		ToolName:      "glob",
+		Output:        "internal/ui/shell/model.go\ninternal/ui/shell/model_output.go",
+		DisplayOutput: "internal/ui/shell/model.go\ninternal/ui/shell/model_output.go",
+	})
+	model = model.ApplyEvent(runtimeevents.ToolCall{
+		ID:        "grep-1",
+		Name:      "grep",
+		Subtitle:  `Searched internal/ui/shell for "approval"`,
+		Arguments: `{"path":"internal/ui/shell","pattern":"approval"}`,
+	})
+	model = model.ApplyEvent(runtimeevents.ToolResult{
+		ToolCallID:    "grep-1",
+		ToolName:      "grep",
+		Output:        "internal/ui/shell/model.go:1:approvalRequestMsg",
+		DisplayOutput: "internal/ui/shell/model.go:1:approvalRequestMsg",
+	})
+
+	blocks := model.ToBlocks()
+	if len(blocks) != 1 {
+		t.Fatalf("len(ToBlocks()) = %d, want 1", len(blocks))
+	}
+	if len(blocks[0].Activity.Items) != 3 {
+		t.Fatalf("len(blocks[0].Activity.Items) = %d, want 3", len(blocks[0].Activity.Items))
+	}
+	for i, want := range []string{"package shell", "model_output.go", "approvalRequestMsg"} {
+		if !strings.Contains(blocks[0].Activity.Items[i].Preview.Text, want) {
+			t.Fatalf("items[%d].Preview.Text = %q, want to contain %q", i, blocks[0].Activity.Items[i].Preview.Text, want)
+		}
+	}
+}
+
 func TestOutputModelToggleExpandTargetsLatestCollapsiblePreview(t *testing.T) {
 	longText := strings.Join([]string{
 		"line 1", "line 2", "line 3", "line 4", "line 5",
@@ -515,8 +620,16 @@ func TestBuildTranscriptBlocksFromRecordsPrefersDisplayContentAndFallsBackToCont
 
 	var previews []string
 	for _, block := range blocks {
-		if block.Kind == BlockKindActivityGroup && block.Activity.Preview.Text != "" {
+		if block.Kind != BlockKindActivityGroup {
+			continue
+		}
+		if block.Activity.Preview.Text != "" {
 			previews = append(previews, block.Activity.Preview.Text)
+		}
+		for _, item := range block.Activity.Items {
+			if item.Preview.Text != "" {
+				previews = append(previews, item.Preview.Text)
+			}
 		}
 	}
 	joined := strings.Join(previews, "\n")
@@ -627,5 +740,126 @@ func TestOutputModelMouseWheelScrollsFullHistory(t *testing.T) {
 	}
 	if strings.Contains(scrolled, "sixth message") {
 		t.Fatalf("scrolled View() = %q, want latest message out of view after scrolling to top", scrolled)
+	}
+}
+
+func TestOutputModelExpandedExploredGroupShowsEachItemPreviewInOrder(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 100
+	model.height = 40
+	model = model.AppendBlock(TranscriptBlock{
+		ID:   "explored-seq",
+		Kind: BlockKindActivityGroup,
+		Activity: ActivityGroupBlock{
+			GroupKind:   "explored",
+			Title:       "Explored",
+			Collapsible: true,
+			Items: []ActivityItem{
+				{
+					ToolCallID: "read-1",
+					Verb:       "Read",
+					Text:       "internal/tools/builtin.go",
+					Status:     ActivityItemCompleted,
+					Preview: PreviewBody{
+						Text:        "package tools\nfunc Builtin() {}",
+						Kind:        PreviewKindText,
+						Collapsible: false,
+					},
+				},
+				{
+					ToolCallID: "read-2",
+					Verb:       "Read",
+					Text:       "internal/tools/builtin_readonly.go",
+					Status:     ActivityItemCompleted,
+					Preview: PreviewBody{
+						Text:        "package tools\nfunc Readonly() {}",
+						Kind:        PreviewKindText,
+						Collapsible: false,
+					},
+				},
+			},
+		},
+	})
+
+	collapsed := model.InteractiveView()
+	for _, want := range []string{
+		"Explored",
+		"Read internal/tools/builtin.go",
+		"Read internal/tools/builtin_readonly.go",
+	} {
+		if !strings.Contains(collapsed, want) {
+			t.Fatalf("collapsed InteractiveView() missing %q in:\n%s", want, collapsed)
+		}
+	}
+	for _, unwanted := range []string{
+		"func Builtin() {}",
+		"func Readonly() {}",
+	} {
+		if strings.Contains(collapsed, unwanted) {
+			t.Fatalf("collapsed InteractiveView() unexpectedly contains %q in:\n%s", unwanted, collapsed)
+		}
+	}
+
+	updated, toggled := model.ToggleExpand()
+	if !toggled {
+		t.Fatal("ToggleExpand() = false, want grouped explored block to expand")
+	}
+
+	expanded := updated.InteractiveView()
+	for _, want := range []string{
+		"Read internal/tools/builtin.go",
+		"package tools",
+		"func Builtin() {}",
+		"Read internal/tools/builtin_readonly.go",
+		"func Readonly() {}",
+	} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded InteractiveView() missing %q in:\n%s", want, expanded)
+		}
+	}
+	if strings.Index(expanded, "func Builtin() {}") > strings.Index(expanded, "func Readonly() {}") {
+		t.Fatalf("expanded InteractiveView() rendered previews out of order:\n%s", expanded)
+	}
+}
+
+func TestOutputModelExploredGroupFallsBackToLegacyGroupPreview(t *testing.T) {
+	model := NewOutputModel()
+	model.width = 100
+	model.height = 40
+	model = model.AppendBlock(TranscriptBlock{
+		ID:   "legacy-explored",
+		Kind: BlockKindActivityGroup,
+		Activity: ActivityGroupBlock{
+			GroupKind: "explored",
+			Title:     "Explored",
+			Items: []ActivityItem{
+				{Verb: "Read", Text: "internal/tools/builtin.go", Status: ActivityItemCompleted},
+			},
+			Preview: PreviewBody{
+				Text:        "package tools\nfunc Legacy() {}",
+				Kind:        PreviewKindText,
+				Collapsible: false,
+			},
+		},
+	})
+
+	collapsed := model.InteractiveView()
+	if strings.Contains(collapsed, "func Legacy() {}") {
+		t.Fatalf("collapsed InteractiveView() unexpectedly shows legacy preview:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "Ctrl+O expand") {
+		t.Fatalf("collapsed InteractiveView() missing expand affordance for hidden legacy preview:\n%s", collapsed)
+	}
+
+	updated, toggled := model.ToggleExpand()
+	if !toggled {
+		t.Fatal("ToggleExpand() = false, want legacy explored block to expand")
+	}
+
+	expanded := updated.InteractiveView()
+	for _, want := range []string{"Read internal/tools/builtin.go", "func Legacy() {}", "Ctrl+O collapse"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded InteractiveView() missing %q in:\n%s", want, expanded)
+		}
 	}
 }

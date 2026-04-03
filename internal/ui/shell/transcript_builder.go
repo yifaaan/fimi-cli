@@ -263,11 +263,17 @@ func (b *transcriptBuilder) applyToolResult(result runtimeevents.ToolResult) {
 		return
 	}
 	previewKind := classifyPreviewKind(toolName, previewText)
-	block.Activity.Preview = PreviewBody{
+	preview := PreviewBody{
 		Text:        previewText,
 		Kind:        previewKind,
 		Collapsible: previewLineCount(previewText) > previewDefaultLimit(previewKind),
 	}
+	if ref.itemIdx >= 0 {
+		block.Activity.Items[ref.itemIdx].Preview = preview
+		block.Activity.Collapsible = true
+		return
+	}
+	block.Activity.Preview = preview
 	block.Activity.Collapsible = block.Activity.Preview.Collapsible
 }
 
