@@ -160,12 +160,11 @@ func Run(ctx context.Context, deps Dependencies) error {
 	model := NewModel(deps, &history)
 
 	// 创建 Bubble Tea 程序
-	// 不使用 alt screen 和鼠标捕获，这样终端原生的文本选择和滚轮翻页都可以正常工作。
+	// 不使用 alt screen 和鼠标捕获，终端原生的文本选择和滚轮滚动可以正常工作。
 	p := tea.NewProgram(
 		model,
 		tea.WithInput(input),
 		tea.WithOutput(output),
-		tea.WithMouseCellMotion(),
 	)
 
 	// 在 goroutine 中运行，以便处理 context 取消

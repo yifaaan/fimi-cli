@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -31,5 +32,20 @@ func TestHelpTextDescribesKeyboardShortcutsWithoutMouseWheelLine(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("helpText() unexpectedly contains %q in:\n%s", unwanted, got)
 		}
+	}
+}
+
+func TestShellSourceDoesNotEnableMouseCapture(t *testing.T) {
+	data, err := os.ReadFile("shell.go")
+	if err != nil {
+		t.Fatalf("os.ReadFile(shell.go) error = %v", err)
+	}
+
+	source := string(data)
+	if strings.Contains(source, "tea.WithMouseCellMotion()") {
+		t.Fatalf("shell.go unexpectedly enables mouse capture:\n%s", source)
+	}
+	if !strings.Contains(source, "tea.NewProgram(") {
+		t.Fatalf("shell.go missing tea.NewProgram setup:\n%s", source)
 	}
 }
