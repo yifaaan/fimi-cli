@@ -1,9 +1,10 @@
 package shell
 
 import (
-	"os"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestResumeCommandText(t *testing.T) {
@@ -35,17 +36,38 @@ func TestHelpTextDescribesKeyboardShortcutsWithoutMouseWheelLine(t *testing.T) {
 	}
 }
 
-func TestShellSourceDoesNotEnableMouseCapture(t *testing.T) {
-	data, err := os.ReadFile("shell.go")
-	if err != nil {
-		t.Fatalf("os.ReadFile(shell.go) error = %v", err)
+func TestRunConfiguresProgramForTerminalNativeMouseBehavior(t *testing.T) {
+	original := newShellProgram
+	t.Cleanup(func() {
+		newShellProgram = original
+	})
+
+	captured := shellProgramOptions{}
+	newShellProgram = func(model tea.Model, opts shellProgramOptions) shellProgram {
+		captured = opts
+		return stubShellProgram{}
 	}
 
-	source := string(data)
-	if strings.Contains(source, "tea.WithMouseCellMotion()") {
-		t.Fatalf("shell.go unexpectedly enables mouse capture:\n%s", source)
+	err := Run(t.Context(), Dependencies{Runner: &contextAwareRunner{}})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
-	if !strings.Contains(source, "tea.NewProgram(") {
-		t.Fatalf("shell.go missing tea.NewProgram setup:\n%s", source)
+
+	if captured.mouseCapture {
+		t.Fatal("Run() enabled mouse capture, want terminal-native mouse behavior")
+	}
+	if captured.input == nil {
+		t.Fatal("Run() input = nil, want default reader")
+	}
+	if captured.output == nil {
+		t.Fatal("Run() output = nil, want discard writer")
 	}
 }
+
+type stubShellProgram struct{}
+
+func (stubShellProgram) Run() (tea.Model, error) {
+	return nil, nil
+}
+
+func (stubShellProgram) Quit() {}
