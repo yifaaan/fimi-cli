@@ -1,7 +1,7 @@
 package shell
 
 import (
-	"reflect"
+	"io"
 	"strings"
 	"testing"
 
@@ -43,14 +43,18 @@ func TestShellStartupDoesNotEnableMouseCapture(t *testing.T) {
 		newShellProgram = original
 	})
 
-	capturedMouse := false
-	newShellProgram = func(model tea.Model, options ...tea.ProgramOption) shellProgram {
-		startupOptions := func(program *tea.Program) int64 {
-			return reflect.ValueOf(program).Elem().FieldByName("startupOptions").Int()
+	called := false
+	newShellProgram = func(model tea.Model, input io.Reader, output io.Writer, enableMouseCapture bool) shellProgram {
+		called = true
+		if input == nil {
+			t.Fatal("newShellProgram() input = nil, want non-nil reader")
 		}
-		mouseMask := startupOptions(tea.NewProgram(model, tea.WithMouseCellMotion())) |
-			startupOptions(tea.NewProgram(model, tea.WithMouseAllMotion()))
-		capturedMouse = startupOptions(tea.NewProgram(model, options...))&mouseMask != 0
+		if output == nil {
+			t.Fatal("newShellProgram() output = nil, want non-nil writer")
+		}
+		if enableMouseCapture {
+			t.Fatal("Run() enabled mouse capture, want terminal-native mouse behavior")
+		}
 		return stubShellProgram{}
 	}
 
@@ -58,9 +62,8 @@ func TestShellStartupDoesNotEnableMouseCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-
-	if capturedMouse {
-		t.Fatal("Run() enabled mouse capture, want terminal-native mouse behavior")
+	if !called {
+		t.Fatal("Run() did not create a shell program")
 	}
 }
 
