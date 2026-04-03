@@ -15,27 +15,35 @@ The screenshot should be treated as the visual source of truth for spacing, sepa
 
 ### Current State
 
-- `internal/ui/shell/model_output.go` still uses a flat `[]TranscriptLine` model and renders one line type at a time.
-- `internal/ui/shell/model_runtime.go` converts runtime events into `stepLines`, but the mapping is still mostly `one event -> one line`.
-- `internal/ui/shell/styles/colors.go` and `internal/ui/shell/styles/lipgloss.go` define generic shell styles, not screenshot-specific transcript blocks.
-- `internal/runtime/events/events.go` already has `ToolResult.DisplayOutput`, and `internal/runtime/runtime.go` already forwards it.
-- `internal/tools/builtin_patch.go` already generates a richer `DisplayOutput` for patch diffs, but most other tools still only provide coarse plain-text output.
-- Current shell UI still exposes implementation-oriented affordances such as `Step N`, raw tool-card rows, and status bar text that do not match the screenshot's transcript-first presentation.
+- `internal/ui/shell/model_output.go` already renders a block-based transcript via `TranscriptBlock`, `ActivityGroupBlock`, approval blocks, divider blocks, and elapsed blocks. The old `TranscriptLine` path is now mostly a compatibility shim.
+- `internal/ui/shell/model_runtime.go` already converts runtime events into grouped transcript blocks instead of the old `one event -> one line` model.
+- `internal/ui/shell/transcript_builder.go` already groups read/search tools under `Explored`, commands under `Ran ...`, edits under `Edited ...`, todos under `Planned`, agents under `Delegated`, and maps `think` into visible assistant notes.
+- `internal/runtime/events/events.go` already carries `ToolResult.DisplayOutput`, and shell already prefers it for inline previews while still falling back to full `Output` where that produces a better transcript preview.
+- `internal/tools/builtin_bash.go`, `internal/tools/builtin_readonly.go`, `internal/tools/builtin_write.go`, and `internal/tools/builtin_patch.go` already populate richer `DisplayOutput` previews for bash, read/search, web, write/replace, and patch flows.
+- `internal/ui/shell/model_output_test.go`, `internal/ui/shell/model_command_test.go`, `internal/ui/shell/model_approval_test.go`, `internal/tools/display_output_test.go`, and `internal/tools/patch_test.go` already cover much of the new renderer and preview behavior.
+- Screenshot parity is now partial rather than foundationally blocked: the transcript model exists, grouping exists, previews exist, and the remaining work is mostly visual polish plus a few remaining transcript-first behavior cleanups.
 
 ### Gap Analysis
 
-The main gap is not only styling. The current transcript data model is too shallow for the target UI.
+The main architectural refactor is already done. The remaining gap is now mostly presentation polish and cleanup rather than transcript-model design.
 
-To reproduce the screenshot, shell needs concepts like:
+What is already in place:
 
 - user message blocks
 - assistant narrative blocks
-- grouped activity sections such as `Explored`, `Ran ...`, `Edited ...`
-- nested detail rows such as `Read foo.go`, `Search ...`
+- grouped activity sections such as `Explored`, `Ran ...`, and `Edited ...`
+- nested detail rows such as `Read ...` and `Search ...`
 - inline preview bodies for command output and file diffs
 - elapsed-time dividers such as `Worked for 1m 11s`
+- inline approval blocks in the transcript stream
 
-Those concepts do not map cleanly onto the current `LineTypeUser / LineTypeAssistant / LineTypeToolCall / LineTypeToolResult` model.
+Main remaining gaps:
+
+- activity sections still render with rounded card styling instead of the screenshot's flatter grouped transcript treatment
+- assistant narrative is still rendered as a plain note block, not screenshot-style bullet prose
+- live progress is still shown through the bottom `renderLiveStatus()` panel, so progress has not fully moved into the transcript stream
+- style tokens are still partly generic shell colors rather than a fully screenshot-tuned transcript palette
+- some compatibility leftovers such as legacy line-based helpers can likely be removed once the new transcript path is fully settled
 
 ### Design Decisions
 
@@ -198,48 +206,81 @@ The current rounded tool card presentation should be removed from the shell tran
 
 - document exact prefixes, spacing, divider behavior, truncation rules, and activity titles
 - create golden examples for one representative tool-heavy turn
+- status: partially done in tests, but still missing a single explicit transcript spec document that acts as the visual source of truth
 
 2. Build the new transcript primitives and renderer
 
 - introduce block types and renderers in shell UI
 - preserve scrolling and interactive-tail behavior while changing only the presentation layer
+- status: largely done in `internal/ui/shell/model_output.go`, `internal/ui/shell/transcript_blocks.go`, and `internal/ui/shell/transcript_builder.go`
 
 3. Enrich tool preview payloads
 
 - populate `DisplayOutput` across read/search/bash/write/replace/patch tools
 - centralize preview helpers so truncation and formatting are consistent
+- status: mostly done for the core builtin tools listed above; remaining work is refinement, not initial plumbing
 
 4. Add grouping and elapsed behavior
 
 - aggregate consecutive tool events into semantic groups
 - insert dividers and elapsed markers at the same rhythm as the screenshot
+- status: grouping and elapsed markers are implemented, but rhythm and exact screenshot parity still need tuning
 
 5. Polish styles against real terminal output
 
 - tune colors, padding, wrap width, and preview density
 - remove remaining rounded tool-card assumptions from shell transcript
+- status: this is now the main unfinished phase
 
 6. Add regression coverage
 
 - snapshot/golden tests for `InteractiveView()`
 - unit tests for grouping rules, preview truncation, diff rendering, and elapsed formatting
 - one end-to-end shell test for a multi-step turn with assistant note + explored block + command block + edit diff
+- status: strong unit coverage exists already, but there is still room for more golden/end-to-end transcript coverage
 
 ### Acceptance Criteria
 
-- submitted user messages are visually distinct and rendered as muted blocks like the screenshot
-- assistant narrative is rendered as bullet-style prose instead of plain assistant lines
-- visible "think" / analysis flow appears inline in the transcript rather than as raw tool-card text
-- tool activity is grouped into sections such as `Explored`, `Ran ...`, and `Edited ...`
-- command output previews and file-edit diffs are shown inline, with compact truncation behavior
-- the shell still supports scrolling, late-event commit, and older-turn scrollback
-- `printui` and persisted history stay compatible with the richer shell presentation
+- [x] submitted user messages are visually distinct and rendered as separate blocks
+- [ ] submitted user messages match the screenshot's muted full-width treatment closely enough that no further structural styling changes are needed
+- [ ] assistant narrative is rendered as bullet-style prose instead of the current plain note block treatment
+- [x] visible "think" / analysis flow appears inline in the transcript rather than as raw tool-card text
+- [x] tool activity is grouped into sections such as `Explored`, `Ran ...`, and `Edited ...`
+- [x] command output previews and file-edit diffs are shown inline, with compact truncation behavior
+- [x] the shell still supports scrolling, late-event commit, and older-turn scrollback
+- [x] transcript approvals render inline in the same conversation stream
+- [ ] live progress/status is moved fully into transcript-first presentation so the separate bottom live-status panel is no longer needed
+- [ ] `printui` and persisted history stay compatible with the richer shell presentation under the final polished layout
 
 ### Risks And Constraints
 
-- exact screenshot parity depends on richer per-tool preview payloads; styling alone will not be enough
+- exact screenshot parity now depends more on visual tuning and transcript composition rhythm than on missing core data structures
 - the current provider stack does not expose hidden chain-of-thought, so visible reasoning can only be built from assistant text and explicit `think` activity
-- replacing the transcript presentation model will touch multiple tests because current assertions assume one-line-per-event rendering
+- some screenshot mismatches are now caused by legacy shell chrome that still exists alongside the new transcript path, especially `renderLiveStatus()` and generic card styling
+
+### Recommended Next Module
+
+Given the current codebase state, the next module to implement is no longer the core transcript architecture. That part is already in place.
+
+The next most valuable module is:
+
+- `internal/ui/shell/styles/colors.go`
+- `internal/ui/shell/styles/lipgloss.go`
+- the activity-group rendering paths in `internal/ui/shell/model_output.go`
+- the live-status integration points in `internal/ui/shell/model.go` and `internal/ui/shell/model_commands.go`
+
+Concretely, the next phase should focus on:
+
+1. removing the remaining rounded-card / generic-shell styling from transcript blocks
+2. switching assistant notes to screenshot-style bullet prose
+3. reducing or eliminating the separate live-status panel in favor of transcript-first progress cues
+4. tightening spacing, divider density, preview indentation, and muted user bubble treatment against the screenshot
+
+So the updated answer to “next step” is:
+
+- not `model_runtime.go` first
+- not tool preview plumbing first
+- but **shell transcript polish and transcript-first status cleanup** first
 
 
 # kimi-cli 实现参考（基于 `temp/` 快照）
