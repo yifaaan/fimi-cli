@@ -1,7 +1,7 @@
 package shell
 
 import (
-	"io"
+	"bytes"
 	"strings"
 	"testing"
 
@@ -37,40 +37,32 @@ func TestHelpTextDescribesKeyboardShortcutsWithoutMouseWheelLine(t *testing.T) {
 	}
 }
 
-func TestShellStartupDoesNotEnableMouseCapture(t *testing.T) {
-	original := newShellProgram
-	t.Cleanup(func() {
-		newShellProgram = original
-	})
+func TestNewShellProgramDoesNotEnableMouseCapture(t *testing.T) {
+	var output bytes.Buffer
 
-	called := false
-	newShellProgram = func(model tea.Model, input io.Reader, output io.Writer, enableMouseCapture bool) shellProgram {
-		called = true
-		if input == nil {
-			t.Fatal("newShellProgram() input = nil, want non-nil reader")
-		}
-		if output == nil {
-			t.Fatal("newShellProgram() output = nil, want non-nil writer")
-		}
-		if enableMouseCapture {
-			t.Fatal("Run() enabled mouse capture, want terminal-native mouse behavior")
-		}
-		return stubShellProgram{}
+	p := newShellProgram(shellProgramTestModel{}, strings.NewReader(""), &output)
+	if _, err := p.Run(); err != nil {
+		t.Fatalf("newShellProgram().Run() error = %v", err)
 	}
 
-	err := Run(t.Context(), Dependencies{Runner: &contextAwareRunner{}})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if !called {
-		t.Fatal("Run() did not create a shell program")
+	got := output.String()
+	for _, unwanted := range []string{"\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("newShellProgram().Run() output contains mouse capture sequence %q in %q", unwanted, got)
+		}
 	}
 }
 
-type stubShellProgram struct{}
+type shellProgramTestModel struct{}
 
-func (stubShellProgram) Run() (tea.Model, error) {
-	return nil, nil
+func (shellProgramTestModel) Init() tea.Cmd {
+	return tea.Quit
 }
 
-func (stubShellProgram) Quit() {}
+func (shellProgramTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	return shellProgramTestModel{}, nil
+}
+
+func (shellProgramTestModel) View() string {
+	return ""
+}

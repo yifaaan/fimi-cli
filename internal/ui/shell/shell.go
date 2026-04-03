@@ -134,20 +134,12 @@ type StartupInfo struct {
 	LastSummary    string
 }
 
-type shellProgram interface {
-	Run() (tea.Model, error)
-	Quit()
-}
-
-var newShellProgram = func(model tea.Model, input io.Reader, output io.Writer, enableMouseCapture bool) shellProgram {
-	options := []tea.ProgramOption{
+func newShellProgram(model tea.Model, input io.Reader, output io.Writer) *tea.Program {
+	return tea.NewProgram(
+		model,
 		tea.WithInput(input),
 		tea.WithOutput(output),
-	}
-	if enableMouseCapture {
-		options = append(options, tea.WithMouseCellMotion())
-	}
-	return tea.NewProgram(model, options...)
+	)
 }
 
 // Run 启动交互式 shell（仅 Bubble Tea 模式）。
@@ -177,7 +169,7 @@ func Run(ctx context.Context, deps Dependencies) error {
 
 	// 创建 Bubble Tea 程序
 	// 保持普通屏幕且不捕获鼠标，让终端原生的文本选择和滚轮滚动继续工作。
-	p := newShellProgram(model, input, output, false)
+	p := newShellProgram(model, input, output)
 
 	// 在 goroutine 中运行，以便处理 context 取消
 	done := make(chan error, 1)
